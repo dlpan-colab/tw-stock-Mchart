@@ -6,7 +6,7 @@
 """
 
 MODULE_NAME = "chart_builder"
-MODULE_VERSION = "202610280030"
+MODULE_VERSION = "202610280150"
 
 from typing import Optional, Tuple
 import numpy as np
@@ -14,7 +14,6 @@ import pandas as pd
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
-# 嘗試自模組匯入資料擷取與指標運算函式
 try:
     from data_fetcher import fetch_stock_data
 except ImportError:
@@ -37,7 +36,6 @@ def render_split_figures_from_df(
     major2_thresh: int = 400,
     is_mobile: bool = False
 ) -> Tuple[go.Figure, go.Figure, int, int]:
-    """繪製圖表核心：傳入計算完畢的 DataFrame，回傳 (fig_top, fig_btm, end_idx, disp_n)"""
     date_str_list = [d.strftime('%Y-%m-%d') for d in df.index]
     total_len = len(df)
     disp_n = min(int(display_days), total_len)
@@ -76,9 +74,9 @@ def render_split_figures_from_df(
 
     # 上色樣式定義
     vol_colors = ['#eb4d4b' if c >= o else '#2ecc71' for c, o in zip(df['Close'], df['Open'])]
-    osc_colors = ['#eb4d4b' if val >= 0 else '#2ecc71' for val in df.get('OSC', pd.Series()).fillna(0)]
-    m_colors = ['#eb4d4b' if val >= 0 else '#2ecc71' for val in df.get('Margin_Diff', pd.Series()).fillna(0)]
-    s_colors = ['#f1c40f' if val >= 0 else '#3498db' for val in df.get('Short_Diff', pd.Series()).fillna(0)]
+    osc_colors = ['#eb4d4b' if val >= 0 else '#2ecc71' for val in df.get('OSC', pd.Series(dtype=float)).fillna(0)]
+    m_colors = ['#eb4d4b' if val >= 0 else '#2ecc71' for val in df.get('Margin_Diff', pd.Series(dtype=float)).fillna(0)]
+    s_colors = ['#f1c40f' if val >= 0 else '#3498db' for val in df.get('Short_Diff', pd.Series(dtype=float)).fillna(0)]
 
     # 3. 副圖極值與軸邊距計算
     sub_obv = sub_df.get('OBV', pd.Series(dtype=float)).dropna()
@@ -151,27 +149,28 @@ def render_split_figures_from_df(
     if 'MA60' in df:
         fig_top.add_trace(go.Scatter(x=date_str_list, y=df['MA60'], line=dict(color='#9b59b6', width=1.2), name='MA60', hoverinfo='none'), row=1, col=1)
 
+    # 精確依據索引繪製頭底
     if 'Is_Head' in df:
-        head_df = df[df['Is_Head']]
-        if not head_df.empty:
+        head_indices = [i for i, v in enumerate(df['Is_Head']) if v]
+        if head_indices:
             fig_top.add_trace(go.Scatter(
-                x=[d.strftime('%Y-%m-%d') for d in head_df.index],
-                y=head_df['High'],
+                x=[date_str_list[i] for i in head_indices],
+                y=[df['High'].iloc[i] for i in head_indices],
                 mode='text',
-                text='<b>〔頭〕</b>',
+                text=['<b>〔頭〕</b>'] * len(head_indices),
                 textposition='top center',
                 textfont=dict(family='Arial Black, sans-serif', size=13, color='#27ae60'),
                 hoverinfo='none'
             ), row=1, col=1)
 
     if 'Is_Bottom' in df:
-        bottom_df = df[df['Is_Bottom']]
-        if not bottom_df.empty:
+        bottom_indices = [i for i, v in enumerate(df['Is_Bottom']) if v]
+        if bottom_indices:
             fig_top.add_trace(go.Scatter(
-                x=[d.strftime('%Y-%m-%d') for d in bottom_df.index],
-                y=bottom_df['Low'],
+                x=[date_str_list[i] for i in bottom_indices],
+                y=[df['Low'].iloc[i] for i in bottom_indices],
                 mode='text',
-                text='<b>〔底〕</b>',
+                text=['<b>〔底〕</b>'] * len(bottom_indices),
                 textposition='bottom center',
                 textfont=dict(family='Arial Black, sans-serif', size=13, color='#e74c3c'),
                 hoverinfo='none'
@@ -184,26 +183,26 @@ def render_split_figures_from_df(
 
     to_col = 'Turnover_Rate' if 'Turnover_Rate' in df.columns else ('Turnover' if 'Turnover' in df.columns else None)
     if to_col:
-        t10_df = df[(df[to_col] >= 10.0) & (df[to_col] < 20.0)]
-        if not t10_df.empty:
+        t10_indices = [i for i, v in enumerate(df[to_col]) if 10.0 <= v < 20.0]
+        if t10_indices:
             fig_top.add_trace(go.Scatter(
-                x=[d.strftime('%Y-%m-%d') for d in t10_df.index],
-                y=t10_df[vol_col],
+                x=[date_str_list[i] for i in t10_indices],
+                y=[v_series.iloc[i] for i in t10_indices],
                 mode='text',
-                text='▲',
+                text=['▲'] * len(t10_indices),
                 textposition='top center',
                 textfont=dict(family='Arial, sans-serif', size=15, color='#1e3799'),
                 hoverinfo='none',
                 name='換手≥10%'
             ), row=2, col=1)
 
-        t20_df = df[df[to_col] >= 20.0]
-        if not t20_df.empty:
+        t20_indices = [i for i, v in enumerate(df[to_col]) if v >= 20.0]
+        if t20_indices:
             fig_top.add_trace(go.Scatter(
-                x=[d.strftime('%Y-%m-%d') for d in t20_df.index],
-                y=t20_df[vol_col],
+                x=[date_str_list[i] for i in t20_indices],
+                y=[v_series.iloc[i] for i in t20_indices],
                 mode='text',
-                text='▼',
+                text=['▼'] * len(t20_indices),
                 textposition='top center',
                 textfont=dict(family='Arial, sans-serif', size=15, color='#f1c40f'),
                 hoverinfo='none',
@@ -230,41 +229,34 @@ def render_split_figures_from_df(
         specs=[[{}], [{}], [{}], [{}], [{}], [{}], [{"secondary_y": True}], [{}], [{}]]
     )
 
-    # KD
     if 'K' in df and 'D' in df:
         fig_btm.add_trace(go.Scatter(x=date_str_list, y=df['K'], line=dict(color='#e74c3c', width=1.2), hoverinfo='none'), row=1, col=1)
         fig_btm.add_trace(go.Scatter(x=date_str_list, y=df['D'], line=dict(color='#3498db', width=1.2), hoverinfo='none'), row=1, col=1)
         fig_btm.add_hline(y=80, line_dash='dot', line_color='rgba(150,150,150,0.5)', row=1, col=1)
         fig_btm.add_hline(y=20, line_dash='dot', line_color='rgba(150,150,150,0.5)', row=1, col=1)
 
-    # MACD
     if 'OSC' in df:
         fig_btm.add_trace(go.Bar(x=date_str_list, y=df['OSC'], marker_color=osc_colors, hoverinfo='none'), row=2, col=1)
-        fig_btm.add_trace(go.Scatter(x=date_str_list, y=df.get('DIF', pd.Series()), line=dict(color='#f39c12', width=1.2), hoverinfo='none'), row=2, col=1)
-        fig_btm.add_trace(go.Scatter(x=date_str_list, y=df.get('MACD', pd.Series()), line=dict(color='#2980b9', width=1.2), hoverinfo='none'), row=2, col=1)
+        fig_btm.add_trace(go.Scatter(x=date_str_list, y=df.get('DIF', pd.Series(dtype=float)), line=dict(color='#f39c12', width=1.2), hoverinfo='none'), row=2, col=1)
+        fig_btm.add_trace(go.Scatter(x=date_str_list, y=df.get('MACD', pd.Series(dtype=float)), line=dict(color='#2980b9', width=1.2), hoverinfo='none'), row=2, col=1)
 
-    # OBV
     if 'OBV' in df:
         fig_btm.add_trace(go.Scatter(x=date_str_list, y=df['OBV'], line=dict(color='#16a085', width=1.2), hoverinfo='none'), row=3, col=1)
         if 'OBV_MA20' in df:
             fig_btm.add_trace(go.Scatter(x=date_str_list, y=df['OBV_MA20'], line=dict(color='#8e44ad', width=1.1, dash='dash'), hoverinfo='none'), row=3, col=1)
 
-    # 外資
     f_net = df.get('Foreign_Net', pd.Series(dtype=float)).fillna(0)
     fig_btm.add_trace(go.Bar(x=date_str_list, y=f_net, marker_color=['#eb4d4b' if x >= 0 else '#2ecc71' for x in f_net], hoverinfo='none'), row=4, col=1)
     fig_btm.add_hline(y=0, line_color='rgba(150,150,150,0.7)', line_width=1, row=4, col=1)
 
-    # 投信
     t_net = df.get('Trust_Net', pd.Series(dtype=float)).fillna(0)
     fig_btm.add_trace(go.Bar(x=date_str_list, y=t_net, marker_color=['#eb4d4b' if x >= 0 else '#2ecc71' for x in t_net], hoverinfo='none'), row=5, col=1)
     fig_btm.add_hline(y=0, line_color='rgba(150,150,150,0.7)', line_width=1, row=5, col=1)
 
-    # 自營商
     d_net = df.get('Dealer_Net', pd.Series(dtype=float)).fillna(0)
     fig_btm.add_trace(go.Bar(x=date_str_list, y=d_net, marker_color=['#eb4d4b' if x >= 0 else '#2ecc71' for x in d_net], hoverinfo='none'), row=6, col=1)
     fig_btm.add_hline(y=0, line_color='rgba(150,150,150,0.7)', line_width=1, row=6, col=1)
 
-    # 資券增減與券資比
     m_diff = df.get('Margin_Diff', pd.Series(dtype=float)).fillna(0)
     s_diff = df.get('Short_Diff', pd.Series(dtype=float)).fillna(0)
     fig_btm.add_trace(go.Bar(x=date_str_list, y=m_diff, marker_color=m_colors, name='融資', width=0.4, offset=-0.4, hoverinfo='none'), secondary_y=False, row=7, col=1)
@@ -274,7 +266,6 @@ def render_split_figures_from_df(
     if 'Short_Margin_Ratio' in df:
         fig_btm.add_trace(go.Scatter(x=date_str_list, y=df['Short_Margin_Ratio'], line=dict(color='#e67e22', width=1.5), connectgaps=True, name='券資比', hoverinfo='none'), secondary_y=True, row=7, col=1)
 
-    # 大戶門檻 1 與 2
     if 'Major1_Pct' in df:
         fig_btm.add_trace(go.Scatter(x=date_str_list, y=df['Major1_Pct'], line=dict(color='#c0392b', width=1.5, shape='hv'), connectgaps=True, hoverinfo='none'), row=8, col=1)
     if 'Major2_Pct' in df:
@@ -305,9 +296,6 @@ def render_split_figures_from_df(
     return fig_top, fig_btm, end_idx, disp_n
 
 
-# ==========================================
-# 6. app.py 相容介面主函式
-# ==========================================
 def build_split_figures(
     raw_ticker,
     period='1y',
@@ -320,12 +308,6 @@ def build_split_figures(
     *args,
     **kwargs
 ):
-    """
-    對齊 app.py 的呼叫界面：
-    支援 build_split_figures(target_symbol, s_period, s_days, s_base_date, s_m1, s_m2, is_mobile=is_mobile, status_placeholder=status_box)
-    回傳 6 個元素：(fig_top, fig_btm, df, c_name, end_idx, disp_n)
-    """
-    # 若第 1 個參數已是 DataFrame
     if isinstance(raw_ticker, pd.DataFrame):
         df = raw_ticker
         pure_code = str(period)
@@ -339,9 +321,8 @@ def build_split_figures(
         f_top, f_btm, e_idx, d_n = render_split_figures_from_df(df, pure_code, market, c_name, days, b_date, m1, m2, mob)
         return f_top, f_btm, df, c_name, e_idx, d_n
 
-    # 否則自外部擷取資料並運算
     if fetch_stock_data is None or calculate_all_indicators is None:
-        raise RuntimeError("chart_builder 模組無法匯入 fetch_stock_data 或 calculate_all_indicators，請檢查 data_fetcher.py 與 indicators.py。")
+        raise RuntimeError("無法匯入資料擷取或指標運算函式。")
 
     df_raw, full_ticker, pure_code, market, c_name, shares_outstanding = fetch_stock_data(raw_ticker, period)
     if df_raw is None or df_raw.empty:
