@@ -268,4 +268,99 @@ def render_split_figures_from_df(
     m_diff = df.get('Margin_Diff', pd.Series(dtype=float)).fillna(0)
     s_diff = df.get('Short_Diff', pd.Series(dtype=float)).fillna(0)
     fig_btm.add_trace(go.Bar(x=date_str_list, y=m_diff, marker_color=m_colors, name='融資', width=0.4, offset=-0.4, hoverinfo='none'), secondary_y=False, row=7, col=1)
-    fig_btm.add_trace(go.Bar(x=date_str_list
+    fig_btm.add_trace(go.Bar(x=date_str_list, y=s_diff, marker_color=s_colors, name='融券', width=0.4, offset=0.0, hoverinfo='none'), secondary_y=False, row=7, col=1)
+    fig_btm.add_hline(y=0, line_color='rgba(150,150,150,0.7)', line_width=1, secondary_y=False, row=7, col=1)
+
+    if 'Short_Margin_Ratio' in df:
+        fig_btm.add_trace(go.Scatter(x=date_str_list, y=df['Short_Margin_Ratio'], line=dict(color='#e67e22', width=1.5), connectgaps=True, name='券資比', hoverinfo='none'), secondary_y=True, row=7, col=1)
+
+    # 大戶門檻 1 與 2
+    if 'Major1_Pct' in df:
+        fig_btm.add_trace(go.Scatter(x=date_str_list, y=df['Major1_Pct'], line=dict(color='#c0392b', width=1.5, shape='hv'), connectgaps=True, hoverinfo='none'), row=8, col=1)
+    if 'Major2_Pct' in df:
+        fig_btm.add_trace(go.Scatter(x=date_str_list, y=df['Major2_Pct'], line=dict(color='#8e44ad', width=1.5, shape='hv'), connectgaps=True, hoverinfo='none'), row=9, col=1)
+
+    fig_btm.update_layout(
+        font=dict(size=16),
+        template='plotly_white', hovermode=False, dragmode='pan', showlegend=False,
+        height=btm_height,
+        margin=dict(l=80, r=15, t=10, b=30, autoexpand=False),
+        xaxis_rangeslider_visible=False
+    )
+    for r in range(1, 10):
+        fig_btm.update_xaxes(type='category', range=[start_idx - 0.5, end_idx + 0.5], domain=[0, 1], row=r, col=1)
+    fig_btm.update_xaxes(type='category', range=[start_idx - 0.5, end_idx + 0.5], domain=[0, 1], showticklabels=True, tickvals=month_ticks_vals, ticktext=month_ticks_text, row=9, col=1)
+
+    fig_btm.update_yaxes(title_text='KD', range=[0, 100], fixedrange=True, row=1, col=1)
+    fig_btm.update_yaxes(title_text='MACD', range=[macd_min - macd_pad, macd_max + macd_pad], fixedrange=True, row=2, col=1)
+    fig_btm.update_yaxes(title_text='OBV', range=[obv_min - obv_pad, obv_max + obv_pad], fixedrange=True, row=3, col=1)
+    fig_btm.update_yaxes(title_text='外資', range=fn_range, fixedrange=True, row=4, col=1)
+    fig_btm.update_yaxes(title_text='投信', range=tn_range, fixedrange=True, row=5, col=1)
+    fig_btm.update_yaxes(title_text='自營', range=dn_range, fixedrange=True, row=6, col=1)
+    fig_btm.update_yaxes(title_text='資券', range=ms_range, fixedrange=True, secondary_y=False, row=7, col=1)
+    fig_btm.update_yaxes(title_text='', range=ratio_range, fixedrange=True, secondary_y=True, showgrid=False, showticklabels=False, row=7, col=1)
+    fig_btm.update_yaxes(title_text=f'≥{major1_thresh}', range=m1_range, fixedrange=True, row=8, col=1)
+    fig_btm.update_yaxes(title_text=f'≥{major2_thresh}', range=m2_range, fixedrange=True, row=9, col=1)
+
+    return fig_top, fig_btm, end_idx, disp_n
+
+
+# ==========================================
+# 6. app.py 相容介面主函式
+# ==========================================
+def build_split_figures(
+    raw_ticker,
+    period='1y',
+    display_days=20,
+    base_date=None,
+    major1_thresh=1000,
+    major2_thresh=400,
+    is_mobile=False,
+    status_placeholder=None,
+    *args,
+    **kwargs
+):
+    """
+    對齊 app.py 的呼叫界面：
+    支援 build_split_figures(target_symbol, s_period, s_days, s_base_date, s_m1, s_m2, is_mobile=is_mobile, status_placeholder=status_box)
+    回傳 6 個元素：(fig_top, fig_btm, df, c_name, end_idx, disp_n)
+    """
+    # 若第 1 個參數已是 DataFrame
+    if isinstance(raw_ticker, pd.DataFrame):
+        df = raw_ticker
+        pure_code = str(period)
+        market = str(display_days)
+        c_name = str(base_date or pure_code)
+        days = int(kwargs.get('display_days', 20))
+        b_date = kwargs.get('base_date', None)
+        m1 = int(kwargs.get('major1_thresh', 1000))
+        m2 = int(kwargs.get('major2_thresh', 400))
+        mob = bool(kwargs.get('is_mobile', False))
+        f_top, f_btm, e_idx, d_n = render_split_figures_from_df(df, pure_code, market, c_name, days, b_date, m1, m2, mob)
+        return f_top, f_btm, df, c_name, e_idx, d_n
+
+    # 否則自外部擷取資料並運算
+    if fetch_stock_data is None or calculate_all_indicators is None:
+        raise RuntimeError("chart_builder 模組無法匯入 fetch_stock_data 或 calculate_all_indicators，請檢查 data_fetcher.py 與 indicators.py。")
+
+    df_raw, full_ticker, pure_code, market, c_name, shares_outstanding = fetch_stock_data(raw_ticker, period)
+    if df_raw is None or df_raw.empty:
+        return None, None, None, "", None, 0
+
+    df = calculate_all_indicators(df_raw, pure_code, major1_thresh, major2_thresh, shares_outstanding, status_placeholder)
+    if df is None or df.empty:
+        return None, None, None, "", None, 0
+
+    fig_top, fig_btm, end_idx, disp_n = render_split_figures_from_df(
+        df=df,
+        pure_code=pure_code,
+        market=market,
+        c_name=c_name,
+        display_days=display_days,
+        base_date=base_date,
+        major1_thresh=major1_thresh,
+        major2_thresh=major2_thresh,
+        is_mobile=is_mobile
+    )
+
+    return fig_top, fig_btm, df, c_name, end_idx, disp_n
