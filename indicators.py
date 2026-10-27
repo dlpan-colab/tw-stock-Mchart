@@ -4,14 +4,15 @@
 5MA 連續波段頭底轉折點演算法、扣除大戶之自由流通換手率計算與 TDCC 映射。
 相容 Streamlit Cloud 與 Google Colab 雙執行環境。
 """
+
 # ==============================================================================
 # 模組名稱: indicators
-# 模組版本: 202610271630
-# 核心職責: MA/KD/MACD/OBV、5MA 波段頭底辨識、換手率與集保股權分級映射
+# 模組版本: 202610271710
+# 核心職責: MA/KD/MACD/OBV、5MA 波段頭底辨識、換手率與集保股權分級映射 (時區全相容)
 # ==============================================================================
 
 MODULE_NAME = "indicators"
-MODULE_VERSION = "202610271630"
+MODULE_VERSION = "202610271710"
 
 import pandas as pd
 import numpy as np
@@ -22,6 +23,10 @@ def calculate_all_indicators(df, total_shares, chip_df=None, tdcc_df=None, m1_le
         return df
 
     df = df.copy()
+
+    # 關鍵防護：統一將 DatetimeIndex 移除時區，避免與外部籌碼資料 join 時發生 tz 衝突
+    if hasattr(df.index, 'tz') and df.index.tz is not None:
+        df.index = df.index.tz_localize(None)
 
     # 1. 移動平均線 (MA)
     df['MA5'] = df['Close'].rolling(window=5).mean()
@@ -98,7 +103,7 @@ def calculate_all_indicators(df, total_shares, chip_df=None, tdcc_df=None, m1_le
 
         # 映射到日 K (依週別 ffill)
         tdcc_map = pd.DataFrame({'p1': p1_series, 'p2': p2_series})
-        tdcc_map.index = pd.to_datetime(tdcc_map.index)
+        tdcc_map.index = pd.to_datetime(tdcc_map.index).tz_localize(None)
 
         df = df.join(tdcc_map, how='left')
         df[m1_col] = df['p1'].ffill()
@@ -115,7 +120,7 @@ def calculate_all_indicators(df, total_shares, chip_df=None, tdcc_df=None, m1_le
         if top_major_pct > 0:
             free_float_factor = max(0.1, (100.0 - top_major_pct) / 100.0)
         else:
-            free_float_factor = 0.75  # 無大戶資料時採 0.75 保守常數
+            free_float_factor = 0.75
         
         free_float_shares = total_shares * free_float_factor
         df['Turnover_Rate'] = (df['Volume'] / free_float_shares) * 100.0
@@ -125,7 +130,7 @@ def calculate_all_indicators(df, total_shares, chip_df=None, tdcc_df=None, m1_le
     # 7. 合併法人與資券數據 (從 chip_df)
     if chip_df is not None and not chip_df.empty:
         chip_clean = chip_df.copy()
-        chip_clean['date'] = pd.to_datetime(chip_clean['date'])
+        chip_clean['date'] = pd.to_datetime(chip_clean['date']).dt.tz_localize(None)
         chip_clean.set_index('date', inplace=True)
         # 挑選必要欄位合併
         cols = ['foreign_buy', 'trust_buy', 'dealer_buy', 'margin_balance', 'margin_change', 'short_balance', 'short_change', 'short_ratio']
