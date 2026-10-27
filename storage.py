@@ -5,7 +5,7 @@
 """
 
 MODULE_NAME = "storage"
-MODULE_VERSION = "202610280140"
+MODULE_VERSION = "202610280145"
 
 import os
 import json
@@ -47,12 +47,13 @@ class StockChipStorage:
         self.db_name = f"data_{self.pure_code}.db"
         self.db_path = str(DATA_DIR / self.db_name)
         
-        # 雲端同步支援：精準判定雲端是否有檔案
+        # 雲端同步支援
         sync = _get_cloud_sync()
-        if not IS_COLAB and sync and hasattr(sync, "pull_file") and not os.path.exists(self.db_path):
-            sync.pull_file(Path(self.db_path))
-        elif not IS_COLAB and sync and hasattr(sync, "pull") and not os.path.exists(self.db_path):
-            sync.pull(self.db_name, self.db_path)
+        if not IS_COLAB and sync:
+            if hasattr(sync, "pull_file") and not os.path.exists(self.db_path):
+                sync.pull_file(Path(self.db_path))
+            elif hasattr(sync, "pull") and not os.path.exists(self.db_path):
+                sync.pull(self.db_name, self.db_path)
 
         self.is_first_time = not os.path.exists(self.db_path)
         self._init_db()
