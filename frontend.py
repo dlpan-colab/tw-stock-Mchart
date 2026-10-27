@@ -17,22 +17,18 @@ from typing import Dict, Optional
 
 def get_legend_html(version_tag: str = MODULE_VERSION, module_versions: Optional[Dict[str, str]] = None) -> str:
     """
-    生成頂部圖例看板 HTML：
-    包含旋轉指示器、主圖/技術/法人/資券圖例說明，以及行動端水平緊湊按鈕 CSS。
+    生成頂部圖例看板 HTML
     """
-    version_badges = ""
-    if module_versions:
-        version_badges = " " + "".join(
-            f"<span style='background:#475569; color:#f8fafc; padding:1px 5px; border-radius:3px; margin-right:4px; font-size:11px;'>{k}:{v[-8:]}</span>"
-            for k, v in module_versions.items()
-        )
+    # 僅取主程式版本或字串，不印整個字典
+    display_ver = version_tag if isinstance(version_tag, str) else MODULE_VERSION
+    if isinstance(module_versions, dict) and "app" in module_versions:
+        display_ver = module_versions["app"]
 
     return f"""
     <style>
       @keyframes app-spin {{ 0% {{ transform: rotate(0deg); }} 100% {{ transform: rotate(360deg); }} }}
       .app-loading-ring {{ display: inline-block; width: 14px; height: 14px; border: 2.5px solid rgba(41, 128, 185, 0.25); border-top: 2.5px solid #2980b9; border-radius: 50%; animation: app-spin 0.8s linear infinite; vertical-align: middle; margin-left: 6px; }}
       
-      /* 強制手機端與窄螢幕維持緊湊並排、不被折行滿版 */
       div[data-testid="stHorizontalBlock"]:has(button) {{
           flex-direction: row !important;
           display: flex !important;
@@ -56,13 +52,12 @@ def get_legend_html(version_tag: str = MODULE_VERSION, module_versions: Optional
       }}
     </style>
     <div style="font-size: 14px; line-height: 1.6; margin-bottom: 6px; padding: 4px 10px; background: #f8fafc; border-radius: 6px; border: 1px solid #e2e8f0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;">
-      <span style="background:#2c3e50; color:#ffffff; padding: 1px 6px; border-radius: 4px; font-weight:bold; margin-right: 6px;">v{version_tag}</span>
+      <span style="background:#2c3e50; color:#ffffff; padding: 1px 6px; border-radius: 4px; font-weight:bold; margin-right: 6px;">v{display_ver}</span>
       <span id="app_loading_spinner" class="app-loading-ring" style="display:none;" title="系統運作中..."></span>
       <b>主圖：</b><span style="color:#eb4d4b;">■</span> K線 <span style="color:#27ae60;font-weight:bold;">〔頭〕</span> <span style="color:#e74c3c;font-weight:bold;">〔底〕</span> <span style="color:#f1c40f;">MA5</span> <span style="color:#e67e22;">MA20</span> <span style="color:#9b59b6;">MA60</span> | 
       <b>技術：</b><span style="color:#eb4d4b;">■</span> 量/OSC <span style="color:#1e3799; font-weight:bold;">▲</span>≥10% <span style="color:#f1c40f; font-weight:bold;">▼</span>≥20% <span style="color:#e74c3c;">K</span> <span style="color:#3498db;">D</span> <span style="color:#f39c12;">DIF</span> <span style="color:#2980b9;">MACD</span> <span style="color:#16a085;">OBV</span> | 
       <b>法人：</b><span style="color:#eb4d4b;">■</span> 外/投/自 <span style="color:#c0392b;">大1</span> <span style="color:#8e44ad;">大2</span> | 
       <b>資券：</b><span style="color:#eb4d4b;">■</span>(左)融資 <span style="color:#f1c40f;">■</span>(右)融券 <span style="color:#e67e22;">━</span> 券資比
-      {version_badges}
     </div>
     """
 
