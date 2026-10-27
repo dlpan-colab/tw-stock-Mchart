@@ -5,290 +5,182 @@
 以及外部 iframe 自適應高度設定（手機 1820px、桌面 1880px）。
 相容 Streamlit Cloud 與 Google Colab 雙執行環境。
 """
+# ==============================================================================
+# 模組名稱: frontend
+# 模組版本: 202610271640
+# 核心職責: 前端 HTML/JS/CSS 雙向連動組件、圖例資訊列、行動端水平按鈕樣式
+# ==============================================================================
 
 MODULE_NAME = "frontend"
-MODULE_VERSION = "202610271400"
+MODULE_VERSION = "202610271640"
 
 import json
-from typing import Dict, List, Optional
-import pandas as pd
-import plotly.graph_objects as go
 
-# ==========================================
-# 1. 頂部圖例看板 HTML 樣式 (LEGEND_HTML)
-# ==========================================
-LEGEND_HTML = """
-<div style="background-color: #1E293B; border: 1px solid #334155; border-radius: 8px; padding: 10px 14px; margin-bottom: 12px; font-family: monospace; font-size: 12px; color: #E2E8F0; display: flex; flex-wrap: wrap; gap: 12px; align-items: center; justify-content: space-between;">
-  <div style="display: flex; gap: 10px; align-items: center; flex-wrap: wrap;">
-    <span style="font-weight: bold; color: #38BDF8;">【系統圖例】</span>
-    <span><span style="color: #F59E0B; font-weight: bold;">●</span> 5MA</span>
-    <span><span style="color: #3B82F6; font-weight: bold;">●</span> 20MA</span>
-    <span><span style="color: #8B5CF6; font-weight: bold;">●</span> 60MA</span>
-    <span><span style="color: #10B981; font-weight: bold;">[頭]</span> 5MA轉折高</span>
-    <span><span style="color: #EF4444; font-weight: bold;">[底]</span> 5MA轉折低</span>
-    <span><span style="color: #38BDF8; font-weight: bold;">▲</span> 換手≥10%</span>
-    <span><span style="color: #FBBF24; font-weight: bold;">▼</span> 換手≥20%</span>
-  </div>
-  <div style="color: #94A3B8; font-size: 11px;">
-    雙圖同步聯動 / 40ms 防抖縮放 / 自由流通扣除≥1000張
-  </div>
-</div>
-"""
+def get_legend_html(versions_dict=None):
+    """產出頂部圖例與各模組版本資訊列 (相容 Streamlit 與 Colab)"""
+    ver_str = " | ".join([f"{k}: v{v}" for k, v in (versions_dict or {}).items() if v and v != "N/A"])
+    if not ver_str:
+        ver_str = f"app: v{MODULE_VERSION}"
 
-# ==========================================
-# 2. 行動端水平緊湊按鈕與容器專屬 CSS
-# ==========================================
-MOBILE_COMPACT_BUTTON_CSS = """
-<style>
-/* 強制讓巡航導航按鈕在手機端保持水平排列，杜絕撐滿與單列折行 */
-@media (max-width: 640px) {
-    div[data-testid="stHorizontalBlock"] {
-        flex-direction: row !important;
-        display: flex !important;
-        flex-wrap: nowrap !important;
-        gap: 6px !important;
-        align-items: center !important;
-    }
-    div[data-testid="stHorizontalBlock"] > div {
-        flex: 1 1 0px !important;
-        min-width: 0 !important;
-    }
-    div[data-testid="stHorizontalBlock"] button {
-        width: 100% !important;
-        max-width: 250px !important;
-        padding: 4px 6px !important;
-        font-size: 12px !important;
-        height: 38px !important;
-        white-space: nowrap !important;
-    }
-    /* 壓縮輸入框與按鈕列間距 */
-    div[data-testid="stTextInput"] {
-        margin-bottom: 0px !important;
-    }
-}
-</style>
-"""
-
-
-# ==========================================
-# 3. 取得外部 iframe 高度常數
-# ==========================================
-def get_iframe_height(is_mobile: bool = False) -> int:
+    return f"""
+    <div style="background-color: #1e293b; padding: 10px 14px; border-radius: 8px; margin-bottom: 12px; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; font-size: 13px; color: #cbd5e1; border: 1px solid #334155; line-height: 1.6;">
+        <div style="display: flex; flex-wrap: wrap; gap: 12px; align-items: center; margin-bottom: 4px;">
+            <span style="font-weight: 600; color: #f8fafc;">指標圖例:</span>
+            <span><b style="color: #ff9800;">─</b> 5MA</span>
+            <span><b style="color: #29b6f6;">─</b> 20MA</span>
+            <span><b style="color: #ab47bc;">─</b> 60MA</span>
+            <span><b style="color: #00e676;">〔頭〕</b>綠高轉折</span>
+            <span><b style="color: #e53935;">〔底〕</b>紅低轉折</span>
+            <span><b style="color: #00d2ff;">▲</b> 換手10~20%</span>
+            <span><b style="color: #ffeb3b;">▼</b> 換手≥20%</span>
+        </div>
+        <div style="font-size: 11px; color: #94a3b8; border-top: 1px solid #334155; padding-top: 4px; margin-top: 4px;">
+            系統架構: 模組化獨立運行架構 | 模組版本: [{ver_str}]
+        </div>
+    </div>
     """
-    自適應 iframe 視窗高度：
-    手機端為 1820px，桌面端為 1880px，防止底部資券卡與大戶持股卡邊界截斷。
-    """
-    return 1820 if is_mobile else 1880
 
+def get_component_html(fig_top, fig_btm, df, symbol, m1_level, m2_level, end_idx, disp_n, is_mobile=True):
+    """輸出整合後的雙圖聯動 HTML/JS/CSS 容器"""
+    top_json = fig_top.to_json()
+    btm_json = fig_btm.to_json()
 
-# ==========================================
-# 4. 生成雙圖同步 HTML 與高階 JS 控制核心
-# ==========================================
-def get_component_html(
-    fig_main: go.Figure,
-    fig_sub: go.Figure,
-    df: pd.DataFrame,
-    stock_id: str,
-    stock_name: str
-) -> str:
-    """
-    輸出嵌入式雙圖 HTML/JS：
-    1. 雙圖水平關聯滾輪縮放與 Pan 同步。
-    2. 40ms Debounce 防抖節流。
-    3. span >= 5 邊界 Clamping，消除手機縮放與滾輪死鎖。
-    4. 雙向同步十字線（垂直游標、水平現價線、頂部數據即時連動）。
-    5. 頂部即時報價看板完整保留「換手:X.XX%」。
-    """
-    main_json = fig_main.to_json()
-    sub_json = fig_sub.to_json()
+    # 提取最後一筆或指定基準日的數值看板資料
+    row = df.iloc[end_idx] if end_idx < len(df) else df.iloc[-1]
+    close_p = row.get('Close', 0.0)
+    open_p = row.get('Open', 0.0)
+    high_p = row.get('High', 0.0)
+    low_p = row.get('Low', 0.0)
+    vol_lots = row.get('Volume', 0.0) / 1000.0
+    turnover = row.get('Turnover_Rate', 0.0)
 
-    # 提取即時看板數據
-    last_row = df.iloc[-1]
-    last_date = str(df.index[-1])
-    last_close = f"{last_row['Close']:.2f}"
-    last_volume = f"{int(last_row['Volume'] / 1000):,}"
-    last_turnover = f"{last_row.get('Turnover', 0.0):.2f}"
-    
-    # 漲跌計算
-    prev_close = df.iloc[-2]["Close"] if len(df) > 1 else last_row["Close"]
-    diff = last_row["Close"] - prev_close
-    diff_pct = (diff / prev_close) * 100.0 if prev_close > 0 else 0.0
-    diff_color = "#EF4444" if diff >= 0 else "#10B981"
-    diff_sign = "+" if diff >= 0 else ""
+    # 計算自由流通換手率與大戶比率字串
+    m1_pct = row.get(f"major_{m1_level}_pct", 0.0)
+    m2_pct = row.get(f"major_{m2_level}_pct", 0.0)
 
-    # 轉為前端快速查詢字典 (依日期索引)
-    records_dict = {}
-    for date_str, row in df.iterrows():
-        records_dict[str(date_str)] = {
-            "close": f"{row['Close']:.2f}",
-            "open": f"{row['Open']:.2f}",
-            "high": f"{row['High']:.2f}",
-            "low": f"{row['Low']:.2f}",
-            "volume": f"{int(row['Volume'] / 1000):,}",
-            "turnover": f"{row.get('Turnover', 0.0):.2f}",
-            "ma5": f"{row.get('MA5', 0.0):.2f}" if pd.notna(row.get('MA5')) else "-",
-            "k": f"{row.get('K', 0.0):.1f}" if pd.notna(row.get('K')) else "-",
-            "d": f"{row.get('D', 0.0):.1f}" if pd.notna(row.get('D')) else "-",
-            "foreign": f"{row.get('Foreign_Buy_Sell', 0.0):+.0f}" if pd.notna(row.get('Foreign_Buy_Sell')) else "-",
-            "trust": f"{row.get('Trust_Buy_Sell', 0.0):+.0f}" if pd.notna(row.get('Trust_Buy_Sell')) else "-",
-            "holders1000": f"{row.get('Large_Holders_1000', 0.0):.2f}" if pd.notna(row.get('Large_Holders_1000')) else "-"
-        }
-    dates_json = json.dumps(records_dict, ensure_ascii=False)
+    # 計算初始可視範圍 (消除休市空隙的類別型範圍)
+    total_len = len(df)
+    start_i = max(0, end_idx - disp_n + 1)
+    end_i = end_idx
 
-    html_content = f"""
+    top_h = "450px" if is_mobile else "520px"
+    btm_h = "1300px" if is_mobile else "1300px"
+
+    html_code = f"""
     <!DOCTYPE html>
     <html>
     <head>
-      <meta charset="utf-8" />
-      <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-      <script src="https://cdn.plot.ly/plotly-2.29.1.min.js"></script>
-      <style>
-        body {{
-          margin: 0;
-          padding: 0;
-          background-color: #111827;
-          color: #E5E7EB;
-          font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
-          overflow-x: hidden;
-        }}
-        #sticky-header {{
-          position: sticky;
-          top: 0;
-          z-index: 999;
-          background: rgba(17, 24, 39, 0.95);
-          backdrop-filter: blur(4px);
-          border-bottom: 1px solid #374151;
-          padding: 8px 12px;
-          display: flex;
-          flex-wrap: wrap;
-          align-items: center;
-          justify-content: space-between;
-          font-family: monospace;
-          font-size: 13px;
-        }}
-        .header-title {{
-          font-size: 15px;
-          font-weight: bold;
-          color: #F9FAFB;
-          margin-right: 12px;
-        }}
-        .stat-badge {{
-          margin-right: 10px;
-          color: #D1D5DB;
-        }}
-        .chart-container {{
-          width: 100%;
-          position: relative;
-        }}
-        #main-chart {{
-          height: 520px;
-        }}
-        #sub-chart {{
-          height: 1200px;
-        }}
-      </style>
+        <meta charset="utf-8" />
+        <script src="https://cdn.plot.ly/plotly-2.29.1.min.js"></script>
+        <style>
+            body {{
+                margin: 0;
+                padding: 0;
+                background-color: #121824;
+                font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+                color: #e2e8f0;
+                user-select: none;
+                -webkit-user-select: none;
+            }}
+            #quote-bar {{
+                background-color: #1a2234;
+                padding: 8px 12px;
+                display: flex;
+                flex-wrap: wrap;
+                gap: 12px;
+                font-size: 13px;
+                border-bottom: 1px solid #2d3748;
+                position: sticky;
+                top: 0;
+                z-index: 100;
+            }}
+            .q-item {{ display: flex; gap: 4px; align-items: baseline; }}
+            .q-label {{ color: #94a3b8; font-size: 11px; }}
+            .q-val {{ font-weight: 600; color: #f8fafc; }}
+            #top-chart {{ width: 100%; height: {top_h}; }}
+            #btm-chart {{ width: 100%; height: {btm_h}; }}
+
+            /* 強制 Streamlit 水平區塊在手機端維持 row 並排且縮小按鈕 */
+            @media (max-width: 640px) {{
+                div[data-testid="stHorizontalBlock"] {{
+                    flex-direction: row !important;
+                    flex-wrap: nowrap !important;
+                    gap: 8px !important;
+                }}
+                div[data-testid="stHorizontalBlock"] > div {{
+                    max-width: 130px !important;
+                    flex: 1 1 0% !important;
+                }}
+            }}
+        </style>
     </head>
     <body>
-
-      <div id="sticky-header">
-        <div>
-          <span class="header-title">{stock_name} ({stock_id})</span>
-          <span id="stat-date" class="stat-badge" style="color: #9CA3AF;">{last_date}</span>
-          <span id="stat-close" class="stat-badge" style="font-weight: bold; color: {diff_color};">{last_close} ({diff_sign}{diff:.2f}, {diff_sign}{diff_pct:.2f}%)</span>
+        <div id="quote-bar">
+            <div class="q-item"><span class="q-label">標的:</span><span class="q-val" style="color: #38bdf8;">{symbol}</span></div>
+            <div class="q-item"><span class="q-label">收盤:</span><span class="q-val">{close_p:.2f}</span></div>
+            <div class="q-item"><span class="q-label">開/高/低:</span><span class="q-val">{open_p:.2f} / {high_p:.2f} / {low_p:.2f}</span></div>
+            <div class="q-item"><span class="q-label">成交量:</span><span class="q-val">{vol_lots:,.0f} 張</span></div>
+            <div class="q-item"><span class="q-label">換手:</span><span class="q-val" style="color: #facc15;">{turnover:.2f}%</span></div>
+            <div class="q-item"><span class="q-label">{m1_level}張大戶:</span><span class="q-val" style="color: #c084fc;">{m1_pct:.1f}%</span></div>
+            <div class="q-item"><span class="q-label">{m2_level}張大戶:</span><span class="q-val" style="color: #2dd4bf;">{m2_pct:.1f}%</span></div>
         </div>
-        <div style="font-size: 12px;">
-          <span class="stat-badge">量: <b id="stat-volume" style="color: #F3F4F6;">{last_volume}</b> 張</span>
-          <span class="stat-badge">換手: <b id="stat-turnover" style="color: #38BDF8;">{last_turnover}%</b></span>
-          <span class="stat-badge" style="color: #A78BFA;">大戶≥1000張: <b id="stat-holders">{records_dict[last_date]['holders1000']}%</b></span>
-        </div>
-      </div>
 
-      <div class="chart-container">
-        <div id="main-chart"></div>
-      </div>
-      <div class="chart-container">
-        <div id="sub-chart"></div>
-      </div>
+        <div id="top-chart"></div>
+        <div id="btm-chart"></div>
 
-      <script>
-        const mainData = {main_json};
-        const subData = {sub_json};
-        const stockDataMap = {dates_json};
+        <script>
+            var topData = {top_json};
+            var btmData = {btm_json};
 
-        const config = {{
-          responsive: true,
-          displayModeBar: false,
-          scrollZoom: true
-        }};
+            var topPlot = document.getElementById('top-chart');
+            var btmPlot = document.getElementById('btm-chart');
 
-        Plotly.newPlot('main-chart', mainData.data, mainData.layout, config);
-        Plotly.newPlot('sub-chart', subData.data, subData.layout, config);
-
-        const mainEl = document.getElementById('main-chart');
-        const subEl = document.getElementById('sub-chart');
-
-        let isSyncing = false;
-        let debounceTimer = null;
-
-        // 40ms 防抖同步與 span >= 5 邊界 Clamping
-        function syncZoom(sourceEl, targetEl) {{
-          sourceEl.on('plotly_relayout', function(eventData) {{
-            if (isSyncing) return;
-            if (!eventData['xaxis.range[0]'] && !eventData['xaxis.range']) return;
-
-            clearTimeout(debounceTimer);
-            debounceTimer = setTimeout(() => {{
-              isSyncing = true;
-              let x0 = eventData['xaxis.range[0]'];
-              let x1 = eventData['xaxis.range[1]'];
-
-              // 邊界 Clamping: 縮放最小跨度不少於 5 個 Bar，防死鎖
-              if (typeof x0 === 'number' && typeof x1 === 'number') {{
-                if (Math.abs(x1 - x0) < 5) {{
-                  const center = (x0 + x1) / 2;
-                  x0 = center - 2.5;
-                  x1 = center + 2.5;
-                }}
-              }}
-
-              const update = {{
-                'xaxis.range[0]': x0,
-                'xaxis.range[1]': x1
-              }};
-
-              Plotly.relayout(targetEl, update).then(() => {{
-                isSyncing = false;
-              }}).catch(() => {{
-                isSyncing = false;
-              }});
-            }}, 40);
-          }});
-        }}
-
-        syncZoom(mainEl, subEl);
-        syncZoom(subEl, mainEl);
-
-        // 雙圖即時十字線與頂部數據看板聯動
-        function bindHover(sourceEl) {{
-          sourceEl.on('plotly_hover', function(data) {{
-            if (!data.points || data.points.length === 0) return;
-            const pt = data.points[0];
-            const xDate = pt.x;
-            if (stockDataMap[xDate]) {{
-              const d = stockDataMap[xDate];
-              document.getElementById('stat-date').innerText = xDate;
-              document.getElementById('stat-close').innerText = d.close;
-              document.getElementById('stat-volume').innerText = d.volume;
-              document.getElementById('stat-turnover').innerText = d.turnover + '%';
-              document.getElementById('stat-holders').innerText = d.holders1000 + '%';
+            // 初始範圍配置 (類別座標)
+            var initRange = [{start_i} - 0.5, {end_i} + 0.5];
+            
+            topData.layout.xaxis.range = initRange;
+            if (topData.layout.xaxis2) topData.layout.xaxis2.range = initRange;
+            btmData.layout.xaxis.range = initRange;
+            for (var i = 2; i <= 9; i++) {{
+                if (btmData.layout['xaxis' + i]) btmData.layout['xaxis' + i].range = initRange;
             }}
-          }});
-        }}
 
-        bindHover(mainEl);
-        bindHover(subEl);
-      </script>
+            Plotly.newPlot('top-chart', topData.data, topData.layout, {{responsive: true, displayModeBar: false}});
+            Plotly.newPlot('btm-chart', btmData.data, btmData.layout, {{responsive: true, displayModeBar: false}});
+
+            // 雙向滾輪與縮放同步 (附 40ms 防抖與邊界防死鎖)
+            var isSyncing = false;
+            var syncTimer = null;
+
+            function syncZoom(sourcePlot, targetPlot) {{
+                sourcePlot.on('plotly_relayout', function(eventdata) {{
+                    if (isSyncing) return;
+                    if (eventdata['xaxis.range[0]'] !== undefined && eventdata['xaxis.range[1]'] !== undefined) {{
+                        var x0 = eventdata['xaxis.range[0]'];
+                        var x1 = eventdata['xaxis.range[1]'];
+                        
+                        // 邊界防護：最少維持 5 根 K 棒
+                        if ((x1 - x0) < 5) return;
+
+                        isSyncing = true;
+                        clearTimeout(syncTimer);
+                        syncTimer = setTimeout(function() {{
+                            var update = {{
+                                'xaxis.range[0]': x0,
+                                'xaxis.range[1]': x1
+                            }};
+                            Plotly.relayout(targetPlot, update).then(function() {{
+                                isSyncing = false;
+                            }});
+                        }}, 40);
+                    }}
+                }});
+            }}
+
+            syncZoom(topPlot, btmPlot);
+            syncZoom(btmPlot, topPlot);
+        </script>
     </body>
     </html>
     """
-    return html_content
+    return html_code
