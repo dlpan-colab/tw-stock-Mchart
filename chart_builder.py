@@ -1,12 +1,10 @@
 """
 台股技術與籌碼分析系統 - Plotly 雙圖繪製模組
-負責主圖（K 線、5/20/60MA、頭底標籤、成交量柱、換手率正倒三角標記）
-與副圖（9 大技術及籌碼子圖）之繪製，計算初始可視範圍與動態月份 X 軸標籤。
-完全相容 app.py 的 build_split_figures 呼叫規格與回傳格式。
+負責主圖與副圖繪製，計算可視範圍與動態刻度。
 """
 
 MODULE_NAME = "chart_builder"
-MODULE_VERSION = "202610280150"
+MODULE_VERSION = "202610280200"
 
 from typing import Optional, Tuple
 import numpy as np
@@ -40,7 +38,6 @@ def render_split_figures_from_df(
     total_len = len(df)
     disp_n = min(int(display_days), total_len)
 
-    # 1. 基準日定位與可視範圍計算
     end_idx = total_len - 1
     if base_date is not None:
         try:
@@ -56,13 +53,11 @@ def render_split_figures_from_df(
     start_idx = max(0, end_idx - disp_n + 1)
     sub_df = df.iloc[start_idx:end_idx + 1]
 
-    # 主圖價格與成交量初始範圍
     p_max, p_min = float(sub_df['High'].max()), float(sub_df['Low'].min())
     p_pad = (p_max - p_min) * 0.12 if p_max > p_min else 2.0
     vol_col = 'Volume_Sheets' if 'Volume_Sheets' in sub_df.columns else 'Volume'
     vol_upper = float(sub_df[vol_col].max()) * 1.30 if not sub_df[vol_col].empty else 1000.0
 
-    # 2. X 軸月份刻度產生
     month_ticks_vals, month_ticks_text = [], []
     cur_m = None
     for i, d in enumerate(df.index):
@@ -72,13 +67,11 @@ def render_split_figures_from_df(
             month_ticks_vals.append(date_str_list[i])
             month_ticks_text.append(d.strftime('%m月'))
 
-    # 上色樣式定義
     vol_colors = ['#eb4d4b' if c >= o else '#2ecc71' for c, o in zip(df['Close'], df['Open'])]
     osc_colors = ['#eb4d4b' if val >= 0 else '#2ecc71' for val in df.get('OSC', pd.Series(dtype=float)).fillna(0)]
     m_colors = ['#eb4d4b' if val >= 0 else '#2ecc71' for val in df.get('Margin_Diff', pd.Series(dtype=float)).fillna(0)]
     s_colors = ['#f1c40f' if val >= 0 else '#3498db' for val in df.get('Short_Diff', pd.Series(dtype=float)).fillna(0)]
 
-    # 3. 副圖極值與軸邊距計算
     sub_obv = sub_df.get('OBV', pd.Series(dtype=float)).dropna()
     sub_obv_ma = sub_df.get('OBV_MA20', pd.Series(dtype=float)).dropna()
     obv_min = float(min(sub_obv.min(), sub_obv_ma.min())) if not sub_obv_ma.empty else (float(sub_obv.min()) if not sub_obv.empty else 0.0)
@@ -129,7 +122,6 @@ def render_split_figures_from_df(
     top_height = 340 if is_mobile else 380
     btm_height = 1050 if is_mobile else 1150
 
-    # 4. 主圖繪製 (fig_top)
     fig_top = make_subplots(
         rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.035, row_heights=[0.72, 0.28]
     )
@@ -149,7 +141,6 @@ def render_split_figures_from_df(
     if 'MA60' in df:
         fig_top.add_trace(go.Scatter(x=date_str_list, y=df['MA60'], line=dict(color='#9b59b6', width=1.2), name='MA60', hoverinfo='none'), row=1, col=1)
 
-    # 精確依據索引繪製頭底
     if 'Is_Head' in df:
         head_indices = [i for i, v in enumerate(df['Is_Head']) if v]
         if head_indices:
@@ -222,7 +213,6 @@ def render_split_figures_from_df(
     fig_top.update_yaxes(title_text='價格', range=[p_min - (p_max - p_min) * 0.08, p_max + p_pad], fixedrange=True, row=1, col=1)
     fig_top.update_yaxes(title_text='成交量', range=[0, vol_upper], fixedrange=True, row=2, col=1)
 
-    # 5. 副圖繪製 (fig_btm: 9 大子圖)
     fig_btm = make_subplots(
         rows=9, cols=1, shared_xaxes=True, vertical_spacing=0.02,
         row_heights=[0.13, 0.12, 0.11, 0.10, 0.10, 0.10, 0.14, 0.10, 0.10],
