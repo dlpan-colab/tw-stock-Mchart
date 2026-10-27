@@ -1,11 +1,11 @@
 # ==============================================================================
 # 模組名稱: app
-# 模組版本: 202610271450
-# 核心職責: 主程式進入點、Colab/Streamlit 雙環境路由、UI 狀態管理與巡航導航
+# 模組版本: 202610280020
+# 核心職責: 主程式進入點、啟動自動拉取 Drive 資料庫、UI 狀態管理與巡航導航
 # ==============================================================================
 
 MODULE_NAME = "app"
-MODULE_VERSION = "202610271450"
+MODULE_VERSION = "202610280020"
 
 import re
 from datetime import datetime
@@ -16,6 +16,15 @@ from storage import load_stock_history, save_stock_history, clear_stock_history
 from data_fetcher import get_stock_chinese_name
 from chart_builder import build_split_figures
 from frontend import get_component_html, get_legend_html
+
+# 嘗試在系統最優先載入時，自 Google Drive 拉回既有的 SQLite 資料庫與歷程清單
+try:
+    import cloud_sync
+    cloud_sync.pull_from_drive(config.DB_FILE)
+    cloud_sync.pull_from_drive(config.HISTORY_FILE)
+    cloud_sync.pull_from_drive(config.NAME_CACHE_FILE)
+except Exception:
+    pass
 
 # 收集所有已載入模組之版本號
 SYSTEM_VERSIONS = {
@@ -173,13 +182,13 @@ else:
     import streamlit as st
     import streamlit.components.v1 as components
 
+    # 確保首次進網頁時載入歷史清單
     stock_hist = load_stock_history()
     hist_options = [f"{h['code']} ({h['name']})" if h.get('name') else h['code'] for h in stock_hist]
 
     if "ticker_input" not in st.session_state:
         st.session_state["ticker_input"] = "1303"
 
-    # 巡航導航回呼函式：僅更換代碼，絕不重新置頂歷史紀錄
     def on_prev_click():
         hist = load_stock_history()
         if hist:
