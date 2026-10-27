@@ -1,0 +1,12 @@
+streamlit
+yfinance
+plotly
+pandas
+numpy
+requests
+beautifulsoup4
+FinMind
+google-api-python-client
+google-auth
+google-auth-oauthlib
+google-auth-httplib2
