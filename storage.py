@@ -1,183 +1,260 @@
 """
 台股技術與籌碼分析系統 - 本地與歷史資料管理模組
 封裝 SQLite 資料庫操作（三大法人、融券融資、集保持股分級），
-並管理歷史個股清單的持久化讀寫。
-
-【防護規則】
-點擊巡航導航（上一個/下一個）切換個股時，嚴禁呼叫置頂寫入操作，
-避免造成索引洗牌與死循環；僅在手動點擊「查詢」時才執行置頂存檔。
+並管理歷史個股清單與中文名稱快取。
 """
-# ==============================================================================
-# 模組名稱: storage
-# 模組版本: 202610271500
-# 核心職責: 本地 SQLite 資料庫讀寫、歷程紀錄持久化（絕不隨意洗牌順序）
-# ==============================================================================
 
 MODULE_NAME = "storage"
-MODULE_VERSION = "202610271500"
+MODULE_VERSION = "202610280100"
 
 import os
 import json
 import sqlite3
+import logging
+from pathlib import Path
+from typing import List, Dict, Optional
 import pandas as pd
-from datetime import datetime
-import config
 
-# ------------------------------------------------------------------------------
-# 1. 歷史紀錄持久化管理
-# ------------------------------------------------------------------------------
-def load_stock_history():
-    """讀取歷史查詢清單 (維持原始儲存順序，不洗牌)"""
-    path = config.HISTORY_FILE
-    if os.path.exists(path):
+from config import (
+    DATA_DIR,
+    DB_FILE_PATH,
+    HISTORY_FILE_PATH,
+    STOCK_NAMES_CACHE_PATH,
+    IS_COLAB
+)
+
+logger = logging.getLogger(__name__)
+
+# ==========================================
+# 1. 股票晶片資料庫存取類別 (StockChipStorage)
+# ==========================================
+class StockChipStorage:
+    def __init__(self, pure_code: str):
+        self.pure_code = str(pure_code).strip().upper()
+        self.db_name = f"data_{self.pure_code}.db"
+        self.db_path = str(DATA_DIR / self.db_name)
+        
+        # 雲端同步支援
         try:
-            with open(path, "r", encoding="utf-8") as f:
-                data = json.load(f)
-                if isinstance(data, list):
-                    return data
+            from cloud_sync import drive_sync
+            if not IS_COLAB and drive_sync.enabled and not os.path.exists(self.db_path):
+                drive_sync.pull(self.db_name, self.db_path)
         except Exception:
             pass
+
+        self.is_first_time = not os.path.exists(self.db_path)
+        self._init_db()
+
+    def _init_db(self):
+        with sqlite3.connect(self.db_path) as conn:
+            cur = conn.cursor()
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS institutional_investors (
+                    date TEXT PRIMARY KEY,
+                    foreign_net REAL,
+                    trust_net REAL,
+                    dealer_net REAL
+                )
+            """)
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS shareholding_distribution (
+                    date TEXT,
+                    level INTEGER,
+                    percent REAL,
+                    PRIMARY KEY (date, level)
+                )
+            """)
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS margin_short (
+                    date TEXT PRIMARY KEY,
+                    margin_diff REAL,
+                    short_diff REAL,
+                    margin_bal REAL,
+                    short_bal REAL
+                )
+            """)
+            conn.commit()
+
+    def get_latest_inst_date(self) -> Optional[str]:
+        with sqlite3.connect(self.db_path) as conn:
+            cur = conn.cursor()
+            cur.execute("SELECT MAX(date) FROM institutional_investors")
+            row = cur.fetchone()
+            return row[0] if row and row[0] else None
+
+    def get_latest_holding_date(self) -> Optional[str]:
+        with sqlite3.connect(self.db_path) as conn:
+            cur = conn.cursor()
+            cur.execute("SELECT MAX(date) FROM shareholding_distribution")
+            row = cur.fetchone()
+            return row[0] if row and row[0] else None
+
+    def get_latest_margin_date(self) -> Optional[str]:
+        with sqlite3.connect(self.db_path) as conn:
+            cur = conn.cursor()
+            cur.execute("SELECT MAX(date) FROM margin_short")
+            row = cur.fetchone()
+            return row[0] if row and row[0] else None
+
+    def save_institutional_data(self, records: list):
+        if not records:
+            return
+        with sqlite3.connect(self.db_path) as conn:
+            cur = conn.cursor()
+            cur.executemany("""
+                INSERT OR REPLACE INTO institutional_investors (date, foreign_net, trust_net, dealer_net)
+                VALUES (?, ?, ?, ?)
+            """, records)
+            conn.commit()
+        try:
+            from cloud_sync import drive_sync
+            if not IS_COLAB and drive_sync.enabled:
+                drive_sync.push(self.db_path, self.db_name)
+        except Exception:
+            pass
+
+    def save_holding_data(self, records: list):
+        if not records:
+            return
+        with sqlite3.connect(self.db_path) as conn:
+            cur = conn.cursor()
+            cur.executemany("""
+                INSERT OR REPLACE INTO shareholding_distribution (date, level, percent)
+                VALUES (?, ?, ?)
+            """, records)
+            conn.commit()
+        try:
+            from cloud_sync import drive_sync
+            if not IS_COLAB and drive_sync.enabled:
+                drive_sync.push(self.db_path, self.db_name)
+        except Exception:
+            pass
+
+    def save_margin_data(self, records: list):
+        if not records:
+            return
+        with sqlite3.connect(self.db_path) as conn:
+            cur = conn.cursor()
+            cur.executemany("""
+                INSERT OR REPLACE INTO margin_short (date, margin_diff, short_diff, margin_bal, short_bal)
+                VALUES (?, ?, ?, ?, ?)
+            """, records)
+            conn.commit()
+        try:
+            from cloud_sync import drive_sync
+            if not IS_COLAB and drive_sync.enabled:
+                drive_sync.push(self.db_path, self.db_name)
+        except Exception:
+            pass
+
+    def load_institutional_df(self) -> pd.DataFrame:
+        with sqlite3.connect(self.db_path) as conn:
+            df = pd.read_sql("SELECT date, foreign_net, trust_net, dealer_net FROM institutional_investors ORDER BY date", conn)
+            if not df.empty:
+                df['date'] = pd.to_datetime(df['date']).dt.normalize()
+            return df
+
+    def load_holding_df(self) -> pd.DataFrame:
+        with sqlite3.connect(self.db_path) as conn:
+            df = pd.read_sql("SELECT date, level, percent FROM shareholding_distribution ORDER BY date, level", conn)
+            if not df.empty:
+                df['date'] = pd.to_datetime(df['date']).dt.normalize()
+            return df
+
+    def load_margin_df(self) -> pd.DataFrame:
+        with sqlite3.connect(self.db_path) as conn:
+            df = pd.read_sql("SELECT * FROM margin_short ORDER BY date", conn)
+            if not df.empty:
+                df['date'] = pd.to_datetime(df['date']).dt.normalize()
+            return df
+
+
+# ==========================================
+# 2. 歷史個股清單管理
+# ==========================================
+def load_stock_history() -> List[dict]:
+    history_file = str(HISTORY_FILE_PATH)
+    try:
+        from cloud_sync import drive_sync
+        if not IS_COLAB and drive_sync.enabled:
+            drive_sync.pull("stock_history.json", history_file)
+    except Exception:
+        pass
+
+    if os.path.exists(history_file):
+        try:
+            with open(history_file, "r", encoding="utf-8") as f:
+                data = json.load(f)
+                if isinstance(data, list) and data:
+                    # 統一結構為 [{'code': ..., 'name': ...}, ...]
+                    formatted = []
+                    for item in data:
+                        if isinstance(item, dict):
+                            formatted.append(item)
+                        elif isinstance(item, str):
+                            formatted.append({"code": item, "name": item})
+                    return formatted
+        except Exception:
+            pass
+
+    return [
+        {"code": "1303", "name": "南亞"},
+        {"code": "6217", "name": "中探針"},
+        {"code": "2609", "name": "陽明"},
+        {"code": "2615", "name": "萬海"},
+        {"code": "8111", "name": "立碁"},
+        {"code": "4526", "name": "東台"},
+        {"code": "2330", "name": "台積電"}
+    ]
+
+def save_stock_history(code: str, name: str = "") -> List[dict]:
+    code = str(code).strip().upper()
+    history = load_stock_history()
+    new_hist = [h for h in history if h.get("code") != code]
+    new_hist.insert(0, {"code": code, "name": name or code})
+    new_hist = new_hist[:30]
+    
+    history_file = str(HISTORY_FILE_PATH)
+    try:
+        with open(history_file, "w", encoding="utf-8") as f:
+            json.dump(new_hist, f, ensure_ascii=False, indent=2)
+        from cloud_sync import drive_sync
+        if not IS_COLAB and drive_sync.enabled:
+            drive_sync.push(history_file, "stock_history.json")
+    except Exception:
+        pass
+    return new_hist
+
+def clear_stock_history() -> List[dict]:
+    history_file = str(HISTORY_FILE_PATH)
+    try:
+        if os.path.exists(history_file):
+            os.remove(history_file)
+        from cloud_sync import drive_sync
+        if not IS_COLAB and drive_sync.enabled:
+            drive_sync.delete("stock_history.json")
+    except Exception:
+        pass
     return []
 
-def save_stock_history(code, name):
-    """將查詢成功的標的置頂存入歷史紀錄 (手動查詢時才呼叫)"""
-    if not code:
-        return
-    code = str(code).strip()
-    name = str(name).strip() if name else ""
-    
-    hist = load_stock_history()
-    # 移除舊有相同代碼，將最新查詢項目置頂
-    hist = [h for h in hist if h.get("code") != code]
-    hist.insert(0, {"code": code, "name": name, "time": datetime.now().strftime("%Y-%m-%d %H:%M")})
-    
-    # 保持最多 30 筆
-    hist = hist[:30]
-    
+
+# ==========================================
+# 3. 中文名稱快取讀寫
+# ==========================================
+def load_stock_names_cache() -> Dict[str, str]:
+    cache_path = str(STOCK_NAMES_CACHE_PATH)
+    if not os.path.exists(cache_path):
+        return {}
     try:
-        os.makedirs(os.path.dirname(config.HISTORY_FILE), exist_ok=True)
+        with open(cache_path, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+def save_stock_names_cache(cache_data: Dict[str, str]):
+    cache_path = str(STOCK_NAMES_CACHE_PATH)
+    try:
+        with open(cache_path, "w", encoding="utf-8") as f:
+            json.dump(cache_data, f, ensure_ascii=False, indent=2)
     except Exception:
         pass
-
-    try:
-        with open(config.HISTORY_FILE, "w", encoding="utf-8") as f:
-            json.dump(hist, f, ensure_ascii=False, indent=2)
-    except Exception:
-        pass
-
-    # 嘗試背景觸發 Google Drive 同步
-    try:
-        import cloud_sync
-        cloud_sync.push_to_drive(config.HISTORY_FILE)
-    except Exception:
-        pass
-
-def clear_stock_history():
-    """清除歷史紀錄"""
-    path = config.HISTORY_FILE
-    if os.path.exists(path):
-        try:
-            os.remove(path)
-        except Exception:
-            pass
-    try:
-        import cloud_sync
-        cloud_sync.delete_from_drive(os.path.basename(path))
-    except Exception:
-        pass
-
-# ------------------------------------------------------------------------------
-# 2. SQLite 籌碼資料表管理
-# ------------------------------------------------------------------------------
-def get_db_connection():
-    """取得 SQLite 連線並初始化資料表"""
-    try:
-        os.makedirs(os.path.dirname(config.DB_FILE), exist_ok=True)
-    except Exception:
-        pass
-    conn = sqlite3.connect(config.DB_FILE)
-    init_db(conn)
-    return conn
-
-def init_db(conn):
-    """建立三大法人、資券與集保分級表格"""
-    cursor = conn.cursor()
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS chip_summary (
-            date TEXT,
-            symbol TEXT,
-            foreign_buy REAL,
-            trust_buy REAL,
-            dealer_buy REAL,
-            margin_balance REAL,
-            margin_change REAL,
-            short_balance REAL,
-            short_change REAL,
-            short_ratio REAL,
-            PRIMARY KEY (date, symbol)
-        )
-    ''')
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS tdcc_distribution (
-            date TEXT,
-            symbol TEXT,
-            level INTEGER,
-            holders INTEGER,
-            shares REAL,
-            percent REAL,
-            PRIMARY KEY (date, symbol, level)
-        )
-    ''')
-    conn.commit()
-
-def load_chip_from_db(symbol, start_date):
-    """自本地 SQLite 讀取三大法人與資券數據"""
-    conn = get_db_connection()
-    query = """
-        SELECT * FROM chip_summary 
-        WHERE symbol = ? AND date >= ?
-        ORDER BY date ASC
-    """
-    try:
-        df = pd.read_sql_query(query, conn, params=(symbol, start_date))
-        return df
-    finally:
-        conn.close()
-
-def save_chip_to_db(df):
-    """將抓取的法人資券數據批次存入 SQLite"""
-    if df is None or df.empty:
-        return
-    conn = get_db_connection()
-    try:
-        df.to_sql('chip_summary', conn, if_exists='append', index=False)
-    except Exception:
-        pass
-    finally:
-        conn.close()
-
-def load_tdcc_from_db(symbol):
-    """自本地 SQLite 讀取集保戶股權分級歷史"""
-    conn = get_db_connection()
-    query = """
-        SELECT * FROM tdcc_distribution 
-        WHERE symbol = ?
-        ORDER BY date ASC, level ASC
-    """
-    try:
-        df = pd.read_sql_query(query, conn, params=(symbol,))
-        return df
-    finally:
-        conn.close()
-
-def save_tdcc_to_db(df):
-    """將集保股權分級資料存入 SQLite"""
-    if df is None or df.empty:
-        return
-    conn = get_db_connection()
-    try:
-        df.to_sql('tdcc_distribution', conn, if_exists='append', index=False)
-    except Exception:
-        pass
-    finally:
-        conn.close()
