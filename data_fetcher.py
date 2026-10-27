@@ -5,382 +5,317 @@ TDCC 集保大戶分級增量爬蟲、FinMind 法人與資券同步、ISIN 股�
 相容 Streamlit Cloud 與 Google Colab 雙執行環境。
 """
 
+# ==============================================================================
+# 模組名稱: data_fetcher
+# 模組版本: 202610271510
+# 核心職責: 外部資料擷取、ISIN中文名稱爬蟲、yfinance清洗、FinMind與TDCC爬蟲
+# ==============================================================================
+
 MODULE_NAME = "data_fetcher"
-MODULE_VERSION = "202610271400"
+MODULE_VERSION = "202610271510"
 
-import datetime
-import io
-import logging
+import os
 import re
-import urllib.parse
-from typing import Dict, List, Optional, Tuple
-
-import pandas as pd
+import json
+import logging
+from datetime import datetime, timedelta
 import requests
 from bs4 import BeautifulSoup
+import pandas as pd
+import numpy as np
+import yfinance as yf
 
-from config import (
-    COMMON_STOCKS,
-    DEFAULT_LOOKBACK_DAYS,
-    TDCC_INCREMENTAL_WEEKS_LIMIT,
-)
+import config
 from storage import (
-    db_manager,
-    load_stock_names_cache,
-    save_stock_names_cache,
+    load_chip_from_db,
+    save_chip_to_db,
+    load_tdcc_from_db,
+    save_tdcc_to_db
 )
 
-# 靜音 yfinance 內部常見的 404 與冗餘日誌
-logging.getLogger("yfinance").setLevel(logging.CRITICAL)
-logger = logging.getLogger(__name__)
+# 靜音 yfinance 內部 404 探測日誌
+logging.getLogger('yfinance').setLevel(logging.CRITICAL)
 
+# ------------------------------------------------------------------------------
+# 1. ISIN 中文名稱爬蟲與本地快取
+# ------------------------------------------------------------------------------
+def get_stock_chinese_name(symbol):
+    """自本地快取或 TWSE ISIN 系統取得股票標準中文名稱"""
+    pure_code = re.search(r'\d+', str(symbol))
+    code = pure_code.group(0) if pure_code else str(symbol).strip()
+    
+    # 讀取本地快取
+    cache = {}
+    if os.path.exists(config.NAME_CACHE_FILE):
+        try:
+            with open(config.NAME_CACHE_FILE, 'r', encoding='utf-8') as f:
+                cache = json.load(f)
+                if code in cache:
+                    return cache[code]
+        except Exception:
+            pass
 
-# ==========================================
-# 1. 股票中文名稱模組 (ISIN 與快取)
-# ==========================================
-def get_tw_stock_name(stock_id: str) -> str:
-    """
-    取得台股中文名稱：
-    1. 查本地快取 tw_stock_names.json
-    2. 查 config.py 內建常用字典
-    3. 爬取臺灣證券交易所 ISIN 目錄並自動寫入快取
-    """
-    stock_id = str(stock_id).strip().upper()
-    cache = load_stock_names_cache()
+    # 查表備援
+    if code in config.COMMON_STOCK_MAP:
+        return config.COMMON_STOCK_MAP[code]
 
-    if stock_id in cache:
-        return cache[stock_id]
-    if stock_id in COMMON_STOCKS:
-        cache[stock_id] = COMMON_STOCKS[stock_id]
-        save_stock_names_cache(cache)
-        return cache[stock_id]
-
-    # 嘗試從 TWSE ISIN 查詢
+    # 爬取臺灣證券交易所 ISIN
+    url = f"https://isin.twse.com.tw/isin/single_main.jsp?owncode={code}&stockname="
+    headers = {"User-Agent": "Mozilla/5.0"}
     try:
-        url = "https://isin.twse.com.tw/isin/C_public.jsp?strMode=2"  # 上市
-        resp = requests.get(url, timeout=10)
-        resp.encoding = "big5-hkscs"
-
-        soup = BeautifulSoup(resp.text, "html.parser")
-        table = soup.find("table", {"class": "h4"})
-        if table:
-            for tr in table.find_all("tr"):
-                tds = tr.find_all("td")
-                if len(tds) > 1:
-                    raw_code_name = tds[0].text.strip()
-                    parts = raw_code_name.split("\u3000")
-                    if len(parts) == 2:
-                        code, name = parts[0].strip(), parts[1].strip()
-                        cache[code] = name
-
-        # 若未找到，查上櫃模式
-        if stock_id not in cache:
-            url_otc = "https://isin.twse.com.tw/isin/C_public.jsp?strMode=4"  # 上櫃
-            resp_otc = requests.get(url_otc, timeout=10)
-            resp_otc.encoding = "big5-hkscs"
-            soup_otc = BeautifulSoup(resp_otc.text, "html.parser")
-            table_otc = soup_otc.find("table", {"class": "h4"})
-            if table_otc:
-                for tr in table_otc.find_all("tr"):
-                    tds = tr.find_all("td")
-                    if len(tds) > 1:
-                        raw_code_name = tds[0].text.strip()
-                        parts = raw_code_name.split("\u3000")
-                        if len(parts) == 2:
-                            code, name = parts[0].strip(), parts[1].strip()
-                            cache[code] = name
-
-        save_stock_names_cache(cache)
-        if stock_id in cache:
-            return cache[stock_id]
-    except Exception as e:
-        logger.warning(f"爬取 ISIN 中文名稱失敗: {e}")
-
-    return stock_id
-
-
-# ==========================================
-# 2. yfinance 日 K 抓取與盤中補點防護
-# ==========================================
-def fetch_kline_data(stock_id: str, lookback_days: int = DEFAULT_LOOKBACK_DAYS) -> Tuple[pd.DataFrame, float]:
-    """
-    抓取台股日 K 資料並執行嚴格清洗：
-    1. 支援上市 (.TW) 與上櫃 (.TWO) 自動嘗試。
-    2. 強制全域過濾 df['Volume'] > 0，杜絕休市日假 K 線。
-    3. 盤中補點防護：必須於 09:00 後且 fast_info.last_volume > 0 始補點。
-    回傳 (清洗後日 K DataFrame, 總發行股數 shares_outstanding)。
-    """
-    import yfinance as yf
-
-    stock_id = str(stock_id).strip().upper()
-    end_dt = datetime.datetime.now()
-    start_dt = end_dt - datetime.timedelta(days=int(lookback_days * 1.5))
-
-    ticker_str = f"{stock_id}.TW"
-    ticker = yf.Ticker(ticker_str)
-    df = ticker.history(start=start_dt.strftime("%Y-%m-%d"), end=(end_dt + datetime.timedelta(days=1)).strftime("%Y-%m-%d"), auto_adjust=False)
-
-    if df.empty or len(df) < 5:
-        ticker_str = f"{stock_id}.TWO"
-        ticker = yf.Ticker(ticker_str)
-        df = ticker.history(start=start_dt.strftime("%Y-%m-%d"), end=(end_dt + datetime.timedelta(days=1)).strftime("%Y-%m-%d"), auto_adjust=False)
-
-    if df.empty:
-        return pd.DataFrame(), 0.0
-
-    # 取得發行股數
-    shares_outstanding = 0.0
-    try:
-        if hasattr(ticker, "fast_info") and ticker.fast_info:
-            shares_outstanding = float(getattr(ticker.fast_info, "shares", 0.0) or 0.0)
+        resp = requests.get(url, headers=headers, timeout=5)
+        if resp.status_code == 200:
+            resp.encoding = 'big5'
+            soup = BeautifulSoup(resp.text, 'html.parser')
+            table = soup.find('table', class_='h4')
+            if table:
+                rows = table.find_all('tr')
+                if len(rows) > 1:
+                    cols = rows[1].find_all('td')
+                    if len(cols) >= 3:
+                        c_name = cols[2].text.strip()
+                        if c_name:
+                            cache[code] = c_name
+                            try:
+                                with open(config.NAME_CACHE_FILE, 'w', encoding='utf-8') as f:
+                                    json.dump(cache, f, ensure_ascii=False, indent=2)
+                            except Exception:
+                                pass
+                            return c_name
     except Exception:
-        shares_outstanding = 0.0
+        pass
 
-    # 索引時區正規化為 YYYY-MM-DD 字串
-    df.index = pd.to_datetime(df.index).tz_localize(None).strftime("%Y-%m-%d")
-    df.index.name = "Date"
-    df = df.reset_index().drop_duplicates(subset=["Date"], keep="last").set_index("Date")
+    return code
 
-    # 【避坑規範 1】：強制過濾 Volume > 0，剔除休市日填補昨收的假 K 線
-    df = df[df["Volume"] > 0].copy()
+# ------------------------------------------------------------------------------
+# 2. yfinance 日 K 線清洗與盤中補點防護
+# ------------------------------------------------------------------------------
+def fetch_stock_data(symbol, period='1y'):
+    """下載日 K 線並執行嚴格清洗（剔除國定休市 0 成交量假 K 線）"""
+    pure_code = re.search(r'\d+', str(symbol))
+    code = pure_code.group(0) if pure_code else str(symbol).strip()
 
-    # 【避坑規範 2】：盤中即時資料補點 (fast_info)
+    df = None
+    suffix_list = ['.TW', '.TWO', '']
+    ticker_obj = None
+
+    for sfx in suffix_list:
+        try:
+            tk = yf.Ticker(f"{code}{sfx}")
+            temp_df = tk.history(period=period)
+            if temp_df is not None and not temp_df.empty:
+                df = temp_df
+                ticker_obj = tk
+                break
+        except Exception:
+            continue
+
+    if df is None or df.empty:
+        return None, 0
+
+    # 嚴格全域清洗：必須刪除空值與 0 成交量的休市假資料
+    df = df.dropna(subset=['Open', 'High', 'Low', 'Close'])
+    df = df[df['Volume'] > 0]
+    if df.empty:
+        return None, 0
+
+    # 取得在外流通股數
+    shares = 0
     try:
-        now_dt = datetime.datetime.now()
-        is_weekday = now_dt.weekday() < 5
-        is_after_market_open = now_dt.time() >= datetime.time(9, 0)
+        shares = ticker_obj.fast_info.shares
+    except Exception:
+        try:
+            shares = ticker_obj.info.get('sharesOutstanding', 0)
+        except Exception:
+            shares = 0
 
-        if is_weekday and is_after_market_open and hasattr(ticker, "fast_info") and ticker.fast_info:
-            fast = ticker.fast_info
-            last_vol = float(getattr(fast, "last_volume", 0) or 0)
-            last_price = float(getattr(fast, "last_price", 0) or 0)
-            today_str = now_dt.strftime("%Y-%m-%d")
+    # 盤中即時補點防護（必須 09:00 後且有實質成交量）
+    now_dt = datetime.now()
+    if now_dt.time() >= datetime.strptime("09:00", "%H:%M").time():
+        try:
+            fi = ticker_obj.fast_info
+            last_vol = getattr(fi, 'last_volume', 0)
+            last_price = getattr(fi, 'last_price', 0)
+            if last_vol and last_vol > 0 and last_price and last_price > 0:
+                last_dt = df.index[-1].date()
+                if last_dt < now_dt.date():
+                    # 追加今日盤中臨時 Bar
+                    new_row = pd.DataFrame({
+                        'Open': [fi.open if hasattr(fi, 'open') else last_price],
+                        'High': [fi.day_high if hasattr(fi, 'day_high') else last_price],
+                        'Low': [fi.day_low if hasattr(fi, 'day_low') else last_price],
+                        'Close': [last_price],
+                        'Volume': [last_vol]
+                    }, index=[pd.Timestamp(now_dt.date())])
+                    df = pd.concat([df, new_row])
+        except Exception:
+            pass
 
-            if last_vol > 0 and last_price > 0:
-                # 若當日尚未收錄，或最後一筆成交量落後於 fast_info，執行補點
-                if (today_str not in df.index) or (today_str == df.index[-1] and last_vol > df.loc[today_str, "Volume"]):
-                    open_p = float(getattr(fast, "open", last_price) or last_price)
-                    day_h = float(getattr(fast, "day_high", last_price) or last_price)
-                    day_l = float(getattr(fast, "day_low", last_price) or last_price)
+    return df, shares
 
-                    df.loc[today_str, "Open"] = open_p
-                    df.loc[today_str, "High"] = max(day_h, last_price)
-                    df.loc[today_str, "Low"] = min(day_l, last_price)
-                    df.loc[today_str, "Close"] = last_price
-                    df.loc[today_str, "Volume"] = last_vol
-    except Exception as e:
-        logger.warning(f"盤中補點防護檢查異常 (忽略並保留現有日 K): {e}")
+# ------------------------------------------------------------------------------
+# 3. FinMind 三大法人與資券爬蟲（換算為「張」）
+# ------------------------------------------------------------------------------
+def fetch_chip_data(symbol, start_date):
+    """自本地 SQLite 優先讀取，缺漏則呼叫 FinMind 補齊並換算為張"""
+    pure_code = re.search(r'\d+', str(symbol))
+    code = pure_code.group(0) if pure_code else str(symbol).strip()
 
-    # 確保數值型別完整
-    for col in ["Open", "High", "Low", "Close", "Volume"]:
-        if col in df.columns:
-            df[col] = pd.to_numeric(df[col], errors="coerce")
+    # 優先讀取 DB
+    db_df = load_chip_from_db(code, start_date)
+    
+    # 簡易判斷若已有近期資料則直接回傳
+    if db_df is not None and not db_df.empty:
+        last_date_str = db_df['date'].max()
+        if (datetime.now() - datetime.strptime(last_date_str, "%Y-%m-%d")).days <= 3:
+            return db_df
 
-    df = df.dropna(subset=["Open", "High", "Low", "Close", "Volume"])
-    df = df[df["Volume"] > 0]
+    # 向 FinMind 請求法人資料
+    try:
+        url_inst = "https://api.finmindtrade.com/api/v4/data"
+        p_inst = {
+            "dataset": "TaiwanStockInstitutionalInvestorsBuySell",
+            "data_id": code,
+            "start_date": start_date
+        }
+        res_inst = requests.get(url_inst, params=p_inst, timeout=10).json()
+        raw_inst = res_inst.get('data', [])
 
-    return df.tail(lookback_days), shares_outstanding
+        inst_dict = {}
+        for r in raw_inst:
+            d = r['date']
+            if d not in inst_dict:
+                inst_dict[d] = {'foreign_buy': 0.0, 'trust_buy': 0.0, 'dealer_buy': 0.0}
+            name = r.get('name', '')
+            net_shares = r.get('buy', 0) - r.get('sell', 0)
+            net_lots = net_shares / 1000.0  # 股換算為張
+            if any(k in name for k in ['Foreign', '外資', '外陸資']):
+                inst_dict[d]['foreign_buy'] += net_lots
+            elif any(k in name for k in ['Investment_Trust', '投信']):
+                inst_dict[d]['trust_buy'] += net_lots
+            elif any(k in name for k in ['Dealer', '自營']):
+                inst_dict[d]['dealer_buy'] += net_lots
 
+        # 資券資料
+        p_margin = {
+            "dataset": "TaiwanStockMarginPurchaseShortSale",
+            "data_id": code,
+            "start_date": start_date
+        }
+        res_margin = requests.get(url_inst, params=p_margin, timeout=10).json()
+        raw_margin = res_margin.get('data', [])
 
-# ==========================================
-# 3. 集保中心 (TDCC) 股權分級增量爬蟲
-# ==========================================
-def sync_tdcc_distribution(stock_id: str) -> pd.DataFrame:
-    """
-    集保大戶持股爬蟲（嚴格避坑規範）：
-    1. 使用 requests.Session() 保持 Cookie。
-    2. 動態解析首頁 action URL 與 <select> 中實際可用的 8 碼日期（YYYYMMDD）。
-    3. 比對本地 SQLite 已有週別，僅增量抓取缺失週別，上限 15 週以防封鎖 IP。
-    4. 精確定位首欄含 '1' 與 '15' 的表格，儲存入庫。
-    """
-    stock_id = str(stock_id).strip().upper()
-    existing_dates = set(db_manager.get_existing_tdcc_dates(stock_id))
+        margin_dict = {}
+        for r in raw_margin:
+            d = r['date']
+            # 增減計算
+            m_buy = r.get('MarginPurchaseBuy', 0)
+            m_sell = r.get('MarginPurchaseSell', 0)
+            m_repay = r.get('MarginPurchaseCashRepayment', 0)
+            m_change = (m_buy - m_sell - m_repay) / 1000.0
+            m_bal = r.get('MarginPurchaseTodayBalance', 0) / 1000.0
+
+            s_sell = r.get('ShortSaleSell', 0)
+            s_buy = r.get('ShortSaleBuy', 0)
+            s_repay = r.get('ShortSaleCashRepayment', 0)
+            s_change = (s_sell - s_buy - s_repay) / 1000.0
+            s_bal = r.get('ShortSaleTodayBalance', 0) / 1000.0
+
+            s_ratio = (s_bal / m_bal * 100.0) if m_bal > 0 else 0.0
+            margin_dict[d] = {
+                'margin_balance': m_bal, 'margin_change': m_change,
+                'short_balance': s_bal, 'short_change': s_change,
+                'short_ratio': s_ratio
+            }
+
+        # 彙整寫入
+        all_dates = sorted(list(set(list(inst_dict.keys()) + list(margin_dict.keys()))))
+        rows = []
+        for d in all_dates:
+            i_info = inst_dict.get(d, {'foreign_buy': 0.0, 'trust_buy': 0.0, 'dealer_buy': 0.0})
+            m_info = margin_dict.get(d, {'margin_balance': 0.0, 'margin_change': 0.0, 'short_balance': 0.0, 'short_change': 0.0, 'short_ratio': 0.0})
+            rows.append({
+                'date': d, 'symbol': code,
+                'foreign_buy': i_info['foreign_buy'], 'trust_buy': i_info['trust_buy'], 'dealer_buy': i_info['dealer_buy'],
+                'margin_balance': m_info['margin_balance'], 'margin_change': m_info['margin_change'],
+                'short_balance': m_info['short_balance'], 'short_change': m_info['short_change'],
+                'short_ratio': m_info['short_ratio']
+            })
+
+        if rows:
+            res_df = pd.DataFrame(rows)
+            save_chip_to_db(res_df)
+            return res_df
+    except Exception:
+        pass
+
+    return db_df if db_df is not None else pd.DataFrame()
+
+# ------------------------------------------------------------------------------
+# 4. 集保大戶持股比例（TDCC）增量爬蟲
+# ------------------------------------------------------------------------------
+def fetch_tdcc_data(symbol):
+    """自本地讀取集保歷史，僅針對缺失週別增量爬取 TDCC"""
+    pure_code = re.search(r'\d+', str(symbol))
+    code = pure_code.group(0) if pure_code else str(symbol).strip()
+
+    db_tdcc = load_tdcc_from_db(code)
+    existing_dates = set(db_tdcc['date'].unique()) if (db_tdcc is not None and not db_tdcc.empty) else set()
 
     session = requests.Session()
     session.headers.update({
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
         "Referer": "https://www.tdcc.com.tw/portal/zh/smWeb/qryStock"
     })
 
-    base_url = "https://www.tdcc.com.tw/portal/zh/smWeb/qryStock"
-
+    url = "https://www.tdcc.com.tw/portal/zh/smWeb/qryStock"
     try:
-        resp = session.get(base_url, timeout=15)
-        resp.encoding = "utf-8"
-        soup = BeautifulSoup(resp.text, "html.parser")
+        r = session.get(url, timeout=10)
+        soup = BeautifulSoup(r.text, 'html.parser')
+        form = soup.find('form')
+        if not form:
+            return db_tdcc
 
-        # 取得動態表單 action URL
-        form = soup.find("form", id="form1") or soup.find("form")
-        action_url = base_url
-        if form and form.get("action"):
-            action_url = urllib.parse.urljoin(base_url, form.get("action"))
+        action = form.get('action', '')
+        post_url = action if action.startswith('http') else "https://www.tdcc.com.tw" + action
+        
+        # 爬取可用日期選單
+        select = soup.find('select', {'id': 'SCA_DATE'}) or soup.find('select', {'name': 'scaDates'})
+        if not select:
+            return db_tdcc
 
-        # 解析可查詢日期 (8碼數字)
-        date_select = soup.find("select", {"id": "scaDates"}) or soup.find("select", {"name": "scaDates"})
-        available_dates: List[str] = []
-        if date_select:
-            for opt in date_select.find_all("option"):
-                val = opt.get("value", "").strip()
-                if re.match(r"^\d{8}$", val):
-                    available_dates.append(val)
+        avail_dates = [opt.get('value', '').strip() for opt in select.find_all('option') if opt.get('value', '').strip()]
+        needed_dates = [d for d in avail_dates if d not in existing_dates][:15]
 
-        available_dates = sorted(available_dates, reverse=True)
-        # 比對本地缺失日期（上限 15 週）
-        missing_dates = [d for d in available_dates if d not in existing_dates][:TDCC_INCREMENTAL_WEEKS_LIMIT]
+        new_records = []
+        for dt_str in needed_dates:
+            p_data = {"scaDates": dt_str, "scaDate": dt_str, "StockNo": code}
+            pr = session.post(post_url, data=p_data, timeout=10)
+            if pr.status_code == 200:
+                tables = pd.read_html(pr.text)
+                for tbl in tables:
+                    # 鎖定含 1 與 15 級別的表格
+                    col0 = tbl.iloc[:, 0].astype(str)
+                    if col0.str.contains('1').any() and col0.str.contains('15').any():
+                        for _, row in tbl.iterrows():
+                            lvl_str = str(row.iloc[0]).strip()
+                            if lvl_str.isdigit() and 1 <= int(lvl_str) <= 15:
+                                new_records.append({
+                                    'date': dt_str,
+                                    'symbol': code,
+                                    'level': int(lvl_str),
+                                    'holders': int(str(row.iloc[2]).replace(',', '')),
+                                    'shares': float(str(row.iloc[3]).replace(',', '')),
+                                    'percent': float(str(row.iloc[4]).replace('%', ''))
+                                })
+                        break
 
-        crawled_dfs = []
-        for d_str in missing_dates:
-            payload = {
-                "scaDates": d_str,
-                "scaDate": d_str,
-                "StockNo": stock_id,
-                "stockNo": stock_id,
-                "sub": "查詢",
-                "ReqID": ""
-            }
+        if new_records:
+            new_df = pd.DataFrame(new_records)
+            save_tdcc_to_db(new_df)
+            db_tdcc = load_tdcc_from_db(code)
+    except Exception:
+        pass
 
-            post_resp = session.post(action_url, data=payload, timeout=15)
-            post_resp.encoding = "utf-8"
-            post_soup = BeautifulSoup(post_resp.text, "html.parser")
-
-            # 鎖定包含等級 1 與 15 的股權分級表格
-            target_table = None
-            for tbl in post_soup.find_all("table"):
-                text = tbl.get_text()
-                if "持股分級" in text or ("1" in text and "15" in text and "合計" in text):
-                    target_table = tbl
-                    break
-
-            if not target_table:
-                continue
-
-            # 計算 ISO 週別
-            dt_obj = datetime.datetime.strptime(d_str, "%Y%m%d")
-            iso_year, iso_week, _ = dt_obj.isocalendar()
-            year_week_str = f"{iso_year}-W{iso_week:02d}"
-
-            rows_data = []
-            for tr in target_table.find_all("tr"):
-                cols = [td.get_text(strip=True).replace(",", "") for td in tr.find_all(["td", "th"])]
-                if len(cols) >= 5 and cols[0].isdigit():
-                    lvl = int(cols[0])
-                    if 1 <= lvl <= 15:
-                        holders = int(cols[2]) if cols[2].isdigit() else 0
-                        shares = int(cols[3]) if cols[3].isdigit() else 0
-                        try:
-                            ratio = float(cols[4])
-                        except ValueError:
-                            ratio = 0.0
-
-                        rows_data.append({
-                            "date": d_str,
-                            "year_week": year_week_str,
-                            "level": lvl,
-                            "holders": holders,
-                            "shares": shares,
-                            "ratio": ratio
-                        })
-
-            if len(rows_data) == 15:
-                df_week = pd.DataFrame(rows_data)
-                db_manager.save_tdcc_data(stock_id, df_week)
-                crawled_dfs.append(df_week)
-
-    except Exception as e:
-        logger.warning(f"TDCC 增量爬取異常 ({stock_id}): {e}")
-
-    # 回傳該股票完整的集保資料庫紀錄
-    return db_manager.get_tdcc_data(stock_id)
-
-
-# ==========================================
-# 4. FinMind API (三大法人與融資融券)
-# ==========================================
-def sync_finmind_chip_data(stock_id: str, lookback_days: int = DEFAULT_LOOKBACK_DAYS):
-    """
-    從 FinMind API 抓取三大法人與融資融券資料：
-    1. 三大法人買賣股數必須除以 1000 換算為「張」。
-    2. 券資比公式：(融券餘額 / 融資餘額) * 100%。
-    3. 清洗後直接存入 SQLite 本地資料庫。
-    """
-    stock_id = str(stock_id).strip().upper()
-    start_date = (datetime.datetime.now() - datetime.timedelta(days=int(lookback_days * 1.5))).strftime("%Y-%m-%d")
-
-    # 1. 抓取三大法人 (TaiwanStockInstitutionalInvestorsBuySell)
-    try:
-        url_inst = f"https://api.finmindtrade.com/api/v4/data?dataset=TaiwanStockInstitutionalInvestorsBuySell&data_id={stock_id}&start_date={start_date}"
-        r_inst = requests.get(url_inst, timeout=12)
-        data_inst = r_inst.json().get("data", [])
-
-        if data_inst:
-            df_raw = pd.DataFrame(data_inst)
-            # 轉換為張數：股數 / 1000
-            df_pivot = df_raw.pivot_table(
-                index="date",
-                columns="name",
-                values=["buy", "sell"],
-                aggfunc="sum"
-            ).fillna(0)
-
-            records = []
-            for date_val, row in df_pivot.iterrows():
-                f_buy = row.get(("buy", "Foreign_Investor"), 0) / 1000.0
-                f_sell = row.get(("sell", "Foreign_Investor"), 0) / 1000.0
-                t_buy = row.get(("buy", "Investment_Trust"), 0) / 1000.0
-                t_sell = row.get(("sell", "Investment_Trust"), 0) / 1000.0
-                d_buy = row.get(("buy", "Dealer_self"), 0) / 1000.0 + row.get(("buy", "Dealer_Hedging"), 0) / 1000.0
-                d_sell = row.get(("sell", "Dealer_self"), 0) / 1000.0 + row.get(("sell", "Dealer_Hedging"), 0) / 1000.0
-
-                f_net = f_buy - f_sell
-                t_net = t_buy - t_sell
-                d_net = d_buy - d_sell
-
-                records.append({
-                    "date": str(date_val),
-                    "foreign_buy_sell": round(f_net, 2),
-                    "trust_buy_sell": round(t_net, 2),
-                    "dealer_buy_sell": round(d_net, 2),
-                    "total_buy_sell": round(f_net + t_net + d_net, 2),
-                })
-
-            if records:
-                db_manager.save_institutional_data(stock_id, pd.DataFrame(records))
-    except Exception as e:
-        logger.warning(f"FinMind 三大法人同步異常: {e}")
-
-    # 2. 抓取融資融券 (TaiwanStockMarginPurchaseShortSale)
-    try:
-        url_margin = f"https://api.finmindtrade.com/api/v4/data?dataset=TaiwanStockMarginPurchaseShortSale&data_id={stock_id}&start_date={start_date}"
-        r_margin = requests.get(url_margin, timeout=12)
-        data_margin = r_margin.json().get("data", [])
-
-        if data_margin:
-            df_margin = pd.DataFrame(data_margin)
-            records = []
-            for _, row in df_margin.iterrows():
-                m_buy = float(row.get("MarginPurchaseBuy", 0))
-                m_sell = float(row.get("MarginPurchaseSell", 0))
-                m_bal = float(row.get("MarginPurchaseTodayBalance", 0))
-
-                s_buy = float(row.get("ShortSaleBuy", 0))
-                s_sell = float(row.get("ShortSaleSell", 0))
-                s_bal = float(row.get("ShortSaleTodayBalance", 0))
-
-                # 券資比公式計算
-                ratio = (s_bal / m_bal * 100.0) if m_bal > 0 else 0.0
-
-                records.append({
-                    "date": str(row["date"]),
-                    "margin_buy": m_buy,
-                    "margin_sell": m_sell,
-                    "margin_balance": m_bal,
-                    "short_buy": s_buy,
-                    "short_sell": s_sell,
-                    "short_balance": s_bal,
-                    "margin_short_ratio": round(ratio, 2)
-                })
-
-            if records:
-                db_manager.save_margin_data(stock_id, pd.DataFrame(records))
-    except Exception as e:
-        logger.warning(f"FinMind 融資融券同步異常: {e}")
+    return db_tdcc
