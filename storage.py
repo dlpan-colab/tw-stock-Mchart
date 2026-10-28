@@ -1,11 +1,10 @@
 """
 台股技術與籌碼分析系統 - 本地與歷史資料管理模組
-封裝 SQLite 資料庫操作（三大法人、融券融資、集保持股分級），
-並管理歷史個股清單與中文名稱快取。
+以 Google Drive 為單一來源：查詢前優先 pull_file，儲存後即刻 push_file。
 """
 
 MODULE_NAME = "storage"
-MODULE_VERSION = "202610280320"
+MODULE_VERSION = "202610281045"
 
 import os
 import json
@@ -25,8 +24,11 @@ from config import (
 
 logger = logging.getLogger(__name__)
 
+# 確保本地資料夾存在
+os.makedirs(str(DATA_DIR), exist_ok=True)
+
+
 def _get_cloud_sync():
-    """取得雲端同步管理器實例"""
     try:
         import cloud_sync
         if hasattr(cloud_sync, "cloud_sync_manager"):
@@ -47,20 +49,20 @@ class StockChipStorage:
         self.db_name = f"data_{self.pure_code}.db"
         self.db_path = str(DATA_DIR / self.db_name)
         
-        # 雲端同步支援：若本地無檔案，優先從 Google Drive 下載已存在的歷史 db
+        # 關鍵優先步驟：連線 SQLite 前，強制向 Google Drive 拉取雲端既有的 .db
         sync = _get_cloud_sync()
-        if not IS_COLAB and sync and not os.path.exists(self.db_path):
+        if not IS_COLAB and sync:
             try:
-                if hasattr(sync, "pull_file"):
-                    sync.pull_file(Path(self.db_path))
-                elif hasattr(sync, "pull"):
-                    sync.pull(self.db_name, self.db_path)
+                sync.pull_file(Path(self.db_path))
             except Exception as e:
-                logger.warning(f"雲端資料庫拉取失敗: {e}")
+                logger.warning(f"從雲端拉取 {self.db_name} 失敗: {e}")
 
-        # 判定是否為初次建立 (本地已有或成功從雲端拉下即為 False)
-        self.is_first_time = not os.path.exists(self.db_path)
+        # 初始化資料庫結構
         self._init_db()
+
+        # 嚴格依資料庫內容判定是否初次初始化：若三大法人已有資料，則絕非首次！
+        latest_date = self.get_latest_inst_date()
+        self.is_first_time = (latest_date is None)
 
     def _init_db(self):
         with sqlite3.connect(self.db_path) as conn:
@@ -126,10 +128,7 @@ class StockChipStorage:
         sync = _get_cloud_sync()
         if not IS_COLAB and sync:
             try:
-                if hasattr(sync, "push_file"):
-                    sync.push_file(Path(self.db_path))
-                elif hasattr(sync, "push"):
-                    sync.push(self.db_path, self.db_name)
+                sync.push_file(Path(self.db_path))
             except Exception:
                 pass
 
@@ -146,10 +145,7 @@ class StockChipStorage:
         sync = _get_cloud_sync()
         if not IS_COLAB and sync:
             try:
-                if hasattr(sync, "push_file"):
-                    sync.push_file(Path(self.db_path))
-                elif hasattr(sync, "push"):
-                    sync.push(self.db_path, self.db_name)
+                sync.push_file(Path(self.db_path))
             except Exception:
                 pass
 
@@ -166,10 +162,7 @@ class StockChipStorage:
         sync = _get_cloud_sync()
         if not IS_COLAB and sync:
             try:
-                if hasattr(sync, "push_file"):
-                    sync.push_file(Path(self.db_path))
-                elif hasattr(sync, "push"):
-                    sync.push(self.db_path, self.db_name)
+                sync.push_file(Path(self.db_path))
             except Exception:
                 pass
 
@@ -199,18 +192,15 @@ class StockChipStorage:
 # 2. 歷史個股清單管理
 # ==========================================
 def load_stock_history() -> List[dict]:
-    history_file = str(HISTORY_FILE_PATH)
+    history_file = Path(HISTORY_FILE_PATH)
     sync = _get_cloud_sync()
-    if not IS_COLAB and sync and not os.path.exists(history_file):
+    if not IS_COLAB and sync:
         try:
-            if hasattr(sync, "pull_file"):
-                sync.pull_file(HISTORY_FILE_PATH)
-            elif hasattr(sync, "pull"):
-                sync.pull("stock_history.json", history_file)
+            sync.pull_file(history_file)
         except Exception:
             pass
 
-    if os.path.exists(history_file):
+    if history_file.exists():
         try:
             with open(history_file, "r", encoding="utf-8") as f:
                 data = json.load(f)
@@ -242,31 +232,25 @@ def save_stock_history(code: str, name: str = "") -> List[dict]:
     new_hist.insert(0, {"code": code, "name": name or code})
     new_hist = new_hist[:30]
     
-    history_file = str(HISTORY_FILE_PATH)
+    history_file = Path(HISTORY_FILE_PATH)
     try:
         with open(history_file, "w", encoding="utf-8") as f:
             json.dump(new_hist, f, ensure_ascii=False, indent=2)
         sync = _get_cloud_sync()
         if not IS_COLAB and sync:
-            if hasattr(sync, "push_file"):
-                sync.push_file(HISTORY_FILE_PATH)
-            elif hasattr(sync, "push"):
-                sync.push(history_file, "stock_history.json")
+            sync.push_file(history_file)
     except Exception:
         pass
     return new_hist
 
 def clear_stock_history() -> List[dict]:
-    history_file = str(HISTORY_FILE_PATH)
+    history_file = Path(HISTORY_FILE_PATH)
     try:
-        if os.path.exists(history_file):
-            os.remove(history_file)
+        if history_file.exists():
+            os.remove(str(history_file))
         sync = _get_cloud_sync()
         if not IS_COLAB and sync:
-            if hasattr(sync, "delete_remote_file"):
-                sync.delete_remote_file("stock_history.json")
-            elif hasattr(sync, "delete"):
-                sync.delete("stock_history.json")
+            sync.delete_remote_file("stock_history.json")
     except Exception:
         pass
     return []
