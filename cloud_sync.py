@@ -1,11 +1,11 @@
 """
 台股技術與籌碼分析系統 - Google Drive 雲端雙向同步模組
 支援 Service Account (st.secrets) 與 Google Colab 雙環境。
-負責 data_{code}.db 與 stock_history.json 之遠端拉取 (Pull)、推播 (Push) 與刪除。
+具備檔名相容比對機制 (相容 data_{code}.db 與 {code}.db)。
 """
 
 MODULE_NAME = "cloud_sync"
-MODULE_VERSION = "202610281045"
+MODULE_VERSION = "202610281100"
 
 import io
 import os
@@ -42,7 +42,6 @@ class GoogleDriveSync:
             creds = None
             if st and hasattr(st, "secrets") and "gcp_service_account" in st.secrets:
                 key_dict = dict(st.secrets["gcp_service_account"])
-                # 確保 private_key 格式正確
                 if "private_key" in key_dict:
                     key_dict["private_key"] = key_dict["private_key"].replace("\\n", "\n")
                 creds = service_account.Credentials.from_service_account_info(
@@ -54,7 +53,7 @@ class GoogleDriveSync:
                 self.service = build("drive", "v3", credentials=creds, cache_discovery=False)
                 logger.info("Google Drive 服務帳號驗證成功。")
             else:
-                logger.warning("未偵測到 gcp_service_account 憑證，雲端同步將使用唯讀/本地模式。")
+                logger.warning("未偵測到 gcp_service_account 憑證。")
         except Exception as e:
             logger.error(f"Google Drive 初始化失敗: {e}")
             self.service = None
@@ -63,10 +62,14 @@ class GoogleDriveSync:
         if not self.service or not self.folder_id:
             return None
         try:
-            q = f"name = '{filename}' and '{self.folder_id}' in parents and trashed = false"
+            # 檔名相容：例如 data_1303.db 或 1303.db 皆能命中
+            alt_name = filename.replace("data_", "") if filename.startswith("data_") else f"data_{filename}"
+            q = f"(name = '{filename}' or name = '{alt_name}') and '{self.folder_id}' in parents and trashed = false"
             res = self.service.files().list(q=q, fields="files(id, name)", spaces="drive").execute()
             files = res.get("files", [])
-            return files[0]["id"] if files else None
+            if files:
+                return files[0]["id"]
+            return None
         except Exception as e:
             logger.error(f"查詢雲端檔案 {filename} 失敗: {e}")
             return None
@@ -112,14 +115,12 @@ class GoogleDriveSync:
             media = MediaFileUpload(str(local_path), resumable=True)
 
             if file_id:
-                # 覆蓋舊檔
                 self.service.files().update(
                     fileId=file_id,
                     media_body=media
                 ).execute()
                 logger.info(f"成功更新雲端檔案: {filename}")
             else:
-                # 建立新檔
                 metadata = {
                     "name": filename,
                     "parents": [self.folder_id]
