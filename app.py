@@ -190,7 +190,7 @@ def run_app():
         is_mobile=is_mobile
     )
 
-    chart_height = 1680 if is_mobile else 1780
+    chart_height = 1820 if is_mobile else 1880
     components.html(component_html, height=chart_height, scrolling=False)
 
     # 8. 底部重複導航按鈕
