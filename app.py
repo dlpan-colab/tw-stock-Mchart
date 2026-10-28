@@ -5,7 +5,7 @@
 """
 
 MODULE_NAME = "app"
-MODULE_VERSION = "202610280335"
+MODULE_VERSION = "202610281055"
 
 import re
 import datetime
@@ -20,7 +20,6 @@ from storage import (
 from chart_builder import build_split_figures
 from frontend import get_legend_html, get_component_html
 
-# 預設參數常數
 DEFAULT_DISPLAY_DAYS = 20
 DEFAULT_MAJOR1_THRESH = 1000
 DEFAULT_MAJOR2_THRESH = 400
@@ -45,24 +44,37 @@ def run_app():
         st.session_state.history_list = load_stock_history()
     if 'current_index' not in st.session_state:
         st.session_state.current_index = 0
-    if 'stock_code_input' not in st.session_state:
+    if 'ticker_input_field' not in st.session_state:
         init_code = st.session_state.history_list[0]['code'] if st.session_state.history_list else "2330"
-        st.session_state.stock_code_input = init_code
+        st.session_state.ticker_input_field = init_code
 
-    # 2. 導航回調函式
+    # 2. 連動回調函式
+    def on_hist_change():
+        selected = st.session_state.get('hist_select')
+        if selected and selected != "(選擇歷史標的)":
+            chosen_code = parse_pure_code(selected)
+            if chosen_code:
+                st.session_state.ticker_input_field = chosen_code
+                for i, h in enumerate(st.session_state.history_list):
+                    if h.get('code') == chosen_code:
+                        st.session_state.current_index = i
+                        break
+
     def on_prev_click():
         hist = st.session_state.history_list
         if not hist:
             return
         st.session_state.current_index = (st.session_state.current_index - 1) % len(hist)
-        st.session_state.stock_code_input = hist[st.session_state.current_index]['code']
+        target_code = hist[st.session_state.current_index]['code']
+        st.session_state.ticker_input_field = target_code
 
     def on_next_click():
         hist = st.session_state.history_list
         if not hist:
             return
         st.session_state.current_index = (st.session_state.current_index + 1) % len(hist)
-        st.session_state.stock_code_input = hist[st.session_state.current_index]['code']
+        target_code = hist[st.session_state.current_index]['code']
+        st.session_state.ticker_input_field = target_code
 
     # 3. 側邊欄參數設定
     with st.sidebar:
@@ -71,27 +83,18 @@ def run_app():
         hist = st.session_state.history_list
         hist_options = ["(選擇歷史標的)"] + [f"{h.get('code')} ({h.get('name')})" for h in hist]
         
-        selected_hist = st.selectbox(
+        st.selectbox(
             "歷史紀錄快速選取",
             options=hist_options,
             index=0,
-            key="hist_select"
+            key="hist_select",
+            on_change=on_hist_change
         )
-        if selected_hist != "(選擇歷史標的)":
-            chosen_code = parse_pure_code(selected_hist)
-            if chosen_code and chosen_code != st.session_state.stock_code_input:
-                st.session_state.stock_code_input = chosen_code
-                for i, h in enumerate(hist):
-                    if h.get('code') == chosen_code:
-                        st.session_state.current_index = i
-                        break
 
         s_ticker = st.text_input(
             "股票代號 / 名稱",
-            value=st.session_state.stock_code_input,
             key="ticker_input_field"
         ).strip()
-        st.session_state.stock_code_input = s_ticker
 
         s_days = st.number_input(
             "顯示日數",
