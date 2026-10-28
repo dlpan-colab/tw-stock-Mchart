@@ -59,11 +59,16 @@ def get_tw_stock_name(stock_id: str) -> str:
         if res.status_code == 200:
             soup = BeautifulSoup(res.text, 'html.parser')
             rows = soup.find_all('tr')
+           
             for r in rows:
                 cols = r.find_all('td')
-                if len(cols) >= 3 and cols[1].text.strip() == stock_id:
-                    c_name = cols[2].text.strip()
-                    if c_name:
+                if len(cols) >= 3:
+                    text_0 = cols[0].text.strip()
+                    parts = text_0.replace('\u3000', ' ').split()
+                    if len(parts) >= 2 and parts[0] == stock_id:
+                        c_name = parts[1]
+                        if c_name:
+                        
                         cache[stock_id] = c_name
                         save_stock_names_cache(cache)
                         return c_name
