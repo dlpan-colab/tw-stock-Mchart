@@ -1,12 +1,14 @@
 """
 台股技術與籌碼分析系統 - 本地與歷史資料管理模組
-以 Google Drive 為單一來源：查詢前優先 pull_file，儲存後即刻 push_file。
+以 Google Drive 雲端資料庫為單一真實來源。
+歷史導航清單自動對齊 Google Drive 內已建檔之個股，避免切換時重複初始化。
 """
 
 MODULE_NAME = "storage"
-MODULE_VERSION = "202610281045"
+MODULE_VERSION = "202610281145"
 
 import os
+import re
 import json
 import sqlite3
 import logging
@@ -24,7 +26,6 @@ from config import (
 
 logger = logging.getLogger(__name__)
 
-# 確保本地資料夾存在
 os.makedirs(str(DATA_DIR), exist_ok=True)
 
 
@@ -49,18 +50,18 @@ class StockChipStorage:
         self.db_name = f"data_{self.pure_code}.db"
         self.db_path = str(DATA_DIR / self.db_name)
         
-        # 關鍵優先步驟：連線 SQLite 前，強制向 Google Drive 拉取雲端既有的 .db
+        # 步驟 1：優先從 Google Drive 拉取雲端既有的 .db
         sync = _get_cloud_sync()
-        if not IS_COLAB and sync:
+        if not IS_COLAB and sync and not os.path.exists(self.db_path):
             try:
                 sync.pull_file(Path(self.db_path))
             except Exception as e:
                 logger.warning(f"從雲端拉取 {self.db_name} 失敗: {e}")
 
-        # 初始化資料庫結構
+        # 步驟 2：初始化結構
         self._init_db()
 
-        # 嚴格依資料庫內容判定是否初次初始化：若三大法人已有資料，則絕非首次！
+        # 步驟 3：判定是否為初次
         latest_date = self.get_latest_inst_date()
         self.is_first_time = (latest_date is None)
 
@@ -189,59 +190,89 @@ class StockChipStorage:
 
 
 # ==========================================
-# 2. 歷史個股清單管理
+# 2. 歷史個股清單管理（對齊 Google Drive 現存資料庫）
 # ==========================================
 def load_stock_history() -> List[dict]:
+    """優先抓取 Google Drive 上現有的 .db 檔建立清單，確保每檔皆秒開"""
     history_file = Path(HISTORY_FILE_PATH)
     sync = _get_cloud_sync()
+    
+    # 嘗試從 Google Drive 讀取現有檔案清單
+    drive_codes = []
+    if not IS_COLAB and sync and hasattr(sync, "service") and sync.service and sync.folder_id:
+        try:
+            q = f"'{sync.folder_id}' in parents and trashed = false and name contains '.db'"
+            res = sync.service.files().list(q=q, fields="files(name)").execute()
+            for item in res.get("files", []):
+                m = re.search(r'data_(\w+)\.db', item["name"])
+                if m:
+                    drive_codes.append(m.group(1))
+        except Exception:
+            pass
+
+    # 讀取本地/雲端 JSON
     if not IS_COLAB and sync:
         try:
             sync.pull_file(history_file)
         except Exception:
             pass
 
+    existing_history = []
     if history_file.exists():
         try:
             with open(history_file, "r", encoding="utf-8") as f:
                 data = json.load(f)
-                if isinstance(data, list) and data:
-                    formatted = []
+                if isinstance(data, list):
                     for item in data:
-                        if isinstance(item, dict):
-                            formatted.append(item)
-                        elif isinstance(item, str):
-                            formatted.append({"code": item, "name": item})
-                    return formatted
+                        if isinstance(item, dict) and "code" in item:
+                            existing_history.append(item)
         except Exception:
             pass
 
+    name_map = {item["code"]: item.get("name", item["code"]) for item in existing_history}
+
+    # 若成功取得 Google Drive 雲端資料庫列表，以雲端現有清單為準
+    if drive_codes:
+        final_list = []
+        for code in drive_codes:
+            final_list.append({"code": code, "name": name_map.get(code, code)})
+        return final_list
+
+    if existing_history:
+        return existing_history
+
     return [
         {"code": "1303", "name": "南亞"},
-        {"code": "6217", "name": "中探針"},
+        {"code": "2330", "name": "台積電"},
+        {"code": "2317", "name": "鴻海"},
         {"code": "2609", "name": "陽明"},
-        {"code": "2615", "name": "萬海"},
-        {"code": "8111", "name": "立碁"},
-        {"code": "4526", "name": "東台"},
-        {"code": "2330", "name": "台積電"}
+        {"code": "2615", "name": "萬海"}
     ]
 
 def save_stock_history(code: str, name: str = "") -> List[dict]:
     code = str(code).strip().upper()
     history = load_stock_history()
-    new_hist = [h for h in history if h.get("code") != code]
-    new_hist.insert(0, {"code": code, "name": name or code})
-    new_hist = new_hist[:30]
+    # 保持清單穩定，不強制隨意打亂順序，若新股票則加入最前
+    found = False
+    for item in history:
+        if item.get("code") == code:
+            if name:
+                item["name"] = name
+            found = True
+            break
+    if not found:
+        history.insert(0, {"code": code, "name": name or code})
     
     history_file = Path(HISTORY_FILE_PATH)
     try:
         with open(history_file, "w", encoding="utf-8") as f:
-            json.dump(new_hist, f, ensure_ascii=False, indent=2)
+            json.dump(history, f, ensure_ascii=False, indent=2)
         sync = _get_cloud_sync()
         if not IS_COLAB and sync:
             sync.push_file(history_file)
     except Exception:
         pass
-    return new_hist
+    return history
 
 def clear_stock_history() -> List[dict]:
     history_file = Path(HISTORY_FILE_PATH)
