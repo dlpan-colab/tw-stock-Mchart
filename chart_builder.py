@@ -210,7 +210,7 @@ def render_split_figures_from_df(
 
     # 股票名稱(代號) (市場) 台股技術與籌碼分析(模組化)(版本號)
     stock_display = f"{c_name}({pure_code})" if c_name and c_name != pure_code else pure_code
-    title_text = f"{stock_display} ({market}) 台股技術與籌碼分析(模組化)({MODULE_VERSION})"
+    title_text = f"{stock_display} ({market})"
 
     fig_top.update_layout(
         title=dict(text=title_text, font=dict(size=16)),
