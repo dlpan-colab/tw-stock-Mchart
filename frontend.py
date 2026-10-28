@@ -53,10 +53,7 @@ def get_legend_html(version_tag: str = MODULE_VERSION, module_versions: Optional
     <div style="font-size: 14px; line-height: 1.6; margin-bottom: 6px; padding: 4px 10px; background: #f8fafc; border-radius: 6px; border: 1px solid #e2e8f0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;">
       <span style="background:#2c3e50; color:#ffffff; padding: 1px 6px; border-radius: 4px; font-weight:bold; margin-right: 6px;">v{display_ver}</span>
       <span id="app_loading_spinner" class="app-loading-ring" style="display:none;" title="系統運作中..."></span>
-      <b>主圖：</b><span style="color:#eb4d4b;">■</span> K線 <span style="color:#27ae60;font-weight:bold;">〔頭〕</span> <span style="color:#e74c3c;font-weight:bold;">〔底〕</span> <span style="color:#f1c40f;">MA5</span> <span style="color:#e67e22;">MA20</span> <span style="color:#9b59b6;">MA60</span> | 
-      <b>技術：</b><span style="color:#eb4d4b;">■</span> 量/OSC <span style="color:#1e3799; font-weight:bold;">▲</span>≥10% <span style="color:#f1c40f; font-weight:bold;">▼</span>≥20% <span style="color:#e74c3c;">K</span> <span style="color:#3498db;">D</span> <span style="color:#f39c12;">DIF</span> <span style="color:#2980b9;">MACD</span> <span style="color:#16a085;">OBV</span> | 
-      <b>法人：</b><span style="color:#eb4d4b;">■</span> 外/投/自 <span style="color:#c0392b;">大1</span> <span style="color:#8e44ad;">大2</span> | 
-      <b>資券：</b><span style="color:#eb4d4b;">■</span>(左)融資 <span style="color:#f1c40f;">■</span>(右)融券 <span style="color:#e67e22;">━</span> 券資比
+      <b>台股技術與籌碼分析（模組化）</b>
     </div>
     """
 
