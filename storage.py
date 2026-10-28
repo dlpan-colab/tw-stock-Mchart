@@ -5,7 +5,7 @@
 """
 
 MODULE_NAME = "storage"
-MODULE_VERSION = "202610280145"
+MODULE_VERSION = "202610280320"
 
 import os
 import json
@@ -47,14 +47,18 @@ class StockChipStorage:
         self.db_name = f"data_{self.pure_code}.db"
         self.db_path = str(DATA_DIR / self.db_name)
         
-        # 雲端同步支援
+        # 雲端同步支援：若本地無檔案，優先從 Google Drive 下載已存在的歷史 db
         sync = _get_cloud_sync()
-        if not IS_COLAB and sync:
-            if hasattr(sync, "pull_file") and not os.path.exists(self.db_path):
-                sync.pull_file(Path(self.db_path))
-            elif hasattr(sync, "pull") and not os.path.exists(self.db_path):
-                sync.pull(self.db_name, self.db_path)
+        if not IS_COLAB and sync and not os.path.exists(self.db_path):
+            try:
+                if hasattr(sync, "pull_file"):
+                    sync.pull_file(Path(self.db_path))
+                elif hasattr(sync, "pull"):
+                    sync.pull(self.db_name, self.db_path)
+            except Exception as e:
+                logger.warning(f"雲端資料庫拉取失敗: {e}")
 
+        # 判定是否為初次建立 (本地已有或成功從雲端拉下即為 False)
         self.is_first_time = not os.path.exists(self.db_path)
         self._init_db()
 
@@ -121,10 +125,13 @@ class StockChipStorage:
             conn.commit()
         sync = _get_cloud_sync()
         if not IS_COLAB and sync:
-            if hasattr(sync, "push_file"):
-                sync.push_file(Path(self.db_path))
-            elif hasattr(sync, "push"):
-                sync.push(self.db_path, self.db_name)
+            try:
+                if hasattr(sync, "push_file"):
+                    sync.push_file(Path(self.db_path))
+                elif hasattr(sync, "push"):
+                    sync.push(self.db_path, self.db_name)
+            except Exception:
+                pass
 
     def save_holding_data(self, records: list):
         if not records:
@@ -138,10 +145,13 @@ class StockChipStorage:
             conn.commit()
         sync = _get_cloud_sync()
         if not IS_COLAB and sync:
-            if hasattr(sync, "push_file"):
-                sync.push_file(Path(self.db_path))
-            elif hasattr(sync, "push"):
-                sync.push(self.db_path, self.db_name)
+            try:
+                if hasattr(sync, "push_file"):
+                    sync.push_file(Path(self.db_path))
+                elif hasattr(sync, "push"):
+                    sync.push(self.db_path, self.db_name)
+            except Exception:
+                pass
 
     def save_margin_data(self, records: list):
         if not records:
@@ -155,10 +165,13 @@ class StockChipStorage:
             conn.commit()
         sync = _get_cloud_sync()
         if not IS_COLAB and sync:
-            if hasattr(sync, "push_file"):
-                sync.push_file(Path(self.db_path))
-            elif hasattr(sync, "push"):
-                sync.push(self.db_path, self.db_name)
+            try:
+                if hasattr(sync, "push_file"):
+                    sync.push_file(Path(self.db_path))
+                elif hasattr(sync, "push"):
+                    sync.push(self.db_path, self.db_name)
+            except Exception:
+                pass
 
     def load_institutional_df(self) -> pd.DataFrame:
         with sqlite3.connect(self.db_path) as conn:
@@ -188,11 +201,14 @@ class StockChipStorage:
 def load_stock_history() -> List[dict]:
     history_file = str(HISTORY_FILE_PATH)
     sync = _get_cloud_sync()
-    if not IS_COLAB and sync:
-        if hasattr(sync, "pull_file"):
-            sync.pull_file(HISTORY_FILE_PATH)
-        elif hasattr(sync, "pull"):
-            sync.pull("stock_history.json", history_file)
+    if not IS_COLAB and sync and not os.path.exists(history_file):
+        try:
+            if hasattr(sync, "pull_file"):
+                sync.pull_file(HISTORY_FILE_PATH)
+            elif hasattr(sync, "pull"):
+                sync.pull("stock_history.json", history_file)
+        except Exception:
+            pass
 
     if os.path.exists(history_file):
         try:
