@@ -68,10 +68,9 @@ def get_tw_stock_name(stock_id: str) -> str:
                     if len(parts) >= 2 and parts[0] == stock_id:
                         c_name = parts[1]
                         if c_name:
-                        
-                        cache[stock_id] = c_name
-                        save_stock_names_cache(cache)
-                        return c_name
+                            cache[stock_id] = c_name
+                            save_stock_names_cache(cache)
+                            return c_name
     except Exception:
         pass
 
