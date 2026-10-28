@@ -5,21 +5,13 @@
 """
 
 MODULE_NAME = "app"
-MODULE_VERSION = "202610280330"
+MODULE_VERSION = "202610280335"
 
 import re
 import datetime
 import streamlit as st
 import streamlit.components.v1 as components
 
-from config import (
-    COMMON_STOCKS,
-    DEFAULT_PERIOD,
-    DEFAULT_DISPLAY_DAYS,
-    DEFAULT_MAJOR1_THRESH,
-    DEFAULT_MAJOR2_THRESH,
-    IS_COLAB
-)
 from storage import (
     load_stock_history,
     save_stock_history,
@@ -27,6 +19,11 @@ from storage import (
 )
 from chart_builder import build_split_figures
 from frontend import get_legend_html, get_component_html
+
+# 預設參數常數
+DEFAULT_DISPLAY_DAYS = 20
+DEFAULT_MAJOR1_THRESH = 1000
+DEFAULT_MAJOR2_THRESH = 400
 
 
 def parse_pure_code(input_str: str) -> str:
@@ -144,7 +141,6 @@ def run_app():
     with nav_col2:
         st.button("⏭ 下一個", on_click=on_next_click, key="btn_next_top")
 
-    # 狀態提示佔位器
     status_box = st.empty()
 
     target_symbol = parse_pure_code(s_ticker)
