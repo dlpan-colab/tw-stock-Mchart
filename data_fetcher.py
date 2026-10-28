@@ -43,10 +43,25 @@ FINMIND_TOKEN = ""
 # 1. 中文名稱解析與快取
 # ==========================================
 def get_tw_stock_name(stock_id: str) -> str:
+    # 常用或特殊個股快速對照表
+    static_map = {
+        '2208': '台船',
+        '6425': '易發',
+        '4991': '環宇-KY',
+        '2330': '台積電',
+        '1303': '南亞',
+        '2454': '聯發科',
+        '2317': '鴻海',
+        '3231': '緯創',
+        '2382': '廣達'
+    }
+    if stock_id in static_map:
+        return static_map[stock_id]
+
     cache = load_stock_names_cache()
     if stock_id in cache and cache[stock_id] and cache[stock_id] != stock_id:
-        return cache[stock_id]
-
+        return cache[stock_id]    
+    
     headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
     
     # 同時支援上市 (strMode=2) 與 上櫃 (strMode=4)
