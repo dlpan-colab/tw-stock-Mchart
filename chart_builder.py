@@ -6,7 +6,7 @@
 """
 
 MODULE_NAME = "chart_builder"
-MODULE_VERSION = "202610280340"
+MODULE_VERSION = "202610281018"
 
 from typing import Optional, Tuple
 import numpy as np
@@ -208,7 +208,7 @@ def render_split_figures_from_df(
                 name='換手≥20%'
             ), row=2, col=1)
 
-    # 嚴格遵循要求：名稱(代號) (市場) 台股技術與籌碼分析(模組化)(版本號)
+    # 股票名稱(代號) (市場) 台股技術與籌碼分析(模組化)(版本號)
     stock_display = f"{c_name}({pure_code})" if c_name and c_name != pure_code else pure_code
     title_text = f"{stock_display} ({market}) 台股技術與籌碼分析(模組化)({MODULE_VERSION})"
 
