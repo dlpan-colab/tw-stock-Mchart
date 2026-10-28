@@ -6,7 +6,7 @@
 """
 
 MODULE_NAME = "chart_builder"
-MODULE_VERSION = "202610280300"
+MODULE_VERSION = "202610280340"
 
 from typing import Optional, Tuple
 import numpy as np
@@ -208,10 +208,12 @@ def render_split_figures_from_df(
                 name='換手≥20%'
             ), row=2, col=1)
 
-    # 標題格式：股票名稱(代號) (市場) 台股技術與籌碼分析(模組化)(版本號)
-    header_name = f"{c_name}({pure_code})" if c_name and c_name != pure_code else pure_code
+    # 嚴格遵循要求：名稱(代號) (市場) 台股技術與籌碼分析(模組化)(版本號)
+    stock_display = f"{c_name}({pure_code})" if c_name and c_name != pure_code else pure_code
+    title_text = f"{stock_display} ({market}) 台股技術與籌碼分析(模組化)({MODULE_VERSION})"
+
     fig_top.update_layout(
-        title=dict(text=f'{header_name} ({market}) 台股技術與籌碼分析(模組化)({MODULE_VERSION})', font=dict(size=16)),
+        title=dict(text=title_text, font=dict(size=16)),
         font=dict(size=16),
         template='plotly_white', hovermode=False, dragmode='pan', showlegend=False,
         height=top_height,
