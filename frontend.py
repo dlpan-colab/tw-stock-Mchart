@@ -1,25 +1,24 @@
 """
 台股技術與籌碼分析系統 - 前端組件與樣式模組
-輸出完整的五大即時看板（Quote Bar、技術1、技術2、資券、法人集保）、
-雙向同步十字線、40ms 防抖節流與 span >= 5 邊界防死鎖、動態極值重算，
-以及行動端水平緊湊按鈕 CSS 與頂部圖例函式 get_legend_html。
+輸出五大即時看板（Quote Bar、技術1、技術2、資券、法人集保）、
+雙向同步十字線、防抖節流滾輪縮放、動態極值重算，
+以及行動端緊湊按鈕 CSS 與圖例函式 get_legend_html。
 相容 Streamlit Cloud 與 Google Colab 雙執行環境。
 """
 
 MODULE_NAME = "frontend"
-MODULE_VERSION = "202610271400"
+MODULE_VERSION = "202610280310"
 
 import json
+from typing import Dict, Optional
 import pandas as pd
 import plotly.graph_objects as go
-from typing import Dict, Optional
 
 
 def get_legend_html(version_tag: str = MODULE_VERSION, module_versions: Optional[Dict[str, str]] = None) -> str:
     """
     生成頂部圖例看板 HTML
     """
-    # 僅取主程式版本或字串，不印整個字典
     display_ver = version_tag if isinstance(version_tag, str) else MODULE_VERSION
     if isinstance(module_versions, dict) and "app" in module_versions:
         display_ver = module_versions["app"]
@@ -75,10 +74,7 @@ def get_component_html(
 ) -> str:
     """
     輸出嵌入式雙圖 HTML/JS：
-    - 精確還原 5 大資訊面板 (頂部報價看板、技術1、技術2、資券卡、法人集保卡)
-    - 垂直聯動虛線、水平現價線 (top pane)
-    - 40ms 防抖節流與滾輪同步縮放
-    - recalcVisibleExtremes 動態極值重算
+    包含 5 大資訊面板、十字雙向連動、動態極值縮放與防抖更新
     """
     chart_id = f"chart_{str(raw_ticker).replace('.', '_')}"
     top_h_css = "340px" if is_mobile else "380px"
@@ -86,7 +82,7 @@ def get_component_html(
 
     js_template = """
     <style>
-      .plot-main-container { position: relative; width: 100%; box-sizing: border-box; overflow-x: auto; padding-bottom: 90px !important; }
+      .plot-main-container { position: relative; width: 100%; box-sizing: border-box; overflow-x: auto; padding-bottom: 120px !important; }
       .touch-plot-box { position: relative; touch-action: none !important; user-select: none !important; -webkit-user-select: none !important; width: 100% !important; }
       .pane-info-bar { font-size: 14px; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; color: #2c3e50; background: #f8fafc; padding: 4px 8px; border-radius: 4px; border: 1px solid #e2e8f0; white-space: normal; line-height: 1.45; box-shadow: 0 1px 2px rgba(0,0,0,0.03); overflow-x: auto; }
       .val-up { color: #eb4d4b; font-weight: bold; }
