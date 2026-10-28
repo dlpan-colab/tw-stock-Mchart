@@ -43,38 +43,49 @@ FINMIND_TOKEN = ""
 # 1. 中文名稱解析與快取
 # ==========================================
 def get_tw_stock_name(stock_id: str) -> str:
-    stock_id = str(stock_id).strip().upper()
     cache = load_stock_names_cache()
-
-    if stock_id in cache:
-        return cache[stock_id]
-    if stock_id in COMMON_STOCKS:
-        cache[stock_id] = COMMON_STOCKS[stock_id]
-        save_stock_names_cache(cache)
+    if stock_id in cache and cache[stock_id] and cache[stock_id] != stock_id:
         return cache[stock_id]
 
+    headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
+    
+    # 同時支援上市 (strMode=2) 與 上櫃 (strMode=4)
+    for mode in [2, 4]:
+        try:
+            url = f"https://isin.twse.com.tw/isin/C_public.jsp?strMode={mode}"
+            resp = requests.get(url, headers=headers, timeout=5)
+            if resp.status_code == 200:
+                soup = BeautifulSoup(resp.text, 'html.parser')
+                rows = soup.find_all('tr')
+                for r in rows:
+                    cols = r.find_all('td')
+                    if len(cols) >= 3:
+                        text_0 = cols[0].text.strip()
+                        parts = text_0.replace('\u3000', ' ').split()
+                        if len(parts) >= 2 and parts[0] == stock_id:
+                            c_name = parts[1]
+                            if c_name:
+                                cache[stock_id] = c_name
+                                save_stock_names_cache(cache)
+                                return c_name
+        except Exception:
+            pass
+
+    # 備援：若 ISIN 查詢失敗，透過 yfinance 取得名稱
     try:
-        url = f"https://isin.twse.com.tw/isin/single_main.jsp?owncode={stock_id}&stockname="
-        res = requests.get(url, timeout=5)
-        if res.status_code == 200:
-            soup = BeautifulSoup(res.text, 'html.parser')
-            rows = soup.find_all('tr')
-           
-            for r in rows:
-                cols = r.find_all('td')
-                if len(cols) >= 3:
-                    text_0 = cols[0].text.strip()
-                    parts = text_0.replace('\u3000', ' ').split()
-                    if len(parts) >= 2 and parts[0] == stock_id:
-                        c_name = parts[1]
-                        if c_name:
-                            cache[stock_id] = c_name
-                            save_stock_names_cache(cache)
-                            return c_name
+        import yfinance as yf
+        for ext in ['.TW', '.TWO']:
+            ticker = yf.Ticker(f"{stock_id}{ext}")
+            name = ticker.info.get('shortName') or ticker.info.get('longName')
+            if name:
+                cache[stock_id] = name
+                save_stock_names_cache(cache)
+                return name
     except Exception:
         pass
 
     return stock_id
+
 
 get_stock_chinese_name = get_tw_stock_name
 
