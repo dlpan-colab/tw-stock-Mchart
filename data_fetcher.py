@@ -5,7 +5,7 @@ FinMind 與外部 API 連線逾時全數壓制至 3 秒內。
 """
 
 MODULE_NAME = "data_fetcher"
-MODULE_VERSION = "202610300130"
+MODULE_VERSION = "202610300200"
 
 import io
 import re
@@ -94,6 +94,14 @@ def fetch_stock_daily_k(
     if df.empty:
         return None, ""
 
+    # 取得發行股數 (用於計算換手率)
+    shares_count = None
+    try:
+        info = ticker.info
+        shares_count = info.get('sharesOutstanding', None)
+    except Exception:
+        pass
+
     # 統一整理欄位
     df = df.reset_index()
     if 'Date' in df.columns:
@@ -115,6 +123,15 @@ def fetch_stock_daily_k(
 
     # 2. 嚴格剔除成交量為 0 的幽靈交易日，徹底解決資料位移
     df = df[df['Volume'] > 0].copy()
+
+    # 3. 計算成交張數與換手率 (Turnover_Rate) 確保 10%、20% 標記正常顯示
+    df['Volume_Sheets'] = df['Volume'] / 1000.0
+    if shares_count and shares_count > 0:
+        df['Turnover_Rate'] = (df['Volume'] / shares_count) * 100.0
+    else:
+        # 若無法取得總股數，以近 60 日平均成交量作為基準估算換手率
+        avg_vol = df['Volume'].rolling(60, min_periods=1).mean()
+        df['Turnover_Rate'] = (df['Volume'] / avg_vol) * 5.0  # 模擬基準
 
     df['date'] = pd.to_datetime(df['date']).dt.normalize()
     df.sort_values('date', inplace=True)
