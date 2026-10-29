@@ -55,12 +55,16 @@ def detect_tw_market(pure_code: str) -> str:
         
     return ".TW"
 
-
+#############################################################################
 def create_fast_session() -> requests.Session:
-    """建立無隱式重試的高速 session，逾時立刻中斷"""
+    """建立自訂 session，加入 User-Agent 偽裝避免 Yahoo 阻擋"""
     s = requests.Session()
     s.verify = False
-    adapter = requests.adapters.HTTPAdapter(max_retries=0)
+    # 必須加入 User-Agent，否則 Yahoo 容易直接回傳空值
+    s.headers.update({
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+    })
+    adapter = requests.adapters.HTTPAdapter(max_retries=1) # 給予 1 次重試彈性
     s.mount('https://', adapter)
     s.mount('http://', adapter)
     return s
@@ -87,7 +91,8 @@ def fetch_stock_daily_k(
     for sym in symbols_to_try:
         try:
             ticker = yf.Ticker(sym, session=session)
-            fetched = ticker.history(period=period, auto_adjust=False, timeout=3)
+            # K線為主圖核心，把逾時稍微放寬至 8 秒確保能抓到
+            fetched = ticker.history(period=period, auto_adjust=False, timeout=8)
             if fetched is not None and not fetched.empty:
                 df = fetched
                 success_symbol = sym
@@ -121,7 +126,7 @@ def fetch_stock_daily_k(
         df = df[df['date'] <= b_dt].copy()
 
     return df, success_symbol
-
+#################################################################################
 
 def fetch_stock_name(pure_code: str) -> str:
     """
