@@ -208,7 +208,7 @@ class StockChipStorage:
                 df['date'] = pd.to_datetime(df['date']).dt.normalize()
             return df
 
-
+#####################################################################################################
 # ==========================================
 # 2. 歷史個股清單管理（安全防崩潰與 LRU 排序）
 # ==========================================
@@ -216,12 +216,16 @@ def load_stock_history() -> List[dict]:
     history_file = Path(HISTORY_FILE_PATH)
     sync = _get_cloud_sync()
     
-    # 步驟 1：安全從雲端拉取歷史檔，攔截底層 SSL/IO 崩潰
+    # 步驟 1：安全從雲端拉取歷史檔，加入 3 次重試防範 SSL 握手抖動
     if not IS_COLAB and sync:
-        try:
-            sync.pull_file(history_file)
-        except (ssl.SSLError, OSError, Exception) as e:
-            logger.warning(f"同步 stock_history.json 失敗（已安全轉由本地接手）: {e}")
+        for attempt in range(3):
+            try:
+                sync.pull_file(history_file)
+                break
+            except (ssl.SSLError, OSError, Exception) as e:
+                if attempt == 2:
+                    logger.warning(f"同步 stock_history.json 失敗（轉由本地接手）: {e}")
+                import time; time.sleep(1)
 
     existing_history = []
     if history_file.exists():
@@ -231,8 +235,7 @@ def load_stock_history() -> List[dict]:
                 if isinstance(data, list):
                     for item in data:
                         if isinstance(item, dict) and "code" in item:
-                            # 通用名稱驗證：若名稱不合法（如英文全銜），降級顯示代碼
-                            c = str(item["code"])
+                            c = str(item["code"]).strip().upper()
                             n = str(item.get("name", c))
                             if not is_valid_tw_stock_name(n):
                                 n = c
@@ -240,20 +243,32 @@ def load_stock_history() -> List[dict]:
         except Exception:
             pass
 
-    # 步驟 2：安全取得 Google Drive 現存的 .db 清單（連線異常時不中斷主程式）
+    # 步驟 2：取得 Google Drive 現存的 .db 清單（加入重試）
     drive_codes = []
     if not IS_COLAB and sync and hasattr(sync, "service") and sync.service and sync.folder_id:
-        try:
-            q = f"'{sync.folder_id}' in parents and trashed = false and name contains '.db'"
-            res = sync.service.files().list(q=q, fields="files(name)").execute()
-            for item in res.get("files", []):
-                m = re.search(r'data_(\w+)\.db', item["name"])
-                if m:
-                    drive_codes.append(m.group(1))
-        except (ssl.SSLError, OSError, Exception):
-            pass
+        for _ in range(3):
+            try:
+                q = f"'{sync.folder_id}' in parents and trashed = false and name contains '.db'"
+                res = sync.service.files().list(q=q, fields="files(name)").execute()
+                for item in res.get("files", []):
+                    m = re.search(r'data_(\w+)\.db', item.get("name", ""))
+                    if m and m.group(1) != "XXXX":
+                        drive_codes.append(m.group(1).upper())
+                break
+            except (ssl.SSLError, OSError, Exception):
+                import time; time.sleep(1)
 
-    # 步驟 3：嚴格保持 LRU 順序
+    # 步驟 2.1：保底掃描本地 DATA_DIR 既有的 .db
+    local_codes = []
+    try:
+        for f in os.listdir(str(DATA_DIR)):
+            m = re.search(r'data_(\w+)\.db', f)
+            if m and m.group(1) != "XXXX":
+                local_codes.append(m.group(1).upper())
+    except Exception:
+        pass
+
+    # 步驟 3：嚴格保持 LRU 順序（最新查過的維持在前）
     ordered_list = []
     seen = set()
     for item in existing_history:
@@ -262,15 +277,15 @@ def load_stock_history() -> List[dict]:
             ordered_list.append(item)
             seen.add(code)
 
-    # 步驟 4：若 Google Drive 有尚未列入歷史的 .db，補在末端
+    # 步驟 4：雲端或本地現存的 .db 若不在清單中，自動補齊在末端（絕不漏檔）
     name_cache = load_stock_names_cache()
-    if drive_codes:
-        for code in drive_codes:
-            if code not in seen:
-                raw_n = name_cache.get(code, code)
-                c_name = raw_n if is_valid_tw_stock_name(raw_n) else code
-                ordered_list.append({"code": code, "name": c_name})
-                seen.add(code)
+    all_found_codes = list(dict.fromkeys(drive_codes + local_codes))
+    for code in all_found_codes:
+        if code not in seen:
+            raw_n = name_cache.get(code, code)
+            c_name = raw_n if is_valid_tw_stock_name(raw_n) else code
+            ordered_list.append({"code": code, "name": c_name})
+            seen.add(code)
 
     if ordered_list:
         return ordered_list
@@ -283,13 +298,13 @@ def load_stock_history() -> List[dict]:
         {"code": "2615", "name": "萬海"}
     ]
 
+
 def save_stock_history(code: str, name: str = "") -> List[dict]:
     code = str(code).strip().upper()
     history = load_stock_history()
 
-    # 名稱合法性驗證（長度 <= 10 且非 yfinance 英文全名）
+    # 名稱合法性驗證
     valid_name = name if is_valid_tw_stock_name(name) else ""
-
     final_name = valid_name
     for item in history:
         if item.get("code") == code:
@@ -300,7 +315,7 @@ def save_stock_history(code: str, name: str = "") -> List[dict]:
     if not final_name:
         final_name = code
 
-    # 抽出舊位置並強制插入最上位（第 0 位）
+    # 將當前標的抽出並強制插入最前端 (Index 0)
     history = [item for item in history if item.get("code") != code]
     history.insert(0, {"code": code, "name": final_name})
 
@@ -308,13 +323,20 @@ def save_stock_history(code: str, name: str = "") -> List[dict]:
     try:
         with open(history_file, "w", encoding="utf-8") as f:
             json.dump(history, f, ensure_ascii=False, indent=2)
+        
         sync = _get_cloud_sync()
         if not IS_COLAB and sync:
-            sync.push_file(history_file)
+            for _ in range(3):
+                try:
+                    sync.push_file(history_file)
+                    break
+                except (ssl.SSLError, OSError, Exception):
+                    import time; time.sleep(1)
     except (ssl.SSLError, OSError, Exception):
         pass
 
     return history
+########################################################################################
 
 def clear_stock_history() -> List[dict]:
     history_file = Path(HISTORY_FILE_PATH)
