@@ -35,7 +35,6 @@ os.makedirs(str(DATA_DIR), exist_ok=True)
 _CACHED_DRIVE_CODES: Optional[List[str]] = None
 _HISTORY_PULLED: bool = False
 
-
 def _get_cloud_sync():
     try:
         import cloud_sync
@@ -46,7 +45,6 @@ def _get_cloud_sync():
     except Exception:
         pass
     return None
-
 
 def is_valid_tw_stock_name(name: str) -> bool:
     """
@@ -65,7 +63,6 @@ def is_valid_tw_stock_name(name: str) -> bool:
         return False
     return True
 
-
 # ==========================================
 # 1. 股票晶片資料庫存取類別 (StockChipStorage)
 # ==========================================
@@ -74,7 +71,7 @@ class StockChipStorage:
         self.pure_code = str(pure_code).strip().upper()
         self.db_name = f"data_{self.pure_code}.db"
         self.db_path = str(DATA_DIR / self.db_name)
-        
+
         # 步驟 1：優先從 Google Drive 拉取雲端既有的 .db（安全連線包裝）
         sync = _get_cloud_sync()
         if not IS_COLAB and sync and not os.path.exists(self.db_path):
@@ -89,8 +86,8 @@ class StockChipStorage:
         # 步驟 3：判定是否為初次
         latest_date = self.get_latest_inst_date()
         self.is_first_time = (latest_date is None)
-#######################################################
-def _init_db(self):
+
+    def _init_db(self):
         # 允許重試 2 次，遇到壞檔自動刪除重建
         for attempt in range(2):
             try:
@@ -127,7 +124,7 @@ def _init_db(self):
                 # 發生 file is not a database，砍掉壞檔重試
                 if os.path.exists(self.db_path):
                     os.remove(self.db_path)
-####################################################
+
     def get_latest_inst_date(self) -> Optional[str]:
         with sqlite3.connect(self.db_path) as conn:
             cur = conn.cursor()
@@ -221,7 +218,6 @@ def _init_db(self):
                 df['date'] = pd.to_datetime(df['date']).dt.normalize()
             return df
 
-
 # ==========================================
 # 2. 歷史個股清單管理（安全防崩潰、快取加速與 LRU 排序）
 # ==========================================
@@ -229,7 +225,7 @@ def load_stock_history() -> List[dict]:
     global _CACHED_DRIVE_CODES, _HISTORY_PULLED
     history_file = Path(HISTORY_FILE_PATH)
     sync = _get_cloud_sync()
-    
+
     # 步驟 1：開機後僅從雲端 pull 一次歷史檔，後續不再重複請求 Drive
     if not IS_COLAB and sync and not _HISTORY_PULLED:
         for attempt in range(3):
@@ -366,9 +362,9 @@ def clear_stock_history() -> List[dict]:
             sync.delete_remote_file("stock_history.json")
     except (ssl.SSLError, OSError, Exception):
         pass
+    
     _CACHED_DRIVE_CODES = None
     return []
-
 
 # ==========================================
 # 3. 中文名稱快取讀寫（通用長度過濾防線）
