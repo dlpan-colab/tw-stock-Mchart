@@ -3,11 +3,13 @@
 負責主圖（K 線、5/20/60MA、頭底標籤、成交量柱、換手率正倒三角標記）
 與副圖（9 大技術及籌碼子圖）之繪製，計算初始可視範圍與動態月份 X 軸標籤。
 完全相容 app.py 的 build_split_figures 呼叫規格與回傳格式。
+強化底層記憶體管理，杜絕連續切換時的 double free / 記憶體洩漏崩潰。
 """
 
 MODULE_NAME = "chart_builder"
-MODULE_VERSION = "202610281018"
+MODULE_VERSION = "202610291645"
 
+import gc
 from typing import Optional, Tuple
 import numpy as np
 import pandas as pd
@@ -57,7 +59,8 @@ def render_split_figures_from_df(
     sub_df = df.iloc[start_idx:end_idx + 1]
 
     # 主圖價格與成交量初始範圍
-    p_max, p_min = float(sub_df['High'].max()), float(sub_df['Low'].min())
+    p_max = float(sub_df['High'].max())
+    p_min = float(sub_df['Low'].min())
     p_pad = (p_max - p_min) * 0.12 if p_max > p_min else 2.0
     vol_col = 'Volume_Sheets' if 'Volume_Sheets' in sub_df.columns else 'Volume'
     vol_upper = float(sub_df[vol_col].max()) * 1.30 if not sub_df[vol_col].empty else 1000.0
@@ -78,16 +81,20 @@ def render_split_figures_from_df(
     m_colors = ['#eb4d4b' if val >= 0 else '#2ecc71' for val in df.get('Margin_Diff', pd.Series(dtype=float)).fillna(0)]
     s_colors = ['#f1c40f' if val >= 0 else '#3498db' for val in df.get('Short_Diff', pd.Series(dtype=float)).fillna(0)]
 
-    # 3. 副圖極值與軸邊距計算
+    # 3. 副圖極值與軸邊距計算（優化避免 pd.concat 造成記憶體重複釋放）
     sub_obv = sub_df.get('OBV', pd.Series(dtype=float)).dropna()
     sub_obv_ma = sub_df.get('OBV_MA20', pd.Series(dtype=float)).dropna()
     obv_min = float(min(sub_obv.min(), sub_obv_ma.min())) if not sub_obv_ma.empty else (float(sub_obv.min()) if not sub_obv.empty else 0.0)
     obv_max = float(max(sub_obv.max(), sub_obv_ma.max())) if not sub_obv_ma.empty else (float(sub_obv.max()) if not sub_obv.empty else 100.0)
     obv_pad = (obv_max - obv_min) * 0.10 if obv_max > obv_min else 5.0
 
-    sub_macd_vals = pd.concat([sub_df.get('DIF', pd.Series(dtype=float)), sub_df.get('MACD', pd.Series(dtype=float)), sub_df.get('OSC', pd.Series(dtype=float))]).dropna()
-    macd_min = float(sub_macd_vals.min()) if not sub_macd_vals.empty else -1.0
-    macd_max = float(sub_macd_vals.max()) if not sub_macd_vals.empty else 1.0
+    dif_s = sub_df.get('DIF', pd.Series(dtype=float)).dropna()
+    macd_s = sub_df.get('MACD', pd.Series(dtype=float)).dropna()
+    osc_s = sub_df.get('OSC', pd.Series(dtype=float)).dropna()
+    all_macd_mins = [s.min() for s in [dif_s, macd_s, osc_s] if not s.empty]
+    all_macd_maxs = [s.max() for s in [dif_s, macd_s, osc_s] if not s.empty]
+    macd_min = float(min(all_macd_mins)) if all_macd_mins else -1.0
+    macd_max = float(max(all_macd_maxs)) if all_macd_maxs else 1.0
     macd_pad = (macd_max - macd_min) * 0.15 if macd_max > macd_min else 0.5
 
     def calc_inst_range(series):
@@ -103,8 +110,10 @@ def render_split_figures_from_df(
     tn_range = calc_inst_range(sub_df.get('Trust_Net', pd.Series(dtype=float)))
     dn_range = calc_inst_range(sub_df.get('Dealer_Net', pd.Series(dtype=float)))
 
-    ms_vals = pd.concat([sub_df.get('Margin_Diff', pd.Series(dtype=float)), sub_df.get('Short_Diff', pd.Series(dtype=float))]).dropna()
-    ms_max_abs = max(abs(float(ms_vals.min())), abs(float(ms_vals.max()))) if not ms_vals.empty else 0
+    md_s = sub_df.get('Margin_Diff', pd.Series(dtype=float)).dropna()
+    sd_s = sub_df.get('Short_Diff', pd.Series(dtype=float)).dropna()
+    ms_extremes = [abs(float(x)) for s in [md_s, sd_s] if not s.empty for x in [s.min(), s.max()]]
+    ms_max_abs = max(ms_extremes) if ms_extremes else 0
     ms_range = [-ms_max_abs * 1.25, ms_max_abs * 1.25] if ms_max_abs > 0 else [-100, 100]
 
     def calc_holding_range(series):
@@ -208,7 +217,6 @@ def render_split_figures_from_df(
                 name='換手≥20%'
             ), row=2, col=1)
 
-    # 股票名稱(代號) (市場) 台股技術與籌碼分析(模組化)(版本號)
     stock_display = f"{c_name}({pure_code})" if c_name and c_name != pure_code else pure_code
     title_text = f"{stock_display} ({market})"
 
@@ -322,6 +330,7 @@ def build_split_figures(
         m2 = int(kwargs.get('major2_thresh', 400))
         mob = bool(kwargs.get('is_mobile', False))
         f_top, f_btm, e_idx, d_n = render_split_figures_from_df(df, pure_code, market, c_name, days, b_date, m1, m2, mob)
+        gc.collect()
         return f_top, f_btm, df, c_name, e_idx, d_n
 
     if fetch_stock_data is None or calculate_all_indicators is None:
@@ -346,5 +355,8 @@ def build_split_figures(
         major2_thresh=major2_thresh,
         is_mobile=is_mobile
     )
+
+    # 強制釋放暫存物件，防止連續繪圖累積造成 glibc double free
+    gc.collect()
 
     return fig_top, fig_btm, df, c_name, end_idx, disp_n
