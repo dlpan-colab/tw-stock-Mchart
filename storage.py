@@ -89,37 +89,45 @@ class StockChipStorage:
         # 步驟 3：判定是否為初次
         latest_date = self.get_latest_inst_date()
         self.is_first_time = (latest_date is None)
-
-    def _init_db(self):
-        with sqlite3.connect(self.db_path) as conn:
-            cur = conn.cursor()
-            cur.execute("""
-                CREATE TABLE IF NOT EXISTS institutional_investors (
-                    date TEXT PRIMARY KEY,
-                    foreign_net REAL,
-                    trust_net REAL,
-                    dealer_net REAL
-                )
-            """)
-            cur.execute("""
-                CREATE TABLE IF NOT EXISTS shareholding_distribution (
-                    date TEXT,
-                    level INTEGER,
-                    percent REAL,
-                    PRIMARY KEY (date, level)
-                )
-            """)
-            cur.execute("""
-                CREATE TABLE IF NOT EXISTS margin_short (
-                    date TEXT PRIMARY KEY,
-                    margin_diff REAL,
-                    short_diff REAL,
-                    margin_bal REAL,
-                    short_bal REAL
-                )
-            """)
-            conn.commit()
-
+#######################################################
+def _init_db(self):
+        # 允許重試 2 次，遇到壞檔自動刪除重建
+        for attempt in range(2):
+            try:
+                with sqlite3.connect(self.db_path) as conn:
+                    cur = conn.cursor()
+                    cur.execute("""
+                        CREATE TABLE IF NOT EXISTS institutional_investors (
+                            date TEXT PRIMARY KEY,
+                            foreign_net REAL,
+                            trust_net REAL,
+                            dealer_net REAL
+                        )
+                    """)
+                    cur.execute("""
+                        CREATE TABLE IF NOT EXISTS shareholding_distribution (
+                            date TEXT,
+                            level INTEGER,
+                            percent REAL,
+                            PRIMARY KEY (date, level)
+                        )
+                    """)
+                    cur.execute("""
+                        CREATE TABLE IF NOT EXISTS margin_short (
+                            date TEXT PRIMARY KEY,
+                            margin_diff REAL,
+                            short_diff REAL,
+                            margin_bal REAL,
+                            short_bal REAL
+                        )
+                    """)
+                    conn.commit()
+                break  # 成功則跳出迴圈
+            except sqlite3.DatabaseError:
+                # 發生 file is not a database，砍掉壞檔重試
+                if os.path.exists(self.db_path):
+                    os.remove(self.db_path)
+####################################################
     def get_latest_inst_date(self) -> Optional[str]:
         with sqlite3.connect(self.db_path) as conn:
             cur = conn.cursor()
