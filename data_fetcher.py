@@ -7,7 +7,7 @@ TDCC 集保大戶分級增量爬蟲、FinMind 法人與資券同步。
 """
 
 MODULE_NAME = "data_fetcher"
-MODULE_VERSION = "202610292100"
+MODULE_VERSION = "202610292135"
 
 import os
 import re
@@ -306,7 +306,7 @@ def sync_chip_data(pure_code: str, df_dates, status_placeholder=None):
         except Exception:
             pass
 
-    # 3. TDCC 集保分級增量（加入 4 秒總逾時與快速熔斷，徹底防卡死）
+    # 3. TDCC 集保分級增量（加入 3 秒短逾時與最多 2 週熔斷機制，徹底防卡死）
     holding_df = storage.load_holding_df()
     existing_weeks = set(holding_df['date'].dt.strftime('%Y%m%d')) if not holding_df.empty else set()
     try:
@@ -322,18 +322,15 @@ def sync_chip_data(pure_code: str, df_dates, status_placeholder=None):
             available_dates = [o.get('value').strip() for o in soup_home.find_all('option')
                                if o.get('value') and o.get('value').strip().isdigit() and len(o.get('value').strip()) == 8 and o.get('value').strip().startswith('20')]
             available_dates = sorted(list(set(available_dates)), reverse=True)
-            # 限制單次最多補抓最新 2 週，避免歷史斷層時發動數十次請求卡死
             missing_dates = [d for d in available_dates if d not in existing_weeks][:2]
 
             h_rec = []
             for d_str in missing_dates:
                 try:
                     payload = {'scaDate': d_str, 'sqlMethod': 'StockNo', 'stockNo': pure_code, 'stockName': '', 'sub': '查詢'}
-                    # 設定 3 秒短超時，連線慢直接跳過
                     resp = session_tdcc.post(target_url, data=payload, headers=headers, timeout=3)
                     if resp.status_code != 200:
                         break
-                    
                     dfs = pd.read_html(StringIO(resp.text))
                     target_tbl = next((d for d in dfs if '1' in d.iloc[:, 0].astype(str).tolist() and '15' in d.iloc[:, 0].astype(str).tolist()), None)
                     if target_tbl is not None:
@@ -346,7 +343,6 @@ def sync_chip_data(pure_code: str, df_dates, status_placeholder=None):
                             except ValueError:
                                 pass
                 except Exception:
-                    # 遇到逾時或被阻擋直接中斷集保迴圈，保證主程式出圖
                     break
             if h_rec:
                 storage.save_holding_data(h_rec)
