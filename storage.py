@@ -1,11 +1,11 @@
 """
 台股技術與籌碼分析系統 - 本地與歷史資料管理模組
 以 Google Drive 雲端資料庫為單一真實來源。
-歷史導航清單自動對齊 Google Drive 內已建檔之個股，避免切換時重複初始化。
+歷史導航清單維持嚴格 LRU（最近查詢置頂）排序，並自動對齊 Google Drive 現存資料庫。
 """
 
 MODULE_NAME = "storage"
-MODULE_VERSION = "202610281145"
+MODULE_VERSION = "202610291615"
 
 import os
 import re
@@ -190,27 +190,18 @@ class StockChipStorage:
 
 
 # ==========================================
-# 2. 歷史個股清單管理（對齊 Google Drive 現存資料庫）
+# 2. 歷史個股清單管理（嚴格維持最近訪問置頂排序）
 # ==========================================
 def load_stock_history() -> List[dict]:
-    """優先抓取 Google Drive 上現有的 .db 檔建立清單，確保每檔皆秒開"""
+    """
+    讀取歷史清單：
+    1. 嚴格以 stock_history.json 的時間排序（最近瀏覽在最前）為基準。
+    2. Google Drive 既有的其他 .db 檔僅在末端補齊，絕不打亂前方的訪問順序。
+    """
     history_file = Path(HISTORY_FILE_PATH)
     sync = _get_cloud_sync()
     
-    # 嘗試從 Google Drive 讀取現有檔案清單
-    drive_codes = []
-    if not IS_COLAB and sync and hasattr(sync, "service") and sync.service and sync.folder_id:
-        try:
-            q = f"'{sync.folder_id}' in parents and trashed = false and name contains '.db'"
-            res = sync.service.files().list(q=q, fields="files(name)").execute()
-            for item in res.get("files", []):
-                m = re.search(r'data_(\w+)\.db', item["name"])
-                if m:
-                    drive_codes.append(m.group(1))
-        except Exception:
-            pass
-
-    # 讀取本地/雲端 JSON
+    # 步驟 1：優先從 Google Drive 同步最新的 stock_history.json
     if not IS_COLAB and sync:
         try:
             sync.pull_file(history_file)
@@ -229,17 +220,39 @@ def load_stock_history() -> List[dict]:
         except Exception:
             pass
 
-    name_map = {item["code"]: item.get("name", item["code"]) for item in existing_history}
+    # 步驟 2：取得 Google Drive 上已存在的 .db 檔案代碼
+    drive_codes = []
+    if not IS_COLAB and sync and hasattr(sync, "service") and sync.service and sync.folder_id:
+        try:
+            q = f"'{sync.folder_id}' in parents and trashed = false and name contains '.db'"
+            res = sync.service.files().list(q=q, fields="files(name)").execute()
+            for item in res.get("files", []):
+                m = re.search(r'data_(\w+)\.db', item["name"])
+                if m:
+                    drive_codes.append(m.group(1))
+        except Exception:
+            pass
 
-    # 若成功取得 Google Drive 雲端資料庫列表，以雲端現有清單為準
+    # 步驟 3：嚴格保留 JSON 的訪問先後順序
+    ordered_list = []
+    seen = set()
+    for item in existing_history:
+        code = item.get("code")
+        if code and code not in seen:
+            ordered_list.append(item)
+            seen.add(code)
+
+    # 步驟 4：若 Google Drive 有尚未列入歷史的 .db，補在清單最末端，不干擾前面已排好的瀏覽順序
+    name_cache = load_stock_names_cache()
     if drive_codes:
-        final_list = []
         for code in drive_codes:
-            final_list.append({"code": code, "name": name_map.get(code, code)})
-        return final_list
+            if code not in seen:
+                c_name = name_cache.get(code, code)
+                ordered_list.append({"code": code, "name": c_name})
+                seen.add(code)
 
-    if existing_history:
-        return existing_history
+    if ordered_list:
+        return ordered_list
 
     return [
         {"code": "1303", "name": "南亞"},
@@ -250,19 +263,30 @@ def load_stock_history() -> List[dict]:
     ]
 
 def save_stock_history(code: str, name: str = "") -> List[dict]:
+    """
+    LRU 置頂儲存：
+    將最新點選或輸入查詢的股票抽出，強制移至最上方（第 0 位）。
+    """
     code = str(code).strip().upper()
     history = load_stock_history()
-    # 保持清單穩定，不強制隨意打亂順序，若新股票則加入最前
-    found = False
+
+    # 保留原有的名稱資訊（若本次未傳入新名稱）
+    final_name = name
     for item in history:
         if item.get("code") == code:
-            if name:
-                item["name"] = name
-            found = True
+            if not final_name:
+                final_name = item.get("name", code)
             break
-    if not found:
-        history.insert(0, {"code": code, "name": name or code})
-    
+    if not final_name:
+        final_name = code
+
+    # 1. 抽出舊位置（若存在先刪除）
+    history = [item for item in history if item.get("code") != code]
+
+    # 2. 插入最上位（第 0 位）
+    history.insert(0, {"code": code, "name": final_name})
+
+    # 3. 寫入本地與雲端
     history_file = Path(HISTORY_FILE_PATH)
     try:
         with open(history_file, "w", encoding="utf-8") as f:
@@ -272,6 +296,7 @@ def save_stock_history(code: str, name: str = "") -> List[dict]:
             sync.push_file(history_file)
     except Exception:
         pass
+
     return history
 
 def clear_stock_history() -> List[dict]:
