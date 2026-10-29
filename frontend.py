@@ -7,7 +7,7 @@
 """
 
 MODULE_NAME = "frontend"
-MODULE_VERSION = "202610280310"
+MODULE_VERSION = "202610290920"
 
 import json
 from typing import Dict, Optional
@@ -175,6 +175,12 @@ def get_component_html(
             var s = Number(v).toFixed(dec);
             return v > 0 ? '<span style="color:#f1c40f;font-weight:bold;">+' + s + '</span>' : (v < 0 ? '<span style="color:#3498db;font-weight:bold;">' + s + '</span>' : '<span>' + s + '</span>');
         }
+        function getMaSym(arr, i) {
+            if (i <= 0 || !isValidNum(arr[i]) || !isValidNum(arr[i - 1])) return '';
+            if (arr[i] > arr[i - 1]) return '↑';
+            if (arr[i] < arr[i - 1]) return '↓';
+            return '-';
+        }
 
         function updateAllPanes(idx) {
             if (idx < 0 || idx >= totalPoints) return;
@@ -184,7 +190,11 @@ def get_component_html(
             var cClass = chg > 0 ? 'val-up' : (chg < 0 ? 'val-dn' : ''), sign = chg > 0 ? '+' : '';
             var toStr = isValidNum(turnovers[idx]) ? fmtNum(turnovers[idx], 2) + '%' : '-';
 
-            info1.innerHTML = '<span class="tag-lbl"><b>' + d + '</b></span>開:<span class="' + cClass + '">' + fmtNum(opens[idx], 2) + '</span> 高:<span class="' + cClass + '">' + fmtNum(highs[idx], 2) + '</span> 低:<span class="' + cClass + '">' + fmtNum(lows[idx], 2) + '</span> 收:<span class="' + cClass + '">' + fmtNum(c, 2) + ' (' + sign + fmtNum(chg, 2) + ', ' + sign + fmtNum(chgPct, 2) + '%)</span> 量:<span>' + fmtNum(vols[idx], 0) + '張</span> <span style="color:#1e3799;font-weight:bold;">換手:' + toStr + '</span> <span style="color:#f1c40f;">MA5:' + fmtNum(ma5s[idx], 2) + '</span> <span style="color:#e67e22;">MA20:' + fmtNum(ma20s[idx], 2) + '</span> <span style="color:#9b59b6;">MA60:' + fmtNum(ma60s[idx], 2) + '</span>';
+            var ma5Sym = getMaSym(ma5s, idx);
+            var ma20Sym = getMaSym(ma20s, idx);
+            var ma60Sym = getMaSym(ma60s, idx);
+
+            info1.innerHTML = '<span class="tag-lbl"><b>' + d + '</b></span>開:<span class="' + cClass + '">' + fmtNum(opens[idx], 2) + '</span> 高:<span class="' + cClass + '">' + fmtNum(highs[idx], 2) + '</span> 低:<span class="' + cClass + '">' + fmtNum(lows[idx], 2) + '</span> 收:<span class="' + cClass + '">' + fmtNum(c, 2) + ' (' + sign + fmtNum(chg, 2) + ', ' + sign + fmtNum(chgPct, 2) + '%)</span> 量:<span>' + fmtNum(vols[idx], 0) + '張</span> <span style="color:#1e3799;font-weight:bold;">換手:' + toStr + '</span> <span style="color:#f1c40f;">MA5:' + fmtNum(ma5s[idx], 2) + ma5Sym + '</span> <span style="color:#e67e22;">MA20:' + fmtNum(ma20s[idx], 2) + ma20Sym + '</span> <span style="color:#9b59b6;">MA60:' + fmtNum(ma60s[idx], 2) + ma60Sym + '</span>';
 
             var oscClass = oscs[idx] > 0 ? 'val-up' : (oscs[idx] < 0 ? 'val-dn' : '');
             infoTech1.innerHTML = '<span class="tag-lbl"><b>KD(9)</b></span><span style="color:#e74c3c;">K:' + fmtNum(ks[idx], 1) + '</span> <span style="color:#3498db;">D:' + fmtNum(ds[idx], 1) + '</span> | <span class="tag-lbl"><b>MACD(' + d + ')</b></span><span style="color:#f39c12;">DIF:' + fmtNum(difs[idx], 2) + '</span> <span style="color:#2980b9;">MACD:' + fmtNum(macds[idx], 2) + '</span> OSC:<span class="' + oscClass + '">' + fmtNum(oscs[idx], 2) + '</span>';
