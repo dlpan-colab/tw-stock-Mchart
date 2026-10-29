@@ -229,3 +229,7 @@ def sync_chip_data(pure_code: str, storage: StockChipStorage):
             pass
     except Exception:
         pass
+
+def fetch_chip_data_online(*args, **kwargs):
+    """相容 app.py 既有匯入介面"""
+    return sync_chip_data(*args, **kwargs)
