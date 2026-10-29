@@ -5,7 +5,7 @@
 """
 
 MODULE_NAME = "app"
-MODULE_VERSION = "202610281055"
+MODULE_VERSION = "202610291150"
 
 import re
 import datetime
@@ -67,6 +67,7 @@ def run_app():
         st.session_state.current_index = (st.session_state.current_index - 1) % len(hist)
         target_code = hist[st.session_state.current_index]['code']
         st.session_state.ticker_input_field = target_code
+        st.session_state.hist_select = "(選擇歷史標的)"
 
     def on_next_click():
         hist = st.session_state.history_list
@@ -75,6 +76,7 @@ def run_app():
         st.session_state.current_index = (st.session_state.current_index + 1) % len(hist)
         target_code = hist[st.session_state.current_index]['code']
         st.session_state.ticker_input_field = target_code
+        st.session_state.hist_select = "(選擇歷史標的)"
 
     # 3. 側邊欄參數設定
     with st.sidebar:
@@ -173,9 +175,13 @@ def run_app():
         st.warning(f"查無標的 `{target_symbol}` 之交易資料，請確認代號是否正確。")
         return
 
-    # 6. 自動回饋至歷史清單
+    # 6. 自動回饋至歷史清單（同步校準當前索引）
     saved_hist = save_stock_history(target_symbol, c_name)
     st.session_state.history_list = saved_hist
+    for i, h in enumerate(saved_hist):
+        if h.get('code') == target_symbol:
+            st.session_state.current_index = i
+            break
 
     # 7. 渲染前端圖表
     component_html = get_component_html(
