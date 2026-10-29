@@ -306,13 +306,13 @@ def sync_chip_data(pure_code: str, df_dates, status_placeholder=None):
         except Exception:
             pass
 
-    # 3. TDCC 集保分級增量
+    # 3. TDCC 集保分級增量（加入 4 秒總逾時與快速熔斷，徹底防卡死）
     holding_df = storage.load_holding_df()
     existing_weeks = set(holding_df['date'].dt.strftime('%Y%m%d')) if not holding_df.empty else set()
     try:
         session_tdcc = requests.Session()
         url_home = "https://www.tdcc.com.tw/portal/zh/smWeb/qryStock"
-        r_home = session_tdcc.get(url_home, headers=headers, timeout=12)
+        r_home = session_tdcc.get(url_home, headers=headers, timeout=3)
         if r_home.status_code == 200:
             soup_home = BeautifulSoup(r_home.text, 'html.parser')
             form = soup_home.find('form')
@@ -322,19 +322,19 @@ def sync_chip_data(pure_code: str, df_dates, status_placeholder=None):
             available_dates = [o.get('value').strip() for o in soup_home.find_all('option')
                                if o.get('value') and o.get('value').strip().isdigit() and len(o.get('value').strip()) == 8 and o.get('value').strip().startswith('20')]
             available_dates = sorted(list(set(available_dates)), reverse=True)
-            missing_dates = [d for d in available_dates if d not in existing_weeks][:TDCC_INCREMENTAL_WEEKS_LIMIT]
+            # 限制單次最多補抓最新 2 週，避免歷史斷層時發動數十次請求卡死
+            missing_dates = [d for d in available_dates if d not in existing_weeks][:2]
 
             h_rec = []
             for d_str in missing_dates:
                 try:
-                    r_page = session_tdcc.get(url_home, headers=headers, timeout=10)
-                    sp_page = BeautifulSoup(r_page.text, 'html.parser')
-                    cur_form = sp_page.find('form')
-                    payload = {inp.get('name'): inp.get('value', '') for inp in cur_form.find_all('input') if inp.get('name')}
-                    payload.update({'scaDate': d_str, 'sqlMethod': 'StockNo', 'stockNo': pure_code, 'stockName': '', 'sub': '查詢'})
-                    resp = session_tdcc.post(target_url, data=payload, headers=headers, timeout=10)
+                    payload = {'scaDate': d_str, 'sqlMethod': 'StockNo', 'stockNo': pure_code, 'stockName': '', 'sub': '查詢'}
+                    # 設定 3 秒短超時，連線慢直接跳過
+                    resp = session_tdcc.post(target_url, data=payload, headers=headers, timeout=3)
+                    if resp.status_code != 200:
+                        break
+                    
                     dfs = pd.read_html(StringIO(resp.text))
-
                     target_tbl = next((d for d in dfs if '1' in d.iloc[:, 0].astype(str).tolist() and '15' in d.iloc[:, 0].astype(str).tolist()), None)
                     if target_tbl is not None:
                         lvl_col, pct_col = target_tbl.columns[0], target_tbl.columns[-1]
@@ -345,9 +345,9 @@ def sync_chip_data(pure_code: str, df_dates, status_placeholder=None):
                                 h_rec.append((d_fmt, int(row[lvl_col]), float(str(row[pct_col]).replace('%', '').replace(',', ''))))
                             except ValueError:
                                 pass
-                    time.sleep(0.2)
                 except Exception:
-                    continue
+                    # 遇到逾時或被阻擋直接中斷集保迴圈，保證主程式出圖
+                    break
             if h_rec:
                 storage.save_holding_data(h_rec)
     except Exception:
