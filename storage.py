@@ -6,12 +6,13 @@
 """
 
 MODULE_NAME = "storage"
-MODULE_VERSION = "202610291945"
+MODULE_VERSION = "202610292330"
 
 import os
 import re
 import ssl
 import json
+import time
 import sqlite3
 import logging
 from pathlib import Path
@@ -29,6 +30,10 @@ from config import (
 logger = logging.getLogger(__name__)
 
 os.makedirs(str(DATA_DIR), exist_ok=True)
+
+# 全域快取：避免每次點擊查詢都重複向 Google Drive 發送全目錄掃描 API
+_CACHED_DRIVE_CODES: Optional[List[str]] = None
+_HISTORY_PULLED: bool = False
 
 
 def _get_cloud_sync():
@@ -208,24 +213,26 @@ class StockChipStorage:
                 df['date'] = pd.to_datetime(df['date']).dt.normalize()
             return df
 
-#####################################################################################################
+
 # ==========================================
-# 2. 歷史個股清單管理（安全防崩潰與 LRU 排序）
+# 2. 歷史個股清單管理（安全防崩潰、快取加速與 LRU 排序）
 # ==========================================
 def load_stock_history() -> List[dict]:
+    global _CACHED_DRIVE_CODES, _HISTORY_PULLED
     history_file = Path(HISTORY_FILE_PATH)
     sync = _get_cloud_sync()
     
-    # 步驟 1：安全從雲端拉取歷史檔，加入 3 次重試防範 SSL 握手抖動
-    if not IS_COLAB and sync:
+    # 步驟 1：開機後僅從雲端 pull 一次歷史檔，後續不再重複請求 Drive
+    if not IS_COLAB and sync and not _HISTORY_PULLED:
         for attempt in range(3):
             try:
                 sync.pull_file(history_file)
+                _HISTORY_PULLED = True
                 break
             except (ssl.SSLError, OSError, Exception) as e:
                 if attempt == 2:
-                    logger.warning(f"同步 stock_history.json 失敗（轉由本地接手）: {e}")
-                import time; time.sleep(1)
+                    logger.warning(f"同步 stock_history.json 失敗（由本地快取接手）: {e}")
+                time.sleep(1)
 
     existing_history = []
     if history_file.exists():
@@ -243,10 +250,10 @@ def load_stock_history() -> List[dict]:
         except Exception:
             pass
 
-    # 步驟 2：取得 Google Drive 現存的 .db 清單（加入重試）
-    drive_codes = []
-    if not IS_COLAB and sync and hasattr(sync, "service") and sync.service and sync.folder_id:
-        for _ in range(3):
+    # 步驟 2：取得 Google Drive 現存的 .db 清單（僅掃描一次並長駐記憶體快取）
+    if _CACHED_DRIVE_CODES is None:
+        drive_codes = []
+        if not IS_COLAB and sync and hasattr(sync, "service") and sync.service and sync.folder_id:
             try:
                 q = f"'{sync.folder_id}' in parents and trashed = false and name contains '.db'"
                 res = sync.service.files().list(q=q, fields="files(name)").execute()
@@ -254,9 +261,11 @@ def load_stock_history() -> List[dict]:
                     m = re.search(r'data_(\w+)\.db', item.get("name", ""))
                     if m and m.group(1) != "XXXX":
                         drive_codes.append(m.group(1).upper())
-                break
-            except (ssl.SSLError, OSError, Exception):
-                import time; time.sleep(1)
+            except Exception as e:
+                logger.warning(f"掃描雲端 db 清單略過: {e}")
+        _CACHED_DRIVE_CODES = drive_codes
+    else:
+        drive_codes = _CACHED_DRIVE_CODES
 
     # 步驟 2.1：保底掃描本地 DATA_DIR 既有的 .db
     local_codes = []
@@ -326,19 +335,20 @@ def save_stock_history(code: str, name: str = "") -> List[dict]:
         
         sync = _get_cloud_sync()
         if not IS_COLAB and sync:
-            for _ in range(3):
+            for _ in range(2):
                 try:
                     sync.push_file(history_file)
                     break
                 except (ssl.SSLError, OSError, Exception):
-                    import time; time.sleep(1)
+                    time.sleep(1)
     except (ssl.SSLError, OSError, Exception):
         pass
 
     return history
-########################################################################################
+
 
 def clear_stock_history() -> List[dict]:
+    global _CACHED_DRIVE_CODES
     history_file = Path(HISTORY_FILE_PATH)
     try:
         if history_file.exists():
@@ -348,6 +358,7 @@ def clear_stock_history() -> List[dict]:
             sync.delete_remote_file("stock_history.json")
     except (ssl.SSLError, OSError, Exception):
         pass
+    _CACHED_DRIVE_CODES = None
     return []
 
 
@@ -369,6 +380,7 @@ def load_stock_names_cache() -> Dict[str, str]:
             return clean_cache
     except Exception:
         return {}
+
 
 def save_stock_names_cache(cache_data: Dict[str, str]):
     cache_path = str(STOCK_NAMES_CACHE_PATH)
