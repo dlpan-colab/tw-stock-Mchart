@@ -5,7 +5,7 @@ FinMind 與外部 API 連線逾時全數壓制至 3 秒內。
 """
 
 MODULE_NAME = "data_fetcher"
-MODULE_VERSION = "202610300100"
+MODULE_VERSION = "202610300130"
 
 import io
 import re
@@ -83,7 +83,6 @@ def fetch_stock_daily_k(
     for sym in symbols_to_try:
         try:
             ticker = yf.Ticker(sym, session=session)
-            # K線為主圖核心，把逾時稍微放寬至 8 秒確保能抓到
             fetched = ticker.history(period=period, auto_adjust=False, timeout=8)
             if fetched is not None and not fetched.empty:
                 df = fetched
@@ -136,19 +135,36 @@ def fetch_stock_name(pure_code: str) -> str:
         return cache[code]
 
     headers = {"User-Agent": "Mozilla/5.0"}
+    
+    # 嘗試 1：證交所 MIS API (上市與上櫃通用)
     try:
-        # 修正上櫃查詢後綴為 .tw，解決上櫃無中文名稱問題
         url = f"https://mis.twse.com.tw/stock/api/getStockInfo.jsp?ex_ch=tse_{code}.tw|otc_{code}.tw"
         res = requests.get(url, headers=headers, timeout=2)
         if res.status_code == 200:
             data = res.json()
             items = data.get("msgArray", [])
-            if items:
-                n = items[0].get("n", "")
+            for item in items:
+                n = item.get("n", "")
                 if is_valid_tw_stock_name(n):
                     cache[code] = n
                     save_stock_names_cache(cache)
                     return n
+    except Exception:
+        pass
+
+    # 嘗試 2：Yahoo Finance 標頭解析（作為備援）
+    try:
+        market_suffix = detect_tw_market(code)
+        url_yf = f"https://finance.yahoo.com/quote/{code}{market_suffix}"
+        res = requests.get(url_yf, headers={"User-Agent": "Mozilla/5.0"}, timeout=3)
+        if res.status_code == 200:
+            m = re.search(r'<title>(.*?)\s*\(\s*' + code, res.text)
+            if m:
+                raw_title = m.group(1).strip()
+                if is_valid_tw_stock_name(raw_title):
+                    cache[code] = raw_title
+                    save_stock_names_cache(cache)
+                    return raw_title
     except Exception:
         pass
 
