@@ -1,12 +1,12 @@
 """
 台股技術與籌碼分析系統 - 外部資料爬蟲與清洗模組
 負責 yfinance 日 K 抓取、休市 0 成交量過濾、盤中補點防護、
-TDCC 集保大戶分級增量爬蟲、FinMind 法人與資券同步、ISIN 股票中文名稱快取。
+TDCC 集保大戶分級增量爬蟲、FinMind 法人與資券同步、ISIN/TWSE 股票中文名稱快取。
 相容 Streamlit Cloud 與 Google Colab 雙執行環境。
 """
 
 MODULE_NAME = "data_fetcher"
-MODULE_VERSION = "202610280040"
+MODULE_VERSION = "202610291535"
 
 import os
 import re
@@ -40,7 +40,7 @@ logger = logging.getLogger(__name__)
 FINMIND_TOKEN = ""
 
 # ==========================================
-# 1. 中文名稱解析與快取
+# 1. 中文名稱解析與快取 (支援上市/上櫃/KY股)
 # ==========================================
 def get_tw_stock_name(stock_id: str) -> str:
     # 常用或特殊個股快速對照表
@@ -48,6 +48,7 @@ def get_tw_stock_name(stock_id: str) -> str:
         '2208': '台船',
         '6425': '易發',
         '4991': '環宇-KY',
+        '3661': '世芯-KY',
         '2330': '台積電',
         '1303': '南亞',
         '2454': '聯發科',
@@ -60,11 +61,34 @@ def get_tw_stock_name(stock_id: str) -> str:
 
     cache = load_stock_names_cache()
     if stock_id in cache and cache[stock_id] and cache[stock_id] != stock_id:
-        return cache[stock_id]    
+        # 防呆：若快取中殘留舊有的全英文名稱，強制刷新重查
+        if not re.search(r'[\u4e00-\u9fa5]', cache[stock_id]):
+            pass
+        else:
+            return cache[stock_id]    
     
-    headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36'
+    }
+
+    # 1. 優先使用證交所官方即時代碼比對端點（涵蓋所有上市/上櫃/KY/創新板中文名稱）
+    try:
+        url_twse_query = f"https://www.twse.com.tw/rwd/zh/api/codeQuery?query={stock_id}"
+        resp_q = requests.get(url_twse_query, headers=headers, timeout=5)
+        if resp_q.status_code == 200:
+            suggestions = resp_q.json().get("suggestions", [])
+            for item in suggestions:
+                parts = re.split(r'[\t\s]+', item.strip())
+                if len(parts) >= 2 and parts[0] == stock_id:
+                    c_name = parts[1]
+                    if c_name:
+                        cache[stock_id] = c_name
+                        save_stock_names_cache(cache)
+                        return c_name
+    except Exception:
+        pass
     
-    # 同時支援上市 (strMode=2) 與 上櫃 (strMode=4)
+    # 2. 備援：ISIN 清單查詢（支援上市與上櫃）
     for mode in [2, 4]:
         try:
             url = f"https://isin.twse.com.tw/isin/C_public.jsp?strMode={mode}"
@@ -86,7 +110,7 @@ def get_tw_stock_name(stock_id: str) -> str:
         except Exception:
             pass
 
-    # 備援：若 ISIN 查詢失敗，透過 yfinance 取得名稱
+    # 3. 備援：若官方端點皆無回應，由 yfinance 嘗試取得
     try:
         import yfinance as yf
         for ext in ['.TW', '.TWO']:
