@@ -5,10 +5,11 @@
 """
 
 MODULE_NAME = "app"
-MODULE_VERSION = "202610291610"
+MODULE_VERSION = "202610300010"
 
 import re
 import datetime
+import traceback
 import streamlit as st
 import streamlit.components.v1 as components
 
@@ -170,6 +171,7 @@ def run_app():
     except Exception as e:
         status_box.empty()
         st.error(f"資料擷取或計算失敗：{e}")
+        st.code(traceback.format_exc(), language="text")
         return
 
     if df is None or df.empty:
