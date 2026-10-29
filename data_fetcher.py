@@ -252,7 +252,7 @@ def sync_chip_data(pure_code: str, df_dates, status_placeholder=None):
                 "start_date": inst_query_start,
                 "token": FINMIND_TOKEN
             }
-            res = requests.get(url_inst, params=p_inst, headers=headers, timeout=12)
+            res = requests.get(url_inst, params=p_inst, headers=headers, timeout=3)
             if res.status_code == 200:
                 data = res.json().get('data', [])
                 if data:
@@ -282,7 +282,7 @@ def sync_chip_data(pure_code: str, df_dates, status_placeholder=None):
                 "start_date": margin_query_start,
                 "token": FINMIND_TOKEN
             }
-            res_ms = requests.get(url_ms, params=p_ms, headers=headers, timeout=12)
+            res_ms = requests.get(url_ms, params=p_ms, headers=headers, timeout=3)
             if res_ms.status_code == 200:
                 data_ms = res_ms.json().get('data', [])
                 if data_ms:
