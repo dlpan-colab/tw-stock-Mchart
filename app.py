@@ -5,7 +5,7 @@
 """
 
 MODULE_NAME = "app"
-MODULE_VERSION = "202610291150"
+MODULE_VERSION = "202610291610"
 
 import re
 import datetime
@@ -44,6 +44,8 @@ def run_app():
         st.session_state.history_list = load_stock_history()
     if 'current_index' not in st.session_state:
         st.session_state.current_index = 0
+    if 'nav_mode' not in st.session_state:
+        st.session_state.nav_mode = False
     if 'ticker_input_field' not in st.session_state:
         init_code = st.session_state.history_list[0]['code'] if st.session_state.history_list else "2330"
         st.session_state.ticker_input_field = init_code
@@ -54,16 +56,14 @@ def run_app():
         if selected and selected != "(選擇歷史標的)":
             chosen_code = parse_pure_code(selected)
             if chosen_code:
+                st.session_state.nav_mode = False
                 st.session_state.ticker_input_field = chosen_code
-                for i, h in enumerate(st.session_state.history_list):
-                    if h.get('code') == chosen_code:
-                        st.session_state.current_index = i
-                        break
 
     def on_prev_click():
         hist = st.session_state.history_list
         if not hist:
             return
+        st.session_state.nav_mode = True
         st.session_state.current_index = (st.session_state.current_index - 1) % len(hist)
         target_code = hist[st.session_state.current_index]['code']
         st.session_state.ticker_input_field = target_code
@@ -73,6 +73,7 @@ def run_app():
         hist = st.session_state.history_list
         if not hist:
             return
+        st.session_state.nav_mode = True
         st.session_state.current_index = (st.session_state.current_index + 1) % len(hist)
         target_code = hist[st.session_state.current_index]['code']
         st.session_state.ticker_input_field = target_code
@@ -175,13 +176,15 @@ def run_app():
         st.warning(f"查無標的 `{target_symbol}` 之交易資料，請確認代號是否正確。")
         return
 
-    # 6. 自動回饋至歷史清單（同步校準當前索引）
-    saved_hist = save_stock_history(target_symbol, c_name)
-    st.session_state.history_list = saved_hist
-    for i, h in enumerate(saved_hist):
-        if h.get('code') == target_symbol:
-            st.session_state.current_index = i
-            break
+    # 6. 依操作類型決定是否變更順位
+    if not st.session_state.get('nav_mode', False):
+        # 點選選單或輸入查詢：置頂並寫入歷史
+        saved_hist = save_stock_history(target_symbol, c_name)
+        st.session_state.history_list = saved_hist
+        st.session_state.current_index = 0
+    else:
+        # 上一個/下一個導航：不變更順位，僅重置導航狀態
+        st.session_state.nav_mode = False
 
     # 7. 渲染前端圖表
     component_html = get_component_html(
