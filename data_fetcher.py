@@ -118,7 +118,7 @@ def fetch_stock_daily_k(
 
     df['date'] = pd.to_datetime(df['date']).dt.normalize()
     df.sort_values('date', inplace=True)
-    df.reset_index(drop=True, inplace=True)
+    df.set_index('date', inplace=True)
 
     # 基準日截斷（復盤模式）
     if base_date:
