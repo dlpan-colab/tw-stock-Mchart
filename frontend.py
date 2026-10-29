@@ -3,11 +3,12 @@
 輸出五大即時看板（Quote Bar、技術1、技術2、資券、法人集保）、
 雙向同步十字線、防抖節流滾輪縮放、動態極值重算，
 以及行動端緊湊按鈕 CSS 與圖例函式 get_legend_html。
+內建行動端 PWA 斷線/休眠自動偵測與重新連線自癒機制。
 相容 Streamlit Cloud 與 Google Colab 雙執行環境。
 """
 
 MODULE_NAME = "frontend"
-MODULE_VERSION = "202610290920"
+MODULE_VERSION = "202610291700"
 
 import json
 from typing import Dict, Optional
@@ -71,7 +72,7 @@ def get_component_html(
 ) -> str:
     """
     輸出嵌入式雙圖 HTML/JS：
-    包含 5 大資訊面板、十字雙向連動、動態極值縮放與防抖更新
+    包含 5 大資訊面板、十字雙向連動、動態極值縮放與防抖更新、休眠喚醒自動重連看門狗
     """
     chart_id = f"chart_{str(raw_ticker).replace('.', '_')}"
     top_h_css = "340px" if is_mobile else "380px"
@@ -313,6 +314,50 @@ def get_component_html(
         }
         bindHover(elTop);
         bindHover(elBtm);
+
+        // ==========================================
+        // 前端自動解凍與休眠喚醒看門狗 (Watchdog)
+        // ==========================================
+        var lastHeartbeat = Date.now();
+        function triggerAutoHeal(reason) {
+            try {
+                Plotly.Plots.resize(elTop);
+                Plotly.Plots.resize(elBtm);
+            } catch(e) {}
+
+            try {
+                var pDoc = window.parent.document;
+                var stopBtn = pDoc.querySelector('button[aria-label="Stop execution"], button:has(svg title:contains("Stop"))');
+                var isBlank = !info1 || info1.innerText.indexOf('正在載入') !== -1;
+                
+                // 若喚醒時發現連線卡在 Stop，或圖表未能正常呈現，主動連動 Streamlit 重新載入
+                if (stopBtn || isBlank) {
+                    window.parent.location.reload();
+                }
+            } catch(e) {}
+        }
+
+        // 1. 偵測頁面可見性變化（手機切換視窗、螢幕開關）
+        document.addEventListener('visibilitychange', function() {
+            if (!document.hidden) {
+                triggerAutoHeal('visibilitychange');
+            }
+        });
+
+        // 2. 視窗獲得焦點（返回 APP）
+        window.addEventListener('focus', function() {
+            triggerAutoHeal('focus');
+        });
+
+        // 3. 時間跳躍比對（Time-drift：偵測 Android 深層休眠）
+        setInterval(function() {
+            var now = Date.now();
+            if (now - lastHeartbeat > 3000) {
+                triggerAutoHeal('timedrift');
+            }
+            lastHeartbeat = now;
+        }, 1000);
+
     })();
     </script>
     """
