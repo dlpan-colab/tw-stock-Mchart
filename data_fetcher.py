@@ -1,10 +1,10 @@
 """
 台股技術與籌碼分析系統 - 資料擷取模組
-支援上市 (TWSE) 與上櫃 (TPEx) 市場精準分流，整合日 K 線、換手率、法人、資券與集保大戶持股
+支援上市 (TWSE) 與上櫃 (TPEx) 市場精準分流，完整整合日 K 線、換手率、法人、資券與集保大戶持股
 """
 
 MODULE_NAME = "data_fetcher"
-MODULE_VERSION = "202610300400"
+MODULE_VERSION = "202610300500"
 
 import io
 import re
@@ -113,24 +113,19 @@ def fetch_stock_daily_k(
 
     df['Volume_Sheets'] = df['Volume'] / 1000.0
 
-    # 【動態自由流通換手率計算】嘗試從本地 DB 讀取最新 >=1000張 大戶持股比例來動態扣除
+    # 【動態自由流通換手率計算】嘗試從本地 DB 讀取最新大戶持股比例來動態扣除
     storage = StockChipStorage(code)
     holding_df = storage.load_holding_df()
     
-    # 預設大戶鎖定比例為 0 (若無集保資料)
     latest_major_pct = 0.0
     if not holding_df.empty:
-        # TDCC 級距 17 通常代表 >= 1000張 (依實際資料結構相容)
-        # 假設我們抓取最大級距或合計大於 1000 張的比例
         max_level = holding_df['level'].max()
-        # 若級距格式為 1~17，17 通常為 >=1000張
         target_level = 17 if 17 in holding_df['level'].values else max_level
         sub_holding = holding_df[holding_df['level'] == target_level]
         if not sub_holding.empty:
             latest_major_pct = float(sub_holding.iloc[-1]['percent'])
 
     if shares_count and shares_count > 0:
-        # 分子：當日成交股數；分母：總股數 * (1 - 大戶持股比例%)
         free_float_shares = shares_count * (1.0 - (latest_major_pct / 100.0))
         if free_float_shares > 0:
             df['Turnover_Rate'] = (df['Volume'] / free_float_shares) * 100.0
@@ -158,6 +153,8 @@ def fetch_stock_name(pure_code: str) -> str:
         return cache[code]
 
     headers = {"User-Agent": "Mozilla/5.0"}
+    
+    # 嘗試 1：證交所 MIS API (上市與上櫃通用)
     try:
         url = f"https://mis.twse.com.tw/stock/api/getStockInfo.jsp?ex_ch=tse_{code}.tw|otc_{code}.tw"
         res = requests.get(url, headers=headers, timeout=2)
@@ -172,6 +169,7 @@ def fetch_stock_name(pure_code: str) -> str:
     except Exception:
         pass
 
+    # 嘗試 2：Yahoo Finance 標頭解析（作為備援）
     try:
         market_suffix = detect_tw_market(code)
         url_yf = f"https://finance.yahoo.com/quote/{code}{market_suffix}"
@@ -218,8 +216,8 @@ def sync_chip_data(pure_code: str, storage: StockChipStorage):
                         records.append((str(d_val), float(f_net), float(t_net), float(d_net)))
                     if records:
                         storage.save_institutional_data(records)
-    except Exception:
-        pass
+    except Exception as e:
+        logger.warning(f"同步三大法人失敗: {e}")
 
     # 2. FinMind 資券餘額資料
     try:
@@ -248,8 +246,8 @@ def sync_chip_data(pure_code: str, storage: StockChipStorage):
                         ))
                     if records:
                         storage.save_margin_data(records)
-    except Exception:
-        pass
+    except Exception as e:
+        logger.warning(f"同步資券餘額失敗: {e}")
 
     # 3. 集保大戶持股資料 (TDCC OpenData ID: 1-5)
     try:
@@ -278,8 +276,8 @@ def sync_chip_data(pure_code: str, storage: StockChipStorage):
                             continue
                     if holding_records:
                         storage.save_holding_data(holding_records)
-    except Exception:
-        pass
+    except Exception as e:
+        logger.warning(f"同步集保大戶資料失敗: {e}")
 
 
 def fetch_chip_data_online(*args, **kwargs):
