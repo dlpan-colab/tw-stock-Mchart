@@ -107,15 +107,16 @@ def fetch_stock_daily_k(
     df = df.reset_index()
     if 'Date' in df.columns:
         df['Date'] = pd.to_datetime(df['Date']).dt.tz_localize(None)
+###############################################
     df.rename(columns={
         'Date': 'date',
-        'Open': 'open',
-        'High': 'high',
-        'Low': 'low',
-        'Close': 'close',
-        'Volume': 'volume'
+        'Open': 'Open',
+        'High': 'High',
+        'Low': 'Low',
+        'Close': 'Close',
+        'Volume': 'Volume'
     }, inplace=True)
-
+#############################################
     df['date'] = pd.to_datetime(df['date']).dt.normalize()
     df.sort_values('date', inplace=True)
     df.set_index('date', inplace=True)
