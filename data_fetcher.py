@@ -4,7 +4,7 @@
 """
 
 MODULE_NAME = "data_fetcher"
-MODULE_VERSION = "202610300500"
+MODULE_VERSION = "202610300600"
 
 import io
 import re
@@ -84,7 +84,6 @@ def fetch_stock_daily_k(
     if df.empty:
         return None, ""
 
-    # 取得發行總股數
     shares_count = None
     try:
         if ticker_obj and hasattr(ticker_obj, 'info'):
@@ -105,7 +104,6 @@ def fetch_stock_daily_k(
         'Volume': 'Volume'
     }, inplace=True)
 
-    # 補齊收盤價與剔除成交量為 0 的幽靈日
     if 'Adj Close' in df.columns:
         df['Close'] = df['Close'].fillna(df['Adj Close'])
     df[['Open', 'High', 'Low', 'Close', 'Volume']] = df[['Open', 'High', 'Low', 'Close', 'Volume']].ffill()
@@ -113,7 +111,6 @@ def fetch_stock_daily_k(
 
     df['Volume_Sheets'] = df['Volume'] / 1000.0
 
-    # 【動態自由流通換手率計算】嘗試從本地 DB 讀取最新大戶持股比例來動態扣除
     storage = StockChipStorage(code)
     holding_df = storage.load_holding_df()
     
@@ -133,7 +130,7 @@ def fetch_stock_daily_k(
             df['Turnover_Rate'] = (df['Volume'] / shares_count) * 100.0
     else:
         avg_vol = df['Volume'].rolling(60, min_periods=1).mean()
-        df['Turnover_Rate'] = (df['Volume'] / avg_vol) * 5.0
+        df['Turnover_Rate'] = (df['Volume'] / avg_vol) * 10.0
 
     df['date'] = pd.to_datetime(df['date']).dt.normalize()
     df.sort_values('date', inplace=True)
@@ -154,7 +151,6 @@ def fetch_stock_name(pure_code: str) -> str:
 
     headers = {"User-Agent": "Mozilla/5.0"}
     
-    # 嘗試 1：證交所 MIS API (上市與上櫃通用)
     try:
         url = f"https://mis.twse.com.tw/stock/api/getStockInfo.jsp?ex_ch=tse_{code}.tw|otc_{code}.tw"
         res = requests.get(url, headers=headers, timeout=2)
@@ -169,7 +165,6 @@ def fetch_stock_name(pure_code: str) -> str:
     except Exception:
         pass
 
-    # 嘗試 2：Yahoo Finance 標頭解析（作為備援）
     try:
         market_suffix = detect_tw_market(code)
         url_yf = f"https://finance.yahoo.com/quote/{code}{market_suffix}"
