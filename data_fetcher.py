@@ -233,3 +233,25 @@ def sync_chip_data(pure_code: str, storage: StockChipStorage):
 def fetch_chip_data_online(*args, **kwargs):
     """相容 app.py 既有匯入介面"""
     return sync_chip_data(*args, **kwargs)
+
+def fetch_stock_data(raw_ticker: str, period: str = "1y", base_date=None) -> Tuple[Optional[pd.DataFrame], str, str, str, str, Optional[int]]:
+    """
+    相容 chart_builder.py 的舊版呼叫介面。
+    整合抓取 K 線、名稱與同步籌碼。
+    回傳: (df, full_symbol, pure_code, market_suffix, c_name, shares_outstanding)
+    """
+    code = str(raw_ticker).strip().upper()
+    df, success_symbol = fetch_stock_daily_k(code, period, base_date)
+    
+    if df is None or df.empty:
+        return None, "", code, "", "", None
+        
+    c_name = fetch_stock_name(code)
+    market = ".TWO" if success_symbol.endswith(".TWO") else ".TW"
+    
+    # 建立本機資料庫連線並同步籌碼
+    storage = StockChipStorage(code)
+    sync_chip_data(code, storage)
+    
+    # 這裡的發行股數(shares_outstanding)舊版預設傳回 None，由指標模組自行處裡
+    return df, success_symbol, code, market, c_name, None
