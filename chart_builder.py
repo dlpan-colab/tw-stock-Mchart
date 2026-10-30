@@ -1,9 +1,12 @@
 """
 chart_builder.py - Plotly 圖表建構模組
-版本: 202610301630
+版本: 202610301645
+- 換手率 ≥10% 與 ≥20% 標記於當日成交量柱上方
+- 主圖 Y 軸中文徹底移除
+- 支援 shares_outstanding 正確傳遞計算換手率
 """
 
-VERSION_TAG = "202610301630"
+VERSION_TAG = "202610301645"
 
 from typing import Tuple, Optional
 import numpy as np
@@ -25,19 +28,24 @@ def build_split_figures(
     status_placeholder=None
 ) -> Tuple[Optional[go.Figure], Optional[go.Figure], Optional[pd.DataFrame], str, int, int]:
 
-    df_raw, full_ticker = fetch_stock_daily_k(raw_ticker, period=period, base_date=str(base_date) if base_date else None)
-    if df_raw is None or df_raw.empty:
+    k_res = fetch_stock_daily_k(raw_ticker, period=period, base_date=str(base_date) if base_date else None)
+    if k_res is None or k_res[0] is None or k_res[0].empty:
         return None, None, None, "", 0, 0
+
+    df_raw = k_res[0]
+    full_ticker = k_res[1]
+    shares_outstanding = k_res[2] if len(k_res) >= 3 else None
 
     c_name = fetch_stock_name(raw_ticker)
     market = "上市" if full_ticker.endswith(".TW") else "上櫃"
 
-    # 指標與籌碼運算
+    # 指標與籌碼計算（傳入股數）
     df = calculate_all_indicators(
         df=df_raw,
         pure_code=raw_ticker,
         major1_thresh=major1_thresh,
         major2_thresh=major2_thresh,
+        shares_outstanding=shares_outstanding,
         status_placeholder=status_placeholder
     )
 
@@ -61,7 +69,7 @@ def build_split_figures(
     start_idx = max(0, end_idx - disp_n + 1)
     sub_df = df.iloc[start_idx:end_idx + 1]
 
-    # --- 依可視區間計算各子圖 Y 軸範圍 ---
+    # --- 各子圖可視範圍極值 ---
     p_max, p_min = float(sub_df['High'].max()), float(sub_df['Low'].min())
     p_pad = (p_max - p_min) * 0.12 if p_max > p_min else 2.0
     vol_upper = float(sub_df['Volume_Sheets'].max()) * 1.25 if not sub_df['Volume_Sheets'].empty else 1000.0
@@ -162,9 +170,38 @@ def build_split_figures(
             textfont=dict(family='Arial Black, sans-serif', size=13, color='#e74c3c'), hoverinfo='none'
         ), row=1, col=1)
 
-    # 成交量與換手率
+    # 成交量柱狀圖 (主軸)
     fig_top.add_trace(go.Bar(x=date_str_list, y=df['Volume_Sheets'], marker_color=vol_colors, name='成交量', hoverinfo='none'), secondary_y=False, row=2, col=1)
+    
+    # 換手率加粗折線 (副軸)
     fig_top.add_trace(go.Scatter(x=date_str_list, y=df['Turnover_Rate'], line=dict(color='#1e3799', width=3.9), connectgaps=True, name='換手率', hoverinfo='none'), secondary_y=True, row=2, col=1)
+
+    # 換手率 ≥10% 與 ≥20% 標記在成交量柱上方
+    to_series = df['Turnover_Rate']
+    to_10_mask = (to_series >= 10.0) & (to_series < 20.0)
+    to_20_mask = (to_series >= 20.0)
+
+    if to_10_mask.any():
+        fig_top.add_trace(go.Scatter(
+            x=[date_str_list[i] for i in range(total_len) if to_10_mask.iloc[i]],
+            y=df.loc[to_10_mask, 'Volume_Sheets'] * 1.05,
+            mode='text',
+            text=['<b>10%</b>' for _ in range(to_10_mask.sum())],
+            textposition='top center',
+            textfont=dict(family='Arial Black, sans-serif', size=11, color='#f39c12'),
+            showlegend=False, hoverinfo='none'
+        ), secondary_y=False, row=2, col=1)
+
+    if to_20_mask.any():
+        fig_top.add_trace(go.Scatter(
+            x=[date_str_list[i] for i in range(total_len) if to_20_mask.iloc[i]],
+            y=df.loc[to_20_mask, 'Volume_Sheets'] * 1.05,
+            mode='text',
+            text=['<b>20%</b>' for _ in range(to_20_mask.sum())],
+            textposition='top center',
+            textfont=dict(family='Arial Black, sans-serif', size=12, color='#e74c3c'),
+            showlegend=False, hoverinfo='none'
+        ), secondary_y=False, row=2, col=1)
 
     fig_top.update_layout(
         title=dict(text=f'{c_name or raw_ticker} ({market}) 多指標+籌碼技術分析圖({VERSION_TAG})', font=dict(size=16)),
@@ -177,7 +214,7 @@ def build_split_figures(
     fig_top.update_xaxes(type='category', range=[start_idx - 0.5, end_idx + 0.5], domain=[0, 1], row=1, col=1)
     fig_top.update_xaxes(type='category', range=[start_idx - 0.5, end_idx + 0.5], domain=[0, 1], showticklabels=True, tickvals=month_ticks_vals, ticktext=month_ticks_text, row=2, col=1)
 
-    # 主圖移除〔價格〕與〔成交量〕中文標籤
+    # 移除中文標示
     fig_top.update_yaxes(title_text='', range=[p_min - (p_max - p_min) * 0.08, p_max + p_pad], fixedrange=True, row=1, col=1)
     fig_top.update_yaxes(title_text='', range=[0, vol_upper], fixedrange=True, secondary_y=False, row=2, col=1)
     fig_top.update_yaxes(title_text='', range=to_range, fixedrange=True, secondary_y=True, showgrid=False, showticklabels=False, row=2, col=1)
@@ -203,17 +240,17 @@ def build_split_figures(
     fig_btm.add_trace(go.Scatter(x=date_str_list, y=df['OBV'], line=dict(color='#16a085', width=1.2), hoverinfo='none'), row=3, col=1)
     fig_btm.add_trace(go.Scatter(x=date_str_list, y=df['OBV_MA20'], line=dict(color='#8e44ad', width=1.1, dash='dash'), hoverinfo='none'), row=3, col=1)
 
-    # Row 4: 外資買賣超
+    # Row 4: 外資
     f_colors = ['#eb4d4b' if x >= 0 else '#2ecc71' for x in df['Foreign_Net'].fillna(0)]
     fig_btm.add_trace(go.Bar(x=date_str_list, y=df['Foreign_Net'], marker_color=f_colors, hoverinfo='none'), row=4, col=1)
     fig_btm.add_hline(y=0, line_color='rgba(150,150,150,0.7)', line_width=1, row=4, col=1)
 
-    # Row 5: 投信買賣超
+    # Row 5: 投信
     t_colors = ['#eb4d4b' if x >= 0 else '#2ecc71' for x in df['Trust_Net'].fillna(0)]
     fig_btm.add_trace(go.Bar(x=date_str_list, y=df['Trust_Net'], marker_color=t_colors, hoverinfo='none'), row=5, col=1)
     fig_btm.add_hline(y=0, line_color='rgba(150,150,150,0.7)', line_width=1, row=5, col=1)
 
-    # Row 6: 自營商買賣超
+    # Row 6: 自營
     d_colors = ['#eb4d4b' if x >= 0 else '#2ecc71' for x in df['Dealer_Net'].fillna(0)]
     fig_btm.add_trace(go.Bar(x=date_str_list, y=df['Dealer_Net'], marker_color=d_colors, hoverinfo='none'), row=6, col=1)
     fig_btm.add_hline(y=0, line_color='rgba(150,150,150,0.7)', line_width=1, row=6, col=1)
