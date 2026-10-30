@@ -5,7 +5,7 @@
 """
 
 MODULE_NAME = "indicators"
-MODULE_VERSION = "202610302400"
+MODULE_VERSION = "202610302500"
 
 import numpy as np
 import pandas as pd
@@ -34,7 +34,7 @@ def calculate_all_indicators(
     *args,
     **kwargs
 ) -> pd.DataFrame:
-    """計算所有技術指標與籌碼資料，確保索引型態一致與副圖數值正確寫入"""
+    """計算所有技術指標與籌碼資料，確保週資料對齊與圖表數值正確"""
     if df is None or df.empty:
         return df
 
@@ -159,7 +159,7 @@ def calculate_all_indicators(
     except Exception:
         pass
 
-    # 載入大戶持股資料（週資料：同一週數值相同，不同週依每週六公告為準，不以直線強行填滿）
+    # 載入大戶持股資料（週資料對齊：以每週日作為該週歸屬鍵，確保同週交易日數值相同，非強行直線填滿）
     try:
         holding_df = storage.load_holding_df()
         if not holding_df.empty and 'date' in holding_df.columns and 'level' in holding_df.columns:
@@ -173,16 +173,17 @@ def calculate_all_indicators(
                     return {}
                 res = {}
                 for d, val in sub.groupby('date')['percent'].sum().items():
-                    iso_year, iso_week, _ = d.isocalendar()
-                    res[(iso_year, iso_week)] = float(val)
+                    # 以每週日作為該週週次識別基準 (WEEK KEY)
+                    week_key = d + pd.to_timedelta(6 - d.weekday(), unit='D')
+                    res[week_key] = float(val)
                 return res
 
             m1_dict, m2_dict = calc_major_pct(m1_levels), calc_major_pct(m2_levels)
             m1_vals, m2_vals = [], []
             for d in df.index:
-                y, w, _ = d.isocalendar()
-                m1_vals.append(m1_dict.get((y, w), np.nan))
-                m2_vals.append(m2_dict.get((y, w), np.nan))
+                week_key = d + pd.to_timedelta(6 - d.weekday(), unit='D')
+                m1_vals.append(m1_dict.get(week_key, np.nan))
+                m2_vals.append(m2_dict.get(week_key, np.nan))
 
             df['Major1_Pct'] = pd.Series(m1_vals, index=df.index)
             df['Major2_Pct'] = pd.Series(m2_vals, index=df.index)
