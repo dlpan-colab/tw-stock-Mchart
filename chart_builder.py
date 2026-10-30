@@ -1,12 +1,9 @@
 """
 chart_builder.py - Plotly 圖表建構模組
-- 主圖 Y 軸價格、成交量中文標示完全移除 (title_text='')
-- 各子圖 Y 軸鎖定不上下移動 (fixedrange=True)
-- 修正外資、投信、自營商 marker_color 繪圖異常
-- 大戶持股開啟 connectgaps=True 階梯繪製
+版本: 202610301630
 """
 
-VERSION_TAG = "202610301620"
+VERSION_TAG = "202610301630"
 
 from typing import Tuple, Optional
 import numpy as np
@@ -35,7 +32,7 @@ def build_split_figures(
     c_name = fetch_stock_name(raw_ticker)
     market = "上市" if full_ticker.endswith(".TW") else "上櫃"
 
-    # 指標與籌碼計算
+    # 指標與籌碼運算
     df = calculate_all_indicators(
         df=df_raw,
         pure_code=raw_ticker,
@@ -180,7 +177,7 @@ def build_split_figures(
     fig_top.update_xaxes(type='category', range=[start_idx - 0.5, end_idx + 0.5], domain=[0, 1], row=1, col=1)
     fig_top.update_xaxes(type='category', range=[start_idx - 0.5, end_idx + 0.5], domain=[0, 1], showticklabels=True, tickvals=month_ticks_vals, ticktext=month_ticks_text, row=2, col=1)
 
-    # 移除中文標示：價格與成交量 Y 軸 title_text 設為空字串
+    # 主圖移除〔價格〕與〔成交量〕中文標籤
     fig_top.update_yaxes(title_text='', range=[p_min - (p_max - p_min) * 0.08, p_max + p_pad], fixedrange=True, row=1, col=1)
     fig_top.update_yaxes(title_text='', range=[0, vol_upper], fixedrange=True, secondary_y=False, row=2, col=1)
     fig_top.update_yaxes(title_text='', range=to_range, fixedrange=True, secondary_y=True, showgrid=False, showticklabels=False, row=2, col=1)
@@ -206,17 +203,17 @@ def build_split_figures(
     fig_btm.add_trace(go.Scatter(x=date_str_list, y=df['OBV'], line=dict(color='#16a085', width=1.2), hoverinfo='none'), row=3, col=1)
     fig_btm.add_trace(go.Scatter(x=date_str_list, y=df['OBV_MA20'], line=dict(color='#8e44ad', width=1.1, dash='dash'), hoverinfo='none'), row=3, col=1)
 
-    # Row 4: 外資
+    # Row 4: 外資買賣超
     f_colors = ['#eb4d4b' if x >= 0 else '#2ecc71' for x in df['Foreign_Net'].fillna(0)]
     fig_btm.add_trace(go.Bar(x=date_str_list, y=df['Foreign_Net'], marker_color=f_colors, hoverinfo='none'), row=4, col=1)
     fig_btm.add_hline(y=0, line_color='rgba(150,150,150,0.7)', line_width=1, row=4, col=1)
 
-    # Row 5: 投信
+    # Row 5: 投信買賣超
     t_colors = ['#eb4d4b' if x >= 0 else '#2ecc71' for x in df['Trust_Net'].fillna(0)]
     fig_btm.add_trace(go.Bar(x=date_str_list, y=df['Trust_Net'], marker_color=t_colors, hoverinfo='none'), row=5, col=1)
     fig_btm.add_hline(y=0, line_color='rgba(150,150,150,0.7)', line_width=1, row=5, col=1)
 
-    # Row 6: 自營
+    # Row 6: 自營商買賣超
     d_colors = ['#eb4d4b' if x >= 0 else '#2ecc71' for x in df['Dealer_Net'].fillna(0)]
     fig_btm.add_trace(go.Bar(x=date_str_list, y=df['Dealer_Net'], marker_color=d_colors, hoverinfo='none'), row=6, col=1)
     fig_btm.add_hline(y=0, line_color='rgba(150,150,150,0.7)', line_width=1, row=6, col=1)
