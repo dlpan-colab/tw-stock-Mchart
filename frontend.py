@@ -3,7 +3,7 @@
 """
 
 MODULE_NAME = "frontend"
-MODULE_VERSION = "202610301100"
+MODULE_VERSION = "202610301300"
 
 import streamlit as st
 import pandas as pd
