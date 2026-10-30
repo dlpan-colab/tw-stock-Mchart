@@ -1,12 +1,12 @@
 """
-台股技術與籌碼分析系統 - 本地與歷史資料管理模組
+台股技術與籌碼分析系統 - 本地與歷史資料管理模組 (storage.py)
 以 Google Drive 雲端資料庫為單一真實來源。
 強化 SSL 連線防護與例外隔離，杜絕啟動時 Segmentation fault 崩潰。
 歷史導航清單維持嚴格 LRU（最近查詢置頂）排序。
 """
 
 MODULE_NAME = "storage"
-MODULE_VERSION = "202610292330"
+MODULE_VERSION = "202610301700"
 
 import os
 import re
@@ -35,6 +35,7 @@ os.makedirs(str(DATA_DIR), exist_ok=True)
 _CACHED_DRIVE_CODES: Optional[List[str]] = None
 _HISTORY_PULLED: bool = False
 
+
 def _get_cloud_sync():
     try:
         import cloud_sync
@@ -45,6 +46,7 @@ def _get_cloud_sync():
     except Exception:
         pass
     return None
+
 
 def is_valid_tw_stock_name(name: str) -> bool:
     """
@@ -63,16 +65,34 @@ def is_valid_tw_stock_name(name: str) -> bool:
         return False
     return True
 
-# ==========================================
-# 1. 股票晶片資料庫存取類別 (StockChipStorage)
-# ==========================================
+
+def load_stock_names_cache() -> Dict[str, str]:
+    if os.path.exists(STOCK_NAMES_CACHE_PATH):
+        try:
+            with open(STOCK_NAMES_CACHE_PATH, "r", encoding="utf-8") as f:
+                data = json.load(f)
+                if isinstance(data, dict):
+                    return data
+        except Exception:
+            pass
+    return {}
+
+
+def save_stock_names_cache(cache: Dict[str, str]):
+    try:
+        with open(STOCK_NAMES_CACHE_PATH, "w", encoding="utf-8") as f:
+            json.dump(cache, f, ensure_ascii=False, indent=2)
+    except Exception:
+        pass
+
+
 class StockChipStorage:
     def __init__(self, pure_code: str):
         self.pure_code = str(pure_code).strip().upper()
         self.db_name = f"data_{self.pure_code}.db"
         self.db_path = str(DATA_DIR / self.db_name)
 
-        # 步驟 1：優先從 Google Drive 拉取雲端既有的 .db（安全連線包裝）
+        # 步驟 1：優先從 Google Drive 拉取雲端既有的 .db
         sync = _get_cloud_sync()
         if not IS_COLAB and sync and not os.path.exists(self.db_path):
             try:
@@ -88,7 +108,6 @@ class StockChipStorage:
         self.is_first_time = (latest_date is None)
 
     def _init_db(self):
-        # 允許重試 2 次，遇到壞檔自動刪除重建
         for attempt in range(2):
             try:
                 with sqlite3.connect(self.db_path) as conn:
@@ -119,9 +138,8 @@ class StockChipStorage:
                         )
                     """)
                     conn.commit()
-                break  # 成功則跳出迴圈
+                    break
             except sqlite3.DatabaseError:
-                # 發生 file is not a database，砍掉壞檔重試
                 if os.path.exists(self.db_path):
                     os.remove(self.db_path)
 
@@ -218,15 +236,12 @@ class StockChipStorage:
                 df['date'] = pd.to_datetime(df['date']).dt.normalize()
             return df
 
-# ==========================================
-# 2. 歷史個股清單管理（安全防崩潰、快取加速與 LRU 排序）
-# ==========================================
+
 def load_stock_history() -> List[dict]:
     global _CACHED_DRIVE_CODES, _HISTORY_PULLED
     history_file = Path(HISTORY_FILE_PATH)
     sync = _get_cloud_sync()
 
-    # 步驟 1：開機後僅從雲端 pull 一次歷史檔，後續不再重複請求 Drive
     if not IS_COLAB and sync and not _HISTORY_PULLED:
         for attempt in range(3):
             try:
@@ -235,7 +250,7 @@ def load_stock_history() -> List[dict]:
                 break
             except (ssl.SSLError, OSError, Exception) as e:
                 if attempt == 2:
-                    logger.warning(f"同步 stock_history.json 失敗（由本地快取接手）: {e}")
+                    logger.warning(f"同步 stock_history.json 失敗: {e}")
                 time.sleep(1)
 
     existing_history = []
@@ -254,7 +269,6 @@ def load_stock_history() -> List[dict]:
         except Exception:
             pass
 
-    # 步驟 2：取得 Google Drive 現存的 .db 清單（僅掃描一次並長駐記憶體快取）
     if _CACHED_DRIVE_CODES is None:
         drive_codes = []
         if not IS_COLAB and sync and hasattr(sync, "service") and sync.service and sync.folder_id:
@@ -271,7 +285,6 @@ def load_stock_history() -> List[dict]:
     else:
         drive_codes = _CACHED_DRIVE_CODES
 
-    # 步驟 2.1：保底掃描本地 DATA_DIR 既有的 .db
     local_codes = []
     try:
         for f in os.listdir(str(DATA_DIR)):
@@ -281,7 +294,6 @@ def load_stock_history() -> List[dict]:
     except Exception:
         pass
 
-    # 步驟 3：嚴格保持 LRU 順序（最新查過的維持在前）
     ordered_list = []
     seen = set()
     for item in existing_history:
@@ -290,7 +302,6 @@ def load_stock_history() -> List[dict]:
             ordered_list.append(item)
             seen.add(code)
 
-    # 步驟 4：雲端或本地現存的 .db 若不在清單中，自動補齊在末端（絕不漏檔）
     name_cache = load_stock_names_cache()
     all_found_codes = list(dict.fromkeys(drive_codes + local_codes))
     for code in all_found_codes:
@@ -302,95 +313,57 @@ def load_stock_history() -> List[dict]:
 
     if ordered_list:
         return ordered_list
-
-    return [
-        {"code": "1303", "name": "南亞"},
-        {"code": "2330", "name": "台積電"},
-        {"code": "2317", "name": "鴻海"},
-        {"code": "2609", "name": "陽明"},
-        {"code": "2615", "name": "萬海"}
-    ]
+    return [{"code": "2330", "name": "台積電"}]
 
 
-def save_stock_history(code: str, name: str = "") -> List[dict]:
-    code = str(code).strip().upper()
-    history = load_stock_history()
+def save_stock_history(code: str, name: str) -> List[dict]:
+    c = str(code).strip().upper()
+    n = str(name).strip()
+    if not is_valid_tw_stock_name(n):
+        n = c
 
-    # 名稱合法性驗證
-    valid_name = name if is_valid_tw_stock_name(name) else ""
-    final_name = valid_name
-    for item in history:
-        if item.get("code") == code:
-            if not final_name:
-                item_name = item.get("name", code)
-                final_name = item_name if is_valid_tw_stock_name(item_name) else code
-            break
-    if not final_name:
-        final_name = code
+    name_cache = load_stock_names_cache()
+    if is_valid_tw_stock_name(n) and n != c:
+        name_cache[c] = n
+        save_stock_names_cache(name_cache)
 
-    # 將當前標的抽出並強制插入最前端 (Index 0)
-    history = [item for item in history if item.get("code") != code]
-    history.insert(0, {"code": code, "name": final_name})
+    current = load_stock_history()
+    new_list = [{"code": c, "name": n}]
+    for item in current:
+        if item.get("code") != c:
+            new_list.append(item)
 
     history_file = Path(HISTORY_FILE_PATH)
     try:
         with open(history_file, "w", encoding="utf-8") as f:
-            json.dump(history, f, ensure_ascii=False, indent=2)
-        
-        sync = _get_cloud_sync()
-        if not IS_COLAB and sync:
-            for _ in range(2):
-                try:
-                    sync.push_file(history_file)
-                    break
-                except (ssl.SSLError, OSError, Exception):
-                    time.sleep(1)
-    except (ssl.SSLError, OSError, Exception):
+            json.dump(new_list, f, ensure_ascii=False, indent=2)
+    except Exception:
         pass
 
-    return history
+    sync = _get_cloud_sync()
+    if not IS_COLAB and sync:
+        try:
+            sync.push_file(history_file)
+        except (ssl.SSLError, OSError, Exception):
+            pass
+
+    return new_list
 
 
 def clear_stock_history() -> List[dict]:
-    global _CACHED_DRIVE_CODES
     history_file = Path(HISTORY_FILE_PATH)
+    default_list = [{"code": "2330", "name": "台積電"}]
     try:
-        if history_file.exists():
-            os.remove(str(history_file))
-        sync = _get_cloud_sync()
-        if not IS_COLAB and sync:
-            sync.delete_remote_file("stock_history.json")
-    except (ssl.SSLError, OSError, Exception):
-        pass
-    
-    _CACHED_DRIVE_CODES = None
-    return []
-
-# ==========================================
-# 3. 中文名稱快取讀寫（通用長度過濾防線）
-# ==========================================
-def load_stock_names_cache() -> Dict[str, str]:
-    cache_path = str(STOCK_NAMES_CACHE_PATH)
-    if not os.path.exists(cache_path):
-        return {}
-    try:
-        with open(cache_path, "r", encoding="utf-8") as f:
-            data = json.load(f)
-            # 過濾掉先前意外存入的過長英文全稱
-            clean_cache = {}
-            for k, v in data.items():
-                if is_valid_tw_stock_name(v):
-                    clean_cache[k] = v
-            return clean_cache
-    except Exception:
-        return {}
-
-
-def save_stock_names_cache(cache_data: Dict[str, str]):
-    cache_path = str(STOCK_NAMES_CACHE_PATH)
-    try:
-        clean_cache = {k: v for k, v in cache_data.items() if is_valid_tw_stock_name(v)}
-        with open(cache_path, "w", encoding="utf-8") as f:
-            json.dump(clean_cache, f, ensure_ascii=False, indent=2)
+        with open(history_file, "w", encoding="utf-8") as f:
+            json.dump(default_list, f, ensure_ascii=False, indent=2)
     except Exception:
         pass
+
+    sync = _get_cloud_sync()
+    if not IS_COLAB and sync:
+        try:
+            sync.push_file(history_file)
+        except (ssl.SSLError, OSError, Exception):
+            pass
+
+    return default_list
