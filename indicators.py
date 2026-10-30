@@ -1,16 +1,13 @@
 """
 台股技術與籌碼分析系統 - 技術指標與量化運算模組
-負責 MA5/20/60、KD(9)、MACD(12,26,9)、OBV、5MA 頭底轉折點演算法、
-集保分級持股比率與自由流通換手率計算。
 """
 
 MODULE_NAME = "indicators"
-MODULE_VERSION = "202610280120"
+MODULE_VERSION = "202610300900"
 
 import numpy as np
 import pandas as pd
 
-# 集保張數門檻等級映射表
 HOLDING_LEVEL_MAP = {
     100: [8, 9, 10, 11, 12, 13, 14, 15],
     200: [9, 10, 11, 12, 13, 14, 15],
@@ -20,7 +17,6 @@ HOLDING_LEVEL_MAP = {
     1000: [15]
 }
 
-
 def calculate_all_indicators(
     df: pd.DataFrame,
     pure_code: str,
@@ -29,22 +25,16 @@ def calculate_all_indicators(
     shares_outstanding: float = None,
     status_placeholder=None
 ) -> pd.DataFrame:
-    """
-    全量指標計算函式：完全相容 chart_builder.py 呼叫介面
-    """
     if df is None or df.empty:
         return df
 
-    # 時區剝除防護
     if df.index.tz is not None:
         df.index = df.index.tz_localize(None)
 
-    # 1. 均線 MA5, MA20, MA60
     df['MA5'] = df['Close'].rolling(window=5).mean()
     df['MA20'] = df['Close'].rolling(window=20).mean()
     df['MA60'] = df['Close'].rolling(window=60).mean()
 
-    # 2. KD(9)
     low_min9 = df['Low'].rolling(window=9).min()
     high_max9 = df['High'].rolling(window=9).max()
     rsv = (df['Close'] - low_min9) / (high_max9 - low_min9 + 1e-9) * 100
@@ -63,17 +53,14 @@ def calculate_all_indicators(
     df['K'] = k_list
     df['D'] = d_list
 
-    # 3. MACD(12, 26, 9)
     ema12 = df['Close'].ewm(span=12, adjust=False).mean()
     ema26 = df['Close'].ewm(span=26, adjust=False).mean()
     df['DIF'] = ema12 - ema26
     df['MACD'] = df['DIF'].ewm(span=9, adjust=False).mean()
     df['OSC'] = df['DIF'] - df['MACD']
 
-    # 4. 成交量換算
     df['Volume_Sheets'] = df['Volume'] / 1000.0
 
-    # 5. OBV (180 日基準歸零)
     direction = np.where(df['Close'] > df['Close'].shift(1), 1, np.where(df['Close'] < df['Close'].shift(1), -1, 0))
     direction[0] = 0
     df['OBV'] = (direction * df['Volume_Sheets']).cumsum()
@@ -81,7 +68,6 @@ def calculate_all_indicators(
     df['OBV'] = df['OBV'] - df['OBV'].iloc[base_idx]
     df['OBV_MA20'] = df['OBV'].rolling(window=20).mean()
 
-    # 6. 5MA 頭底轉折點
     total_rows = len(df)
     is_head, is_bottom = [False] * total_rows, [False] * total_rows
     valid_idx = [i for i in range(total_rows) if not pd.isna(df['MA5'].iloc[i])]
@@ -105,16 +91,16 @@ def calculate_all_indicators(
                 seg_indices = [idx]
     df['Is_Head'], df['Is_Bottom'] = is_head, is_bottom
 
-    # 7. 籌碼同步 (自 data_fetcher 抓取並解耦)
     try:
         from data_fetcher import sync_chip_data
-        inst_df, margin_df, holding_df = sync_chip_data(pure_code, df.index, status_placeholder)
+        from storage import StockChipStorage
+        storage = StockChipStorage(pure_code)
+        inst_df, margin_df, holding_df = sync_chip_data(pure_code, storage, status_placeholder)
     except Exception:
         inst_df, margin_df, holding_df = pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
 
     d_strs = df.index.strftime('%Y-%m-%d')
 
-    # 法人買賣超
     df['Foreign_Net'], df['Trust_Net'], df['Dealer_Net'] = 0.0, 0.0, 0.0
     if not inst_df.empty:
         inst_map = inst_df.copy().assign(d_str=inst_df['date'].dt.strftime('%Y-%m-%d')).set_index('d_str')
@@ -122,7 +108,6 @@ def calculate_all_indicators(
         df['Trust_Net'] = [inst_map.loc[d, 'trust_net'] if d in inst_map.index else 0.0 for d in d_strs]
         df['Dealer_Net'] = [inst_map.loc[d, 'dealer_net'] if d in inst_map.index else 0.0 for d in d_strs]
 
-    # 資券
     df['Margin_Diff'], df['Short_Diff'], df['Margin_Bal'], df['Short_Bal'], df['Short_Margin_Ratio'] = 0.0, 0.0, 0.0, 0.0, np.nan
     if not margin_df.empty:
         ms_map = margin_df.copy().assign(d_str=margin_df['date'].dt.strftime('%Y-%m-%d')).set_index('d_str')
@@ -132,7 +117,6 @@ def calculate_all_indicators(
         df['Short_Bal'] = [ms_map.loc[d, 'short_bal'] if d in ms_map.index else 0.0 for d in d_strs]
         df['Short_Margin_Ratio'] = (df['Short_Bal'] / df['Margin_Bal'].replace(0, np.nan)) * 100
 
-    # 大戶持股門檻
     if not holding_df.empty:
         m1_levels = HOLDING_LEVEL_MAP.get(int(major1_thresh), [15])
         m2_levels = HOLDING_LEVEL_MAP.get(int(major2_thresh), [11, 12, 13, 14, 15])
@@ -164,7 +148,6 @@ def calculate_all_indicators(
     else:
         df['Major1_Pct'], df['Major2_Pct'] = np.nan, np.nan
 
-    # 8. 自由流通換手率計算
     if shares_outstanding and shares_outstanding > 0:
         if 'Major1_Pct' in df and not df['Major1_Pct'].dropna().empty:
             filled_major = df['Major1_Pct'].ffill().bfill()
