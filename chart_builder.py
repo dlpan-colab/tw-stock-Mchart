@@ -1,13 +1,9 @@
 """
 chart_builder.py - Plotly 圖表建構模組
-版本: 202610301650
-- 移除換手率折線圖，主圖第 2 列改為單 Y 軸成交量
-- 換手率 >=10% 於成交量柱頂標示藍色正三角 ▲
-- 換手率 >=20% 於成交量柱頂標示黃色倒三角 ▼
-- 主圖 Y 軸中文徹底移除，各子圖鎖定純水平平移 (fixedrange=True)
+版本: 202610302000
 """
 
-VERSION_TAG = "202610301650"
+VERSION_TAG = "202610302000"
 
 from typing import Tuple, Optional
 import numpy as np
@@ -135,7 +131,7 @@ def build_split_figures(
     top_height = 340 if is_mobile else 380
     btm_height = 1050 if is_mobile else 1150
 
-    # ===== 上半部主圖 (單一成交量軸，不開 secondary_y) =====
+    # ===== 上半部主圖 (單成交量軸) =====
     fig_top = make_subplots(
         rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.035, row_heights=[0.72, 0.28]
     )
@@ -150,7 +146,6 @@ def build_split_figures(
     fig_top.add_trace(go.Scatter(x=date_str_list, y=df['MA20'], line=dict(color='#e67e22', width=1.2), name='MA20', hoverinfo='none'), row=1, col=1)
     fig_top.add_trace(go.Scatter(x=date_str_list, y=df['MA60'], line=dict(color='#9b59b6', width=1.2), name='MA60', hoverinfo='none'), row=1, col=1)
 
-    # 頭底標籤
     head_df = df[df['Is_Head']]
     if not head_df.empty:
         fig_top.add_trace(go.Scatter(
@@ -169,7 +164,7 @@ def build_split_figures(
     # 成交量柱狀圖
     fig_top.add_trace(go.Bar(x=date_str_list, y=df['Volume_Sheets'], marker_color=vol_colors, name='成交量', hoverinfo='none'), row=2, col=1)
 
-    # 換手率標記：>=10% 為藍色正三角 ▲，>=20% 為黃色倒三角 ▼
+    # 換手率標記：>=10% 藍色正三角 ▲，>=20% 黃色倒三角 ▼
     to_series = df['Turnover_Rate']
     to_10_mask = (to_series >= 10.0) & (to_series < 20.0)
     to_20_mask = (to_series >= 20.0)
@@ -207,7 +202,7 @@ def build_split_figures(
     fig_top.update_xaxes(type='category', range=[start_idx - 0.5, end_idx + 0.5], domain=[0, 1], row=1, col=1)
     fig_top.update_xaxes(type='category', range=[start_idx - 0.5, end_idx + 0.5], domain=[0, 1], showticklabels=True, tickvals=month_ticks_vals, ticktext=month_ticks_text, row=2, col=1)
 
-    # 移除中文標籤
+    # 移除中文標籤：價格與成交量 Y 軸 title_text 設為空字串
     fig_top.update_yaxes(title_text='', range=[p_min - (p_max - p_min) * 0.08, p_max + p_pad], fixedrange=True, row=1, col=1)
     fig_top.update_yaxes(title_text='', range=[0, vol_upper], fixedrange=True, row=2, col=1)
 
