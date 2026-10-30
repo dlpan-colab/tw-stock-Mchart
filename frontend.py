@@ -1,13 +1,14 @@
 """
 frontend.py - 前端互動視圖模組
-負責產生整合 Plotly 雙圖同動、三大資訊顯示區、十字線同步與極值重算之 HTML/JS，
-並提供帶有版本識別標籤的頂部圖例看板。
+版本: 202610301650
+- 圖例同步更新：換手率標示為 ▲換手≥10% 與 ▼換手≥20%
+- JS 動態極值重算移除對已刪除的換手率次軸 (yaxis3) 之依賴
 """
 
 import json
 import pandas as pd
 
-VERSION_TAG = "202610301610"
+VERSION_TAG = "202610301650"
 
 def get_legend_html(version_tag: str = VERSION_TAG) -> str:
     return f"""
@@ -19,7 +20,7 @@ def get_legend_html(version_tag: str = VERSION_TAG) -> str:
   <span style="background:#2c3e50; color:#ffffff; padding: 1px 6px; border-radius: 4px; font-weight:bold; margin-right: 6px;">v{version_tag}</span>
   <span id="app_loading_spinner" class="app-loading-ring" style="display:none;" title="系統運作中..."></span>
   <b>主圖：</b><span style="color:#eb4d4b;">■</span> K線 <span style="color:#27ae60;font-weight:bold;">〔頭〕</span> <span style="color:#e74c3c;font-weight:bold;">〔底〕</span> <span style="color:#f1c40f;">MA5</span> <span style="color:#e67e22;">MA20</span> <span style="color:#9b59b6;">MA60</span> |
-  <b>技術：</b><span style="color:#eb4d4b;">■</span> 量/OSC <span style="color:#1e3799; font-weight:bold;">━</span> 換手 <span style="color:#e74c3c;">K</span> <span style="color:#3498db;">D</span> <span style="color:#f39c12;">DIF</span> <span style="color:#2980b9;">MACD</span> <span style="color:#16a085;">OBV</span> |
+  <b>技術：</b><span style="color:#eb4d4b;">■</span> 量/OSC <span style="color:#1e3799; font-weight:bold;">▲</span>≥10% <span style="color:#f1c40f; font-weight:bold;">▼</span>≥20% <span style="color:#e74c3c;">K</span> <span style="color:#3498db;">D</span> <span style="color:#f39c12;">DIF</span> <span style="color:#2980b9;">MACD</span> <span style="color:#16a085;">OBV</span> |
   <b>法人：</b><span style="color:#eb4d4b;">■</span> 外/投/自 <span style="color:#c0392b;">大1</span> <span style="color:#8e44ad;">大2</span> |
   <b>資券：</b><span style="color:#eb4d4b;">■</span>(左)融資 <span style="color:#f1c40f;">■</span>(右)融券 <span style="color:#e67e22;">━</span> 券資比
 </div>
@@ -171,14 +172,13 @@ def get_component_html(fig_top, fig_btm, df, raw_ticker, major1_thresh, major2_t
                 var iStart = Math.max(0, Math.floor(x0)), iEnd = Math.min(totalPoints - 1, Math.ceil(x1));
                 if (iEnd <= iStart) return;
 
-                var cMaxP = -Infinity, cMinP = Infinity, cMaxVol = 0, cMaxTo = 0, cMaxMacd = -Infinity, cMinMacd = Infinity, cMaxObv = -Infinity, cMinObv = Infinity;
+                var cMaxP = -Infinity, cMinP = Infinity, cMaxVol = 0, cMaxMacd = -Infinity, cMinMacd = Infinity, cMaxObv = -Infinity, cMinObv = Infinity;
                 var cMaxFn = 0, cMaxTn = 0, cMaxDn = 0, cMaxMs = 0, cMaxRat = -Infinity, cMinRat = Infinity, cMaxM1 = -Infinity, cMinM1 = Infinity, cMaxM2 = -Infinity, cMinM2 = Infinity;
 
                 for (var i = iStart; i <= iEnd; i++) {
                     if (isValidNum(highs[i]) && highs[i] > cMaxP) cMaxP = highs[i];
                     if (isValidNum(lows[i]) && lows[i] < cMinP) cMinP = lows[i];
                     if (isValidNum(vols[i]) && vols[i] > cMaxVol) cMaxVol = vols[i];
-                    if (isValidNum(turnovers[i]) && turnovers[i] > cMaxTo) cMaxTo = turnovers[i];
                     [difs[i], macds[i], oscs[i]].forEach(function(v) { if (isValidNum(v)) { if (v > cMaxMacd) cMaxMacd = v; if (v < cMinMacd) cMinMacd = v; } });
                     [obvs[i], obvMas[i]].forEach(function(v) { if (isValidNum(v)) { if (v > cMaxObv) cMaxObv = v; if (v < cMinObv) cMinObv = v; } });
                     if (isValidNum(foreigns[i]) && Math.abs(foreigns[i]) > cMaxFn) cMaxFn = Math.abs(foreigns[i]);
@@ -193,7 +193,6 @@ def get_component_html(fig_top, fig_btm, df, raw_ticker, major1_thresh, major2_t
 
                 if (isFinite(cMinP) && isFinite(cMaxP)) {
                     var tUpd = {'yaxis.range': [cMinP - (cMaxP - cMinP)*0.08, cMaxP + (cMaxP - cMinP)*0.12], 'yaxis2.range': [0, cMaxVol*1.25]};
-                    if (cMaxTo > 0) tUpd['yaxis3.range'] = [0, cMaxTo * 1.35];
                     Plotly.relayout(elTop, tUpd);
                 }
 
