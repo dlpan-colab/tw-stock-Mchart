@@ -5,7 +5,7 @@
 """
 
 MODULE_NAME = "indicators"
-MODULE_VERSION = "202610302500"
+MODULE_VERSION = "202610302600"
 
 import numpy as np
 import pandas as pd
@@ -173,7 +173,6 @@ def calculate_all_indicators(
                     return {}
                 res = {}
                 for d, val in sub.groupby('date')['percent'].sum().items():
-                    # 以每週日作為該週週次識別基準 (WEEK KEY)
                     week_key = d + pd.to_timedelta(6 - d.weekday(), unit='D')
                     res[week_key] = float(val)
                 return res
@@ -185,15 +184,15 @@ def calculate_all_indicators(
                 m1_vals.append(m1_dict.get(week_key, np.nan))
                 m2_vals.append(m2_dict.get(week_key, np.nan))
 
-            df['Major1_Pct'] = pd.Series(m1_vals, index=df.index)
-            df['Major2_Pct'] = pd.Series(m2_vals, index=df.index)
+            df['Major1_Pct'] = m1_vals
+            df['Major2_Pct'] = m2_vals
     except Exception:
         pass
 
     # 7. 換手率計算（嚴格遵守分母原則：總發行張數 * (1 - 大戶持股比例/100)）
     if shares_outstanding and shares_outstanding > 0:
         if 'Major1_Pct' in df.columns and not df['Major1_Pct'].dropna().empty:
-            filled_major = df['Major1_Pct'].ffill()  # 換手率分母允許前向對齊最近一週大戶比例作為動態估算
+            filled_major = pd.Series(df['Major1_Pct'], index=df.index).ffill()
             effective_shares = shares_outstanding * (1.0 - filled_major / 100.0)
             df['Turnover_Rate'] = (df['Volume_Sheets'] / effective_shares.replace(0, np.nan)) * 100.0
         else:
