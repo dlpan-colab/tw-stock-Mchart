@@ -5,7 +5,7 @@
 """
 
 MODULE_NAME = "indicators"
-MODULE_VERSION = "202610302300"
+MODULE_VERSION = "202610302400"
 
 import numpy as np
 import pandas as pd
@@ -34,13 +34,15 @@ def calculate_all_indicators(
     *args,
     **kwargs
 ) -> pd.DataFrame:
-    """計算所有技術指標與籌碼資料，確保技術指標與週資料正確運算與對齊"""
+    """計算所有技術指標與籌碼資料，確保索引型態一致與副圖數值正確寫入"""
     if df is None or df.empty:
         return df
 
     df = df.copy()
 
-    # 時區剝除防護
+    # 確保 Index 為標準 DatetimeIndex 並去除時區
+    if not isinstance(df.index, pd.DatetimeIndex):
+        df.index = pd.to_datetime(df.index)
     if df.index.tz is not None:
         df.index = df.index.tz_localize(None)
 
@@ -51,12 +53,12 @@ def calculate_all_indicators(
         else:
             df['Volume_Sheets'] = 0.0
 
-    # 1. 移動平均線 (MA) - 使用 Pandas 內建 rolling 確保穩定相容
+    # 1. 移動平均線 (MA)
     df['MA5'] = df['Close'].rolling(window=5).mean()
     df['MA20'] = df['Close'].rolling(window=20).mean()
     df['MA60'] = df['Close'].rolling(window=60).mean()
 
-    # 2. KD 指標（確保走勢正常計算，不因版本報錯陷於常數 50）
+    # 2. KD 指標
     try:
         low_min9 = df['Low'].rolling(window=9).min()
         high_max9 = df['High'].rolling(window=9).max()
@@ -80,7 +82,7 @@ def calculate_all_indicators(
         df['K'] = stoch.stoch()
         df['D'] = stoch.stoch_signal()
 
-    # 3. MACD（確保動態計算，不因例外陷入 0）
+    # 3. MACD
     try:
         ema12 = df['Close'].ewm(span=12, adjust=False).mean()
         ema26 = df['Close'].ewm(span=26, adjust=False).mean()
@@ -114,7 +116,7 @@ def calculate_all_indicators(
         df['Is_Head'] = (df['High'] == rolling_max)
         df['Is_Bottom'] = (df['Low'] == rolling_min)
 
-    # 6. 從 Storage 載入籌碼資料並繫結至 DataFrame
+    # 6. 從 Storage 載入籌碼資料並正確對齊寫入 DataFrame
     storage = StockChipStorage(pure_code)
     
     # 初始化預設籌碼欄位
@@ -135,10 +137,10 @@ def calculate_all_indicators(
         if not inst_df.empty and 'date' in inst_df.columns:
             inst_df['date'] = pd.to_datetime(inst_df['date']).dt.normalize()
             inst_map = inst_df.set_index('date')
-            d_strs = df.index.normalize()
-            df['Foreign_Net'] = [inst_map.loc[d, 'foreign_net'] if d in inst_map.index else 0.0 for d in d_strs]
-            df['Trust_Net'] = [inst_map.loc[d, 'trust_net'] if d in inst_map.index else 0.0 for d in d_strs]
-            df['Dealer_Net'] = [inst_map.loc[d, 'dealer_net'] if d in inst_map.index else 0.0 for d in d_strs]
+            d_norms = df.index.normalize()
+            df['Foreign_Net'] = [inst_map.loc[d, 'foreign_net'] if d in inst_map.index else 0.0 for d in d_norms]
+            df['Trust_Net'] = [inst_map.loc[d, 'trust_net'] if d in inst_map.index else 0.0 for d in d_norms]
+            df['Dealer_Net'] = [inst_map.loc[d, 'dealer_net'] if d in inst_map.index else 0.0 for d in d_norms]
     except Exception:
         pass
 
@@ -148,11 +150,11 @@ def calculate_all_indicators(
         if not margin_df.empty and 'date' in margin_df.columns:
             margin_df['date'] = pd.to_datetime(margin_df['date']).dt.normalize()
             ms_map = margin_df.set_index('date')
-            d_strs = df.index.normalize()
-            df['Margin_Diff'] = [ms_map.loc[d, 'margin_diff'] if d in ms_map.index else 0.0 for d in d_strs]
-            df['Short_Diff'] = [ms_map.loc[d, 'short_diff'] if d in ms_map.index else 0.0 for d in d_strs]
-            df['Margin_Bal'] = [ms_map.loc[d, 'margin_bal'] if d in ms_map.index else 0.0 for d in d_strs]
-            df['Short_Bal'] = [ms_map.loc[d, 'short_bal'] if d in ms_map.index else 0.0 for d in d_strs]
+            d_norms = df.index.normalize()
+            df['Margin_Diff'] = [ms_map.loc[d, 'margin_diff'] if d in ms_map.index else 0.0 for d in d_norms]
+            df['Short_Diff'] = [ms_map.loc[d, 'short_diff'] if d in ms_map.index else 0.0 for d in d_norms]
+            df['Margin_Bal'] = [ms_map.loc[d, 'margin_bal'] if d in ms_map.index else 0.0 for d in d_norms]
+            df['Short_Bal'] = [ms_map.loc[d, 'short_bal'] if d in ms_map.index else 0.0 for d in d_norms]
             df['Short_Margin_Ratio'] = (df['Short_Bal'] / df['Margin_Bal'].replace(0, np.nan)) * 100.0
     except Exception:
         pass
