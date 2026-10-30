@@ -1,295 +1,225 @@
 """
-台股技術與籌碼分析系統 - 資料擷取模組
-支援上市 (TWSE) 與上櫃 (TPEx) 市場精準分流，完整整合日 K 線、換手率、法人、資券與集保大戶持股
+data_fetcher.py - 外部資料抓取與增量同步模組
+版本: 202610301630
 """
 
-MODULE_NAME = "data_fetcher"
-MODULE_VERSION = "202610300800"
-
-import io
+import os
 import re
-import ssl
-import json
+import io
 import time
-import urllib3
-import logging
-from datetime import datetime, timedelta
-from typing import Tuple, Optional, Dict, Any, List
-
+import json
+import sqlite3
 import requests
+from io import StringIO
+from bs4 import BeautifulSoup
+from datetime import datetime, timedelta
 import pandas as pd
-import yfinance as yf
+import numpy as np
 
-from storage import StockChipStorage, load_stock_names_cache, save_stock_names_cache, is_valid_tw_stock_name
+from storage import StockChipStorage, get_stock_chinese_name
 
-logger = logging.getLogger(__name__)
+FINMIND_TOKEN = ""
 
-urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+def fetch_stock_name(pure_code: str) -> str:
+    return get_stock_chinese_name(pure_code)
 
+def fetch_stock_daily_k(raw_ticker: str, period: str = "1y", base_date: str = None):
+    import yfinance as yf
+    raw_str = str(raw_ticker).strip().upper()
+    match = re.search(r'\d+', raw_str)
+    pure_code = match.group(0) if match else raw_str.split('.')[0]
 
-def detect_tw_market(pure_code: str) -> str:
-    """根據台股代碼規則快速判定市場：回傳 '.TWO' (上櫃) 或 '.TW' (上市)"""
-    code = str(pure_code).strip().upper()
-    if code.startswith(("4", "5", "8")):
-        return ".TWO"
-    twse_6_list = {
-        "6116", "6153", "6168", "6191", "6205", "6213", "6257", "6285", 
-        "6409", "6415", "6442", "6456", "6505", "6526", "6669", "6719", 
-        "6770", "6781", "6805"
-    }
-    if code.startswith("6"):
-        return ".TW" if code in twse_6_list else ".TWO"
-    return ".TW"
-
-
-def create_fast_session() -> requests.Session:
-    s = requests.Session()
-    s.verify = False
-    s.headers.update({
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-    })
-    adapter = requests.adapters.HTTPAdapter(max_retries=1)
-    s.mount('https://', adapter)
-    s.mount('http://', adapter)
-    return s
-
-
-def fetch_stock_daily_k(
-    pure_code: str,
-    period: str = "1y",
-    base_date: Optional[str] = None
-) -> Tuple[Optional[pd.DataFrame], str]:
-    code = str(pure_code).strip().upper()
-    primary_suffix = detect_tw_market(code)
-    secondary_suffix = ".TW" if primary_suffix == ".TWO" else ".TWO"
-
-    session = create_fast_session()
-    df = pd.DataFrame()
-    success_symbol = ""
     ticker_obj = None
+    df = pd.DataFrame()
 
-    symbols_to_try = [f"{code}{primary_suffix}", f"{code}{secondary_suffix}"]
-    for sym in symbols_to_try:
+    for suffix in ['.TW', '.TWO', '']:
+        test_ticker = f"{pure_code}{suffix}" if suffix else pure_code
         try:
-            ticker = yf.Ticker(sym, session=session)
-            fetched = ticker.history(period=period, auto_adjust=False, timeout=8)
-            if fetched is not None and not fetched.empty:
-                df = fetched
-                success_symbol = sym
-                ticker_obj = ticker
+            t = yf.Ticker(test_ticker)
+            d = t.history(period=period, auto_adjust=False)
+            if not d.empty and len(d) >= 5:
+                df = d
+                ticker_obj = t
                 break
         except Exception:
             continue
 
-    if df.empty:
+    if df.empty or ticker_obj is None:
         return None, ""
 
-    shares_count = None
-    try:
-        if ticker_obj and hasattr(ticker_obj, 'info'):
-            shares_count = ticker_obj.info.get('sharesOutstanding', None)
-    except Exception:
-        pass
+    if df.index.tz is not None:
+        df.index = df.index.tz_localize(None)
+    df.index = df.index.normalize()
+    df = df.dropna(subset=['Open', 'High', 'Low', 'Close'])
 
-    df = df.reset_index()
-    if 'Date' in df.columns:
-        df['Date'] = pd.to_datetime(df['Date']).dt.tz_localize(None)
+    now_dt = datetime.now()
+    target_dt = now_dt
+    if now_dt.time() < datetime.strptime("09:00", "%H:%M").time():
+        target_dt -= timedelta(days=1)
+    while target_dt.weekday() > 4:
+        target_dt -= timedelta(days=1)
 
-    df.rename(columns={
-        'Date': 'date',
-        'Open': 'Open',
-        'High': 'High',
-        'Low': 'Low',
-        'Close': 'Close',
-        'Volume': 'Volume'
-    }, inplace=True)
+    target_date = target_dt.date()
+    latest_date = df.index[-1].date()
 
-    if 'Adj Close' in df.columns:
-        df['Close'] = df['Close'].fillna(df['Adj Close'])
-    df[['Open', 'High', 'Low', 'Close', 'Volume']] = df[['Open', 'High', 'Low', 'Close', 'Volume']].ffill()
-    df = df[df['Volume'] > 0].copy()
+    if latest_date < target_date:
+        try:
+            fast_info = ticker_obj.fast_info
+            cur_price = fast_info.last_price
+            if cur_price is not None and not np.isnan(cur_price) and cur_price > 0:
+                o_val = fast_info.open if fast_info.open and fast_info.open > 0 else cur_price
+                h_val = fast_info.day_high if fast_info.day_high and fast_info.day_high > 0 else cur_price
+                l_val = fast_info.day_low if fast_info.day_low and fast_info.day_low > 0 else cur_price
+                v_val = fast_info.last_volume if fast_info.last_volume and fast_info.last_volume > 0 else 0
 
-    df['Volume_Sheets'] = df['Volume'] / 1000.0
+                today_row = pd.DataFrame({
+                    'Open': [float(o_val)],
+                    'High': [float(h_val)],
+                    'Low': [float(l_val)],
+                    'Close': [float(cur_price)],
+                    'Volume': [float(v_val)]
+                }, index=[pd.Timestamp(target_date)])
+                df = pd.concat([df, today_row])
+        except Exception:
+            pass
 
-    storage = StockChipStorage(code)
+    return df, ticker_obj.ticker
+
+def sync_chip_data(pure_code: str, df_dates, status_placeholder=None):
+    """
+    增量同步法人、資券與集保持股資料
+    回傳值明確規範為: inst_df, margin_df, holding_df (共3個)
+    """
+    storage = StockChipStorage(pure_code)
+
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+        'Referer': 'https://www.tdcc.com.tw/portal/zh/smWeb/qryStock'
+    }
+
+    last_inst_date = storage.get_latest_inst_date()
+    last_margin_date = storage.get_latest_margin_date()
+
+    target_start_date = (df_dates[0] - timedelta(days=5)).strftime('%Y-%m-%d')
+    inst_query_start = (pd.to_datetime(last_inst_date) + timedelta(days=1)).strftime('%Y-%m-%d') if last_inst_date else target_start_date
+    margin_query_start = (pd.to_datetime(last_margin_date) + timedelta(days=1)).strftime('%Y-%m-%d') if last_margin_date else target_start_date
+    latest_trade_date_str = df_dates[-1].strftime('%Y-%m-%d')
+
+    # 1. 同步三大法人買賣超
+    if not last_inst_date or inst_query_start <= latest_trade_date_str:
+        try:
+            url_inst = "https://api.finmindtrade.com/api/v4/data"
+            p_inst = {
+                "dataset": "TaiwanStockInstitutionalInvestorsBuySell",
+                "data_id": pure_code,
+                "start_date": inst_query_start,
+                "token": FINMIND_TOKEN
+            }
+            res = requests.get(url_inst, params=p_inst, headers=headers, timeout=12)
+            if res.status_code == 200:
+                data = res.json().get('data', [])
+                if data:
+                    idf = pd.DataFrame(data)
+                    idf['net_sheets'] = (idf['buy'] - idf['sell']) / 1000.0
+                    f_df = idf[idf['name'].str.contains('Foreign|外資|外陸資', na=False, case=False)]
+                    t_df = idf[idf['name'].str.contains('Investment_Trust|投信', na=False, case=False)]
+                    d_df = idf[idf['name'].str.contains('Dealer|自營', na=False, case=False)]
+                    f_s = f_df.groupby('date')['net_sheets'].sum()
+                    t_s = t_df.groupby('date')['net_sheets'].sum()
+                    d_s = d_df.groupby('date')['net_sheets'].sum()
+                    all_dates = sorted(list(set(idf['date'])))
+                    records = []
+                    for d in all_dates:
+                        records.append((d, float(f_s.get(d, 0.0)), float(t_s.get(d, 0.0)), float(d_s.get(d, 0.0))))
+                    storage.save_institutional_data(records)
+        except Exception:
+            pass
+
+    # 2. 同步資券增減
+    if not last_margin_date or margin_query_start <= latest_trade_date_str:
+        try:
+            url_ms = "https://api.finmindtrade.com/api/v4/data"
+            p_ms = {
+                "dataset": "TaiwanStockMarginPurchaseShortSale",
+                "data_id": pure_code,
+                "start_date": margin_query_start,
+                "token": FINMIND_TOKEN
+            }
+            res_ms = requests.get(url_ms, params=p_ms, headers=headers, timeout=12)
+            if res_ms.status_code == 200:
+                data_ms = res_ms.json().get('data', [])
+                if data_ms:
+                    ms_df = pd.DataFrame(data_ms)
+                    records_ms = []
+                    for _, r in ms_df.iterrows():
+                        mb = float(r.get('MarginPurchaseBuy', 0) or 0)
+                        ms = float(r.get('MarginPurchaseSell', 0) or 0)
+                        mr = float(r.get('MarginPurchaseCashRepayment', 0) or 0)
+                        m_diff = (mb - ms - mr) / 1000.0
+
+                        sb = float(r.get('ShortSaleBuy', 0) or 0)
+                        ss = float(r.get('ShortSaleSell', 0) or 0)
+                        sr = float(r.get('ShortSaleCashRepayment', 0) or 0)
+                        s_diff = (ss - sb - sr) / 1000.0
+
+                        m_bal = float(r.get('MarginPurchaseTodayBalance', 0) or 0) / 1000.0
+                        s_bal = float(r.get('ShortSaleTodayBalance', 0) or 0) / 1000.0
+                        records_ms.append((r['date'], m_diff, s_diff, m_bal, s_bal))
+                    storage.save_margin_data(records_ms)
+        except Exception:
+            pass
+
+    # 3. 同步集保大戶持股 (主動抓足 15 週五歷史)
     holding_df = storage.load_holding_df()
+    existing_weeks = set(holding_df['date'].dt.strftime('%Y%m%d')) if not holding_df.empty else set()
     
-    latest_major_pct = 0.0
-    if not holding_df.empty:
-        max_level = holding_df['level'].max()
-        target_level = 17 if 17 in holding_df['level'].values else max_level
-        sub_holding = holding_df[holding_df['level'] == target_level]
-        if not sub_holding.empty:
-            latest_major_pct = float(sub_holding.iloc[-1]['percent'])
+    today = datetime.today()
+    days_ahead = 4 - today.weekday()
+    if days_ahead > 0:
+        days_ahead -= 7
+    last_friday = today + timedelta(days=days_ahead)
+    target_fridays = [(last_friday - timedelta(weeks=i)).strftime('%Y%m%d') for i in range(16)]
+    missing_dates = [d for d in target_fridays if d not in existing_weeks]
 
-    if shares_count and shares_count > 0:
-        free_float_shares = shares_count * (1.0 - (latest_major_pct / 100.0))
-        if free_float_shares > 0:
-            df['Turnover_Rate'] = (df['Volume'] / free_float_shares) * 100.0
-        else:
-            df['Turnover_Rate'] = (df['Volume'] / shares_count) * 100.0
-    else:
-        avg_vol = df['Volume'].rolling(60, min_periods=1).mean()
-        df['Turnover_Rate'] = (df['Volume'] / avg_vol) * 10.0
+    if missing_dates:
+        try:
+            session_tdcc = requests.Session()
+            url_home = "https://www.tdcc.com.tw/portal/zh/smWeb/qryStock"
+            r_home = session_tdcc.get(url_home, headers=headers, timeout=10)
+            if r_home.status_code == 200:
+                soup_home = BeautifulSoup(r_home.text, 'html.parser')
+                form = soup_home.find('form')
+                action = form.get('action', '') if form else ''
+                target_url = f"https://www.tdcc.com.tw{action}" if action.startswith('/') else (action if action.startswith('http') else f"https://www.tdcc.com.tw/portal/zh/smWeb/{action}")
 
-    df['date'] = pd.to_datetime(df['date']).dt.normalize()
-    df.sort_values('date', inplace=True)
-    df.set_index('date', inplace=True)
+                h_rec = []
+                for d_str in missing_dates:
+                    try:
+                        r_page = session_tdcc.get(url_home, headers=headers, timeout=8)
+                        sp_page = BeautifulSoup(r_page.text, 'html.parser')
+                        cur_form = sp_page.find('form')
+                        payload = {inp.get('name'): inp.get('value', '') for inp in cur_form.find_all('input') if inp.get('name')}
+                        payload.update({'scaDate': d_str, 'sqlMethod': 'StockNo', 'stockNo': pure_code, 'stockName': '', 'sub': '查詢'})
+                        resp = session_tdcc.post(target_url, data=payload, headers=headers, timeout=8)
+                        dfs = pd.read_html(StringIO(resp.text))
 
-    if base_date:
-        b_dt = pd.to_datetime(base_date).normalize()
-        df = df[df.index <= b_dt].copy()
+                        target_tbl = next((d for d in dfs if '1' in d.iloc[:, 0].astype(str).tolist() and '15' in d.iloc[:, 0].astype(str).tolist()), None)
+                        if target_tbl is not None:
+                            lvl_col, pct_col = target_tbl.columns[0], target_tbl.columns[-1]
+                            sub = target_tbl[target_tbl[lvl_col].astype(str).isin([str(i) for i in range(1, 16)])].copy()
+                            d_fmt = f"{d_str[:4]}-{d_str[4:6]}-{d_str[6:]}"
+                            for _, row in sub.iterrows():
+                                try:
+                                    h_rec.append((d_fmt, int(row[lvl_col]), float(str(row[pct_col]).replace('%', '').replace(',', ''))))
+                                except ValueError:
+                                    pass
+                        time.sleep(0.15)
+                    except Exception:
+                        continue
+                if h_rec:
+                    storage.save_holding_data(h_rec)
+        except Exception:
+            pass
 
-    return df, success_symbol
-
-
-def fetch_stock_name(pure_code: str) -> str:
-    code = str(pure_code).strip().upper()
-    cache = load_stock_names_cache()
-    if code in cache and is_valid_tw_stock_name(cache[code]):
-        return cache[code]
-
-    headers = {"User-Agent": "Mozilla/5.0"}
-    
-    try:
-        url = f"https://mis.twse.com.tw/stock/api/getStockInfo.jsp?ex_ch=tse_{code}.tw|otc_{code}.tw"
-        res = requests.get(url, headers=headers, timeout=2)
-        if res.status_code == 200:
-            data = res.json()
-            for item in data.get("msgArray", []):
-                n = item.get("n", "")
-                if is_valid_tw_stock_name(n):
-                    cache[code] = n
-                    save_stock_names_cache(cache)
-                    return n
-    except Exception:
-        pass
-
-    try:
-        market_suffix = detect_tw_market(code)
-        url_yf = f"https://finance.yahoo.com/quote/{code}{market_suffix}"
-        res = requests.get(url_yf, headers={"User-Agent": "Mozilla/5.0"}, timeout=3)
-        if res.status_code == 200:
-            m = re.search(r'<title>(.*?)\s*\(\s*' + code, res.text)
-            if m:
-                raw_title = m.group(1).strip()
-                if is_valid_tw_stock_name(raw_title):
-                    cache[code] = raw_title
-                    save_stock_names_cache(cache)
-                    return raw_title
-    except Exception:
-        pass
-
-    return code
-
-
-def sync_chip_data(pure_code: str, storage: StockChipStorage):
-    code = str(pure_code).strip().upper()
-    start_date = (datetime.today() - timedelta(days=90)).strftime('%Y-%m-%d')
-    headers = {"User-Agent": "Mozilla/5.0"}
-
-    # 1. FinMind 三大法人資料
-    try:
-        url_inst = "https://api.finmindtrade.com/api/v4/data"
-        res = requests.get(url_inst, params={
-            "dataset": "TaiwanStockInstitutionalInvestorsBuySell",
-            "data_id": code,
-            "start_date": start_date
-        }, headers=headers, timeout=4)
-        if res.status_code == 200:
-            raw = res.json().get("data", [])
-            if raw:
-                df = pd.DataFrame(raw)
-                if not df.empty and 'name' in df.columns and 'buy' in df.columns:
-                    piv = df.pivot_table(index='date', columns='name', values='buy', fill_value=0) - \
-                          df.pivot_table(index='date', columns='name', values='sell', fill_value=0)
-                    records = []
-                    for d_val, row in piv.iterrows():
-                        f_net = (row.get('Foreign_Investor', 0) + row.get('Foreign_Dealer_Self', 0)) / 1000.0
-                        t_net = row.get('Investment_Trust', 0) / 1000.0
-                        d_net = (row.get('Dealer_Self', 0) + row.get('Dealer_Hedging', 0)) / 1000.0
-                        records.append((str(d_val), float(f_net), float(t_net), float(d_net)))
-                    if records:
-                        storage.save_institutional_data(records)
-    except Exception as e:
-        logger.warning(f"同步三大法人失敗: {e}")
-
-    # 2. FinMind 資券餘額資料
-    try:
-        url_ms = "https://api.finmindtrade.com/api/v4/data"
-        res = requests.get(url_ms, params={
-            "dataset": "TaiwanStockMarginPurchaseShortSale",
-            "data_id": code,
-            "start_date": start_date
-        }, headers=headers, timeout=4)
-        if res.status_code == 200:
-            raw = res.json().get("data", [])
-            if raw:
-                df = pd.DataFrame(raw)
-                if not df.empty and 'MarginPurchaseTodayBalance' in df.columns:
-                    df.sort_values('date', inplace=True)
-                    df['m_diff'] = df['MarginPurchaseTodayBalance'].diff().fillna(0)
-                    df['s_diff'] = df['ShortSaleTodayBalance'].diff().fillna(0)
-                    records = []
-                    for _, row in df.iterrows():
-                        records.append((
-                            str(row['date']),
-                            float(row['m_diff']),
-                            float(row['s_diff']),
-                            float(row['MarginPurchaseTodayBalance']),
-                            float(row['ShortSaleTodayBalance'])
-                        ))
-                    if records:
-                        storage.save_margin_data(records)
-    except Exception as e:
-        logger.warning(f"同步資券餘額失敗: {e}")
-
-    # 3. 集保大戶持股資料 (TDCC OpenData ID: 1-5)
-    try:
-        url_tdcc = "https://opendata.tdcc.com.tw/getOD.ashx?id=1-5"
-        res = requests.get(url_tdcc, headers=headers, timeout=5)
-        if res.status_code == 200 and res.text:
-            tdcc_df = pd.read_csv(io.StringIO(res.text))
-            if not tdcc_df.empty:
-                col_code = next((c for c in tdcc_df.columns if '代號' in c or 'Stock' in c), tdcc_df.columns[1])
-                col_date = next((c for c in tdcc_df.columns if '日期' in c or 'Date' in c), tdcc_df.columns[0])
-                col_level = next((c for c in tdcc_df.columns if '級距' in c or 'Level' in c), tdcc_df.columns[2])
-                col_pct = next((c for c in tdcc_df.columns if '比例' in c or 'Percent' in c), tdcc_df.columns[-1])
-
-                sub = tdcc_df[tdcc_df[col_code].astype(str).str.strip().str.upper() == code].copy()
-                if not sub.empty:
-                    holding_records = []
-                    for _, row in sub.iterrows():
-                        try:
-                            d_str = str(row[col_date]).strip()
-                            if len(d_str) == 8:
-                                d_str = f"{d_str[:4]}-{d_str[4:6]}-{d_str[6:]}"
-                            lvl = int(row[col_level])
-                            pct = float(row[col_pct])
-                            holding_records.append((d_str, lvl, pct))
-                        except Exception:
-                            continue
-                    if holding_records:
-                        storage.save_holding_data(holding_records)
-    except Exception as e:
-        logger.warning(f"同步集保大戶資料失敗: {e}")
-
-
-def fetch_chip_data_online(*args, **kwargs):
-    return sync_chip_data(*args, **kwargs)
-
-
-def fetch_stock_data(raw_ticker: str, period: str = "1y", base_date=None) -> Tuple[Optional[pd.DataFrame], str, str, str, str, Optional[int]]:
-    code = str(raw_ticker).strip().upper()
-    df, success_symbol = fetch_stock_daily_k(code, period, base_date)
-    
-    if df is None or df.empty:
-        return None, "", code, "", "", None
-        
-    c_name = fetch_stock_name(code)
-    market = ".TWO" if success_symbol.endswith(".TWO") else ".TW"
-    
-    storage = StockChipStorage(code)
-    sync_chip_data(code, storage)
-    
-    return df, success_symbol, code, market, c_name, None
+    # 嚴格回傳 3 個變數
+    return storage.load_institutional_df(), storage.load_margin_df(), storage.load_holding_df()
