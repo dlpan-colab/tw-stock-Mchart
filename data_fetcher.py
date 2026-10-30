@@ -1,6 +1,8 @@
 """
 data_fetcher.py - 外部資料抓取與增量同步模組
-版本: 202610301645
+版本: 202610301710
+- 過濾 Volume <= 0 之非交易日 (如休市、颱風假等)
+- 強化部分上櫃/中小個股法人、資券與集保大戶資料的同步容錯與重試
 """
 
 import os
@@ -28,8 +30,8 @@ COMMON_STOCK_NAMES = {
     "2454": "聯發科", "2478": "大毅", "2492": "華新科", "2609": "陽明",
     "2615": "萬海", "3008": "大立光", "3022": "威強電", "3088": "艾訊",
     "3231": "緯創", "3481": "群創", "3653": "健策", "3661": "世芯-KY",
-    "4526": "東台", "6191": "精成科", "6217": "中探針", "6456": "GIS-KY",
-    "6505": "台塑化", "8111": "立碁"
+    "4526": "東台", "6191": "精成科", "6217": "中探針", "6234": "高技",
+    "6456": "GIS-KY", "6505": "台塑化", "8111": "立碁"
 }
 
 def fetch_stock_name(pure_code: str) -> str:
@@ -160,7 +162,7 @@ FINMIND_TOKEN = ""
 
 def fetch_stock_daily_k(raw_ticker: str, period: str = "1y", base_date: str = None):
     """
-    抓取日 K 資料與發行股數 shares_outstanding
+    抓取日 K 資料與發行股數 shares_outstanding，並嚴格過濾非交易日 (Volume <= 0)
     """
     import yfinance as yf
     raw_str = str(raw_ticker).strip().upper()
@@ -205,15 +207,16 @@ def fetch_stock_daily_k(raw_ticker: str, period: str = "1y", base_date: str = No
     target_date = target_dt.date()
     latest_date = df.index[-1].date()
 
+    # 僅在最新日為交易日且成交量 > 0 時補入即時列
     if latest_date < target_date:
         try:
             fast_info = ticker_obj.fast_info
             cur_price = fast_info.last_price
-            if cur_price is not None and not np.isnan(cur_price) and cur_price > 0:
+            v_val = fast_info.last_volume if fast_info.last_volume else 0
+            if cur_price is not None and not np.isnan(cur_price) and cur_price > 0 and v_val > 0:
                 o_val = fast_info.open if fast_info.open and fast_info.open > 0 else cur_price
                 h_val = fast_info.day_high if fast_info.day_high and fast_info.day_high > 0 else cur_price
                 l_val = fast_info.day_low if fast_info.day_low and fast_info.day_low > 0 else cur_price
-                v_val = fast_info.last_volume if fast_info.last_volume and fast_info.last_volume > 0 else 0
 
                 today_row = pd.DataFrame({
                     'Open': [float(o_val)],
@@ -226,9 +229,16 @@ def fetch_stock_daily_k(raw_ticker: str, period: str = "1y", base_date: str = No
         except Exception:
             pass
 
+    # 核心修訂：依成交量 <= 0 判定非交易日並全面過濾剔除
+    df = df[df['Volume'] > 0]
+
     return df, ticker_obj.ticker, shares_outstanding
 
 def sync_chip_data(pure_code: str, df_dates, status_placeholder=None):
+    """
+    增量同步法人、資券與集保持股資料
+    回傳值: inst_df, margin_df, holding_df
+    """
     storage = StockChipStorage(pure_code)
 
     headers = {
@@ -244,7 +254,7 @@ def sync_chip_data(pure_code: str, df_dates, status_placeholder=None):
     margin_query_start = (pd.to_datetime(last_margin_date) + timedelta(days=1)).strftime('%Y-%m-%d') if last_margin_date else target_start_date
     latest_trade_date_str = df_dates[-1].strftime('%Y-%m-%d')
 
-    # 1. 法人
+    # 1. 法人買賣超同步
     if not last_inst_date or inst_query_start <= latest_trade_date_str:
         try:
             url_inst = "https://api.finmindtrade.com/api/v4/data"
@@ -274,7 +284,7 @@ def sync_chip_data(pure_code: str, df_dates, status_placeholder=None):
         except Exception:
             pass
 
-    # 2. 資券
+    # 2. 資券增減同步
     if not last_margin_date or margin_query_start <= latest_trade_date_str:
         try:
             url_ms = "https://api.finmindtrade.com/api/v4/data"
@@ -308,7 +318,7 @@ def sync_chip_data(pure_code: str, df_dates, status_placeholder=None):
         except Exception:
             pass
 
-    # 3. 集保
+    # 3. 集保大戶持股同步 (含重試防護)
     holding_df = storage.load_holding_df()
     existing_weeks = set(holding_df['date'].dt.strftime('%Y%m%d')) if not holding_df.empty else set()
     
@@ -337,28 +347,33 @@ def sync_chip_data(pure_code: str, df_dates, status_placeholder=None):
 
             h_rec = []
             for d_str in missing_dates:
-                try:
-                    r_page = session_tdcc.get(url_home, headers=headers, timeout=8)
-                    sp_page = BeautifulSoup(r_page.text, 'html.parser')
-                    cur_form = sp_page.find('form')
-                    payload = {inp.get('name'): inp.get('value', '') for inp in cur_form.find_all('input') if inp.get('name')}
-                    payload.update({'scaDate': d_str, 'sqlMethod': 'StockNo', 'stockNo': pure_code, 'stockName': '', 'sub': '查詢'})
-                    resp = session_tdcc.post(target_url, data=payload, headers=headers, timeout=8)
-                    dfs = pd.read_html(StringIO(resp.text))
+                # 每個日期最多重試 2 次
+                for attempt in range(2):
+                    try:
+                        r_page = session_tdcc.get(url_home, headers=headers, timeout=8)
+                        sp_page = BeautifulSoup(r_page.text, 'html.parser')
+                        cur_form = sp_page.find('form')
+                        payload = {inp.get('name'): inp.get('value', '') for inp in cur_form.find_all('input') if inp.get('name')}
+                        payload.update({'scaDate': d_str, 'sqlMethod': 'StockNo', 'stockNo': pure_code, 'stockName': '', 'sub': '查詢'})
+                        resp = session_tdcc.post(target_url, data=payload, headers=headers, timeout=8)
+                        dfs = pd.read_html(StringIO(resp.text))
 
-                    target_tbl = next((d for d in dfs if '1' in d.iloc[:, 0].astype(str).tolist() and '15' in d.iloc[:, 0].astype(str).tolist()), None)
-                    if target_tbl is not None:
-                        lvl_col, pct_col = target_tbl.columns[0], target_tbl.columns[-1]
-                        sub = target_tbl[target_tbl[lvl_col].astype(str).isin([str(i) for i in range(1, 16)])].copy()
-                        d_fmt = f"{d_str[:4]}-{d_str[4:6]}-{d_str[6:]}"
-                        for _, row in sub.iterrows():
-                            try:
-                                h_rec.append((d_fmt, int(row[lvl_col]), float(str(row[pct_col]).replace('%', '').replace(',', ''))))
-                            except ValueError:
-                                pass
-                    time.sleep(0.15)
-                except Exception:
-                    continue
+                        target_tbl = next((d for d in dfs if '1' in d.iloc[:, 0].astype(str).tolist() and '15' in d.iloc[:, 0].astype(str).tolist()), None)
+                        if target_tbl is not None:
+                            lvl_col, pct_col = target_tbl.columns[0], target_tbl.columns[-1]
+                            sub = target_tbl[target_tbl[lvl_col].astype(str).isin([str(i) for i in range(1, 16)])].copy()
+                            d_fmt = f"{d_str[:4]}-{d_str[4:6]}-{d_str[6:]}"
+                            for _, row in sub.iterrows():
+                                try:
+                                    h_rec.append((d_fmt, int(row[lvl_col]), float(str(row[pct_col]).replace('%', '').replace(',', ''))))
+                                except ValueError:
+                                    pass
+                            break
+                    except Exception:
+                        time.sleep(0.3)
+                        continue
+                time.sleep(0.15)
+
             if h_rec:
                 storage.save_holding_data(h_rec)
     except Exception:
