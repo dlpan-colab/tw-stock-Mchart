@@ -1,35 +1,22 @@
+"""
+台股技術與籌碼分析系統 - 主程式入口 (app.py)
+"""
+
+MODULE_NAME = "app"
+MODULE_VERSION = "202610300900"
+
 import streamlit as st
-import pandas as pd
-from storage import StockChipStorage
-from data_fetcher import sync_chip_data
+from frontend import render_sidebar, render_main_content
 
-st.title("API 與資料庫同步測試")
+st.set_page_config(
+    page_title="台股技術與籌碼分析系統",
+    page_icon="📈",
+    layout="wide"
+)
 
-code = "6234"
-st.write(f"=== 開始測試股票代號: {code} 之同步機制 ===")
+def main():
+    code, major1_thresh, major2_thresh, shares_outstanding = render_sidebar()
+    render_main_content(code, major1_thresh, major2_thresh, shares_outstanding)
 
-storage = StockChipStorage(code)
-
-try:
-    st.write("正在呼叫 sync_chip_data()...")
-    sync_chip_data(code, storage)
-    st.write("sync_chip_data 執行結束。")
-    
-    inst_df = storage.load_institutional_df()
-    margin_df = storage.load_margin_df()
-    holding_df = storage.load_holding_df()
-    
-    st.write(f"【三大法人】讀取筆수: {len(inst_df)}")
-    if not inst_df.empty:
-        st.dataframe(inst_df.tail(2))
-        
-    st.write(f"【資券餘額】讀取筆數: {len(margin_df)}")
-    if not margin_df.empty:
-        st.dataframe(margin_df.tail(2))
-        
-    st.write(f"【集保大戶】讀取筆數: {len(holding_df)}")
-    if not holding_df.empty:
-        st.dataframe(holding_df.tail(2))
-        
-except Exception as e:
-    st.error(f"測試過程發生例外錯誤: {e}")
+if __name__ == "__main__":
+    main()
