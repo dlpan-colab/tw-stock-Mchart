@@ -1,9 +1,6 @@
 """
 data_fetcher.py - 外部資料抓取與增量同步模組
-版本: 202610301730
-- 修正 6234 正確股名為「高僑」
-- 支援 TWSE (上市) 與 TPEx (上櫃) 官方三大法人雙軌同步，確保上櫃股法人資料完整
-- 過濾 Volume <= 0 之非交易日 (休市、颱風假)
+版本: 202610302000
 """
 
 import os
@@ -11,7 +8,6 @@ import re
 import io
 import time
 import json
-import sqlite3
 import requests
 from io import StringIO
 from bs4 import BeautifulSoup
@@ -19,163 +15,12 @@ from datetime import datetime, timedelta
 import pandas as pd
 import numpy as np
 
-STORAGE_DIR = "."
-NAMES_CACHE_FILE = os.path.join(STORAGE_DIR, "tw_stock_names.json")
-
-# 修正預設字典 (包含 6234 高僑、5439 高技)
-COMMON_STOCK_NAMES = {
-    "1101": "台泥", "1102": "亞泥", "1104": "環泥", "1216": "統一",
-    "1301": "台塑", "1303": "南亞", "1312": "國喬", "1326": "台化",
-    "1504": "東元", "2002": "中鋼", "2105": "正新", "2303": "聯電",
-    "2308": "台達電", "2312": "金寶", "2317": "鴻海", "2324": "仁寶",
-    "2327": "國巨", "2330": "台積電", "2374": "佳能", "2382": "廣達",
-    "2454": "聯發科", "2478": "大毅", "2492": "華新科", "2609": "陽明",
-    "2615": "萬海", "3008": "大立光", "3022": "威強電", "3088": "艾訊",
-    "3231": "緯創", "3481": "群創", "3653": "健策", "3661": "世芯-KY",
-    "4526": "東台", "5439": "高技", "6191": "精成科", "6217": "中探針",
-    "6234": "高僑", "6456": "GIS-KY", "6505": "台塑化", "8111": "立碁"
-}
-
-def fetch_stock_name(pure_code: str) -> str:
-    if pure_code in COMMON_STOCK_NAMES:
-        return COMMON_STOCK_NAMES[pure_code]
-
-    if os.path.exists(NAMES_CACHE_FILE):
-        try:
-            with open(NAMES_CACHE_FILE, "r", encoding="utf-8") as f:
-                cached = json.load(f)
-                if pure_code in cached and cached[pure_code]:
-                    return cached[pure_code]
-        except Exception:
-            pass
-
-    # 1. 嘗試由 TWSE ISIN 查詢 (上市)
-    try:
-        url = f"https://isin.twse.com.tw/isin/single_main.jsp?owncode={pure_code}&stockname="
-        res = requests.get(url, timeout=5)
-        if res.status_code == 200:
-            soup = BeautifulSoup(res.text, 'html.parser')
-            rows = soup.find_all('tr')
-            for r in rows:
-                cols = r.find_all('td')
-                if len(cols) >= 3 and cols[1].text.strip() == pure_code:
-                    c_name = cols[2].text.strip()
-                    if c_name:
-                        COMMON_STOCK_NAMES[pure_code] = c_name
-                        return c_name
-    except Exception:
-        pass
-
-    # 2. 嘗試由櫃買中心 (TPEx) 官方端點查詢 (上櫃)
-    try:
-        url_tpex = f"https://www.tpex.org.tw/web/stock/aftertrading/otc_quotes_no1430/stk_wn1430_result.php?l=zh-tw&stkno={pure_code}"
-        res_t = requests.get(url_tpex, timeout=5)
-        if res_t.status_code == 200:
-            data = res_t.json()
-            if 'aaData' in data and len(data['aaData']) > 0:
-                c_name = str(data['aaData'][0][1]).strip()
-                if c_name:
-                    COMMON_STOCK_NAMES[pure_code] = c_name
-                    return c_name
-    except Exception:
-        pass
-
-    return pure_code
-
-class StockChipStorage:
-    def __init__(self, pure_code):
-        self.pure_code = pure_code
-        self.db_name = f"data_{pure_code}.db"
-        self.db_path = os.path.join(STORAGE_DIR, self.db_name)
-        self._init_db()
-
-    def _init_db(self):
-        with sqlite3.connect(self.db_path) as conn:
-            cur = conn.cursor()
-            cur.execute("""
-                CREATE TABLE IF NOT EXISTS institutional_investors (
-                    date TEXT PRIMARY KEY,
-                    foreign_net REAL,
-                    trust_net REAL,
-                    dealer_net REAL
-                )
-            """)
-            cur.execute("""
-                CREATE TABLE IF NOT EXISTS shareholding_distribution (
-                    date TEXT,
-                    level INTEGER,
-                    percent REAL,
-                    PRIMARY KEY (date, level)
-                )
-            """)
-            cur.execute("""
-                CREATE TABLE IF NOT EXISTS margin_short (
-                    date TEXT PRIMARY KEY,
-                    margin_diff REAL,
-                    short_diff REAL,
-                    margin_bal REAL,
-                    short_bal REAL
-                )
-            """)
-            conn.commit()
-
-    def get_latest_inst_date(self):
-        with sqlite3.connect(self.db_path) as conn:
-            cur = conn.cursor()
-            cur.execute("SELECT MAX(date) FROM institutional_investors")
-            row = cur.fetchone()
-            return row[0] if row and row[0] else None
-
-    def get_latest_margin_date(self):
-        with sqlite3.connect(self.db_path) as conn:
-            cur = conn.cursor()
-            cur.execute("SELECT MAX(date) FROM margin_short")
-            row = cur.fetchone()
-            return row[0] if row and row[0] else None
-
-    def save_institutional_data(self, records):
-        if not records: return
-        with sqlite3.connect(self.db_path) as conn:
-            cur = conn.cursor()
-            cur.executemany("INSERT OR REPLACE INTO institutional_investors VALUES (?, ?, ?, ?)", records)
-            conn.commit()
-
-    def save_margin_data(self, records):
-        if not records: return
-        with sqlite3.connect(self.db_path) as conn:
-            cur = conn.cursor()
-            cur.executemany("INSERT OR REPLACE INTO margin_short VALUES (?, ?, ?, ?, ?)", records)
-            conn.commit()
-
-    def save_holding_data(self, records):
-        if not records: return
-        with sqlite3.connect(self.db_path) as conn:
-            cur = conn.cursor()
-            cur.executemany("INSERT OR REPLACE INTO shareholding_distribution VALUES (?, ?, ?)", records)
-            conn.commit()
-
-    def load_institutional_df(self):
-        with sqlite3.connect(self.db_path) as conn:
-            df = pd.read_sql("SELECT date, foreign_net, trust_net, dealer_net FROM institutional_investors ORDER BY date", conn)
-            if not df.empty:
-                df['date'] = pd.to_datetime(df['date']).dt.normalize()
-            return df
-
-    def load_margin_df(self):
-        with sqlite3.connect(self.db_path) as conn:
-            df = pd.read_sql("SELECT * FROM margin_short ORDER BY date", conn)
-            if not df.empty:
-                df['date'] = pd.to_datetime(df['date']).dt.normalize()
-            return df
-
-    def load_holding_df(self):
-        with sqlite3.connect(self.db_path) as conn:
-            df = pd.read_sql("SELECT date, level, percent FROM shareholding_distribution ORDER BY date, level", conn)
-            if not df.empty:
-                df['date'] = pd.to_datetime(df['date']).dt.normalize()
-            return df
+from storage import StockChipStorage, get_stock_chinese_name
 
 FINMIND_TOKEN = ""
+
+def fetch_stock_name(pure_code: str) -> str:
+    return get_stock_chinese_name(pure_code)
 
 def fetch_stock_daily_k(raw_ticker: str, period: str = "1y", base_date: str = None):
     import yfinance as yf
@@ -242,7 +87,7 @@ def fetch_stock_daily_k(raw_ticker: str, period: str = "1y", base_date: str = No
         except Exception:
             pass
 
-    # 嚴格剔除非交易日 (Volume <= 0)
+    # 剔除非交易日 (Volume <= 0)
     df = df[df['Volume'] > 0]
 
     return df, ticker_obj.ticker, shares_outstanding
@@ -263,7 +108,7 @@ def sync_chip_data(pure_code: str, df_dates, status_placeholder=None):
     margin_query_start = (pd.to_datetime(last_margin_date) + timedelta(days=1)).strftime('%Y-%m-%d') if last_margin_date else target_start_date
     latest_trade_date_str = df_dates[-1].strftime('%Y-%m-%d')
 
-    # 1. 法人買賣超同步 (雙軌備援: FinMind + 櫃買/證交所官方 fallback)
+    # 1. 法人買賣超同步 (FinMind + 官方端點雙軌)
     inst_records = []
     if not last_inst_date or inst_query_start <= latest_trade_date_str:
         # A. 主管道: FinMind
@@ -293,17 +138,15 @@ def sync_chip_data(pure_code: str, df_dates, status_placeholder=None):
         except Exception:
             pass
 
-        # B. 備援管道: 若為上櫃且 FinMind 無資料，由 TPEx (櫃買中心) 抓取近 40 筆官方日交易記錄
+        # B. 備援管道: 若查無資料，從 TPEx (櫃買中心) 抓取官方日交易記錄
         if not inst_records:
             try:
-                # 取得近期上櫃法人買賣超
                 url_tpex_inst = f"https://www.tpex.org.tw/web/stock/3investor/daily_trading/stk_wn_result.php?l=zh-tw&stkno={pure_code}"
                 res_tp = requests.get(url_tpex_inst, headers=headers, timeout=10)
                 if res_tp.status_code == 200:
                     tp_data = res_tp.json()
                     rows = tp_data.get('aaData', [])
                     for row in rows:
-                        # 格式: [民國年月日, 外資買賣超(張), 投信(張), 自營商(張), ...]
                         if len(row) >= 4:
                             date_str = str(row[0]).strip()
                             parts = date_str.split('/')
