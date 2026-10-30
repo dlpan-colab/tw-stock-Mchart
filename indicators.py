@@ -5,7 +5,7 @@
 """
 
 MODULE_NAME = "indicators"
-MODULE_VERSION = "202610301730"
+MODULE_VERSION = "202610301800"
 
 import numpy as np
 import pandas as pd
@@ -35,10 +35,10 @@ def calculate_all_indicators(
         else:
             df['Volume_Sheets'] = 0.0
 
-    # 1. 移動平均線 (MA)
-    df['MA5'] = ta.trend.sma_indicator(df['Close'], window=5)
-    df['MA20'] = ta.trend.sma_indicator(df['Close'], window=20)
-    df['MA60'] = ta.trend.sma_indicator(df['Close'], window=60)
+    # 1. 移動平均線 (MA) - 使用 Pandas 內建 rolling 確保 100% 穩定相容
+    df['MA5'] = df['Close'].rolling(window=5).mean()
+    df['MA20'] = df['Close'].rolling(window=20).mean()
+    df['MA60'] = df['Close'].rolling(window=60).mean()
 
     # 2. KD 指標
     try:
@@ -64,7 +64,7 @@ def calculate_all_indicators(
     try:
         obv_indicator = ta.volume.OnBalanceVolumeIndicator(df['Close'], df['Volume'])
         df['OBV'] = obv_indicator.on_balance_volume()
-        df['OBV_MA20'] = ta.trend.sma_indicator(df['OBV'], window=20)
+        df['OBV_MA20'] = df['OBV'].rolling(window=20).mean()
     except Exception:
         df['OBV'] = 0.0
         df['OBV_MA20'] = 0.0
