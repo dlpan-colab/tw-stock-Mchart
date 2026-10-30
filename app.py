@@ -1,245 +1,73 @@
 """
-台股技術與籌碼分析系統 - 模組化主程式入口 (app.py)
-整合側邊欄參數設定、歷史紀錄快捷選取、前後導航狀態機、
-圖表渲染及雙執行環境支援。
+大戶持股近 60 日數值檢測專用程式 (app.py)
 """
 
-MODULE_NAME = "app"
-MODULE_VERSION = "202610300010"
-
-import re
-import datetime
-import traceback
 import streamlit as st
-import streamlit.components.v1 as components
+import pandas as pd
+import numpy as np
+from storage import StockChipStorage
 
-from storage import (
-    load_stock_history,
-    save_stock_history,
-    clear_stock_history
-)
-from chart_builder import build_split_figures
-from frontend import get_legend_html, get_component_html
+HOLDING_LEVEL_MAP = {
+    100: [8, 9, 10, 11, 12, 13, 14, 15],
+    200: [9, 10, 11, 12, 13, 14, 15],
+    400: [11, 12, 13, 14, 15],
+    600: [12, 13, 14, 15],
+    800: [13, 14, 15],
+    1000: [15]
+}
 
-DEFAULT_DISPLAY_DAYS = 20
-DEFAULT_MAJOR1_THRESH = 1000
-DEFAULT_MAJOR2_THRESH = 400
+st.set_page_config(page_title="大戶持股檢測工具", layout="wide")
+st.title("大戶持股近 60 日數值對應檢測")
 
+stock_code = st.text_input("輸入股票代號", value="2330")
+major1_thresh = st.selectbox("大戶1門檻 (張)", [1000, 800, 600, 400, 200, 100], index=0)
+major2_thresh = st.selectbox("大戶2門檻 (張)", [1000, 800, 600, 400, 200, 100], index=3)
 
-def parse_pure_code(input_str: str) -> str:
-    if not input_str:
-        return ""
-    m = re.search(r'\b(\d{4,6})\b', str(input_str))
-    return m.group(1) if m else str(input_str).strip()
-
-
-def run_app():
-    st.set_page_config(
-        page_title="台股技術與籌碼分析(模組化)",
-        layout="wide",
-        initial_sidebar_state="expanded"
-    )
-
-    # 1. 狀態初始化
-    if 'history_list' not in st.session_state:
-        st.session_state.history_list = load_stock_history()
-    if 'current_index' not in st.session_state:
-        st.session_state.current_index = 0
-    if 'nav_mode' not in st.session_state:
-        st.session_state.nav_mode = False
-    if 'ticker_input_field' not in st.session_state:
-        init_code = st.session_state.history_list[0]['code'] if st.session_state.history_list else "2330"
-        st.session_state.ticker_input_field = init_code
-
-    # 2. 連動回調函式
-    def on_hist_change():
-        selected = st.session_state.get('hist_select')
-        if selected and selected != "(選擇歷史標的)":
-            chosen_code = parse_pure_code(selected)
-            if chosen_code:
-                st.session_state.nav_mode = False
-                st.session_state.ticker_input_field = chosen_code
-
-    def on_prev_click():
-        hist = st.session_state.history_list
-        if not hist:
-            return
-        st.session_state.nav_mode = True
-        st.session_state.current_index = (st.session_state.current_index - 1) % len(hist)
-        target_code = hist[st.session_state.current_index]['code']
-        st.session_state.ticker_input_field = target_code
-        st.session_state.hist_select = "(選擇歷史標的)"
-
-    def on_next_click():
-        hist = st.session_state.history_list
-        if not hist:
-            return
-        st.session_state.nav_mode = True
-        st.session_state.current_index = (st.session_state.current_index + 1) % len(hist)
-        target_code = hist[st.session_state.current_index]['code']
-        st.session_state.ticker_input_field = target_code
-        st.session_state.hist_select = "(選擇歷史標的)"
-
-    # 3. 側邊欄參數設定
-    with st.sidebar:
-        st.header("參數設定")
-
-        hist = st.session_state.history_list
-        hist_options = ["(選擇歷史標的)"] + [f"{h.get('code')} ({h.get('name')})" for h in hist]
-        
-        st.selectbox(
-            "歷史紀錄快速選取",
-            options=hist_options,
-            index=0,
-            key="hist_select",
-            on_change=on_hist_change
-        )
-
-        s_ticker = st.text_input(
-            "股票代號 / 名稱",
-            key="ticker_input_field"
-        ).strip()
-
-        s_days = st.number_input(
-            "顯示日數",
-            min_value=5,
-            max_value=120,
-            value=DEFAULT_DISPLAY_DAYS,
-            step=5
-        )
-
-        s_period = st.selectbox(
-            "資料週期",
-            options=["6mo", "1y", "2y"],
-            index=1
-        )
-
-        use_base_date = st.checkbox("指定基準日 (復盤模式)", value=False)
-        s_base_date = None
-        if use_base_date:
-            s_base_date = st.date_input("基準日期", value=datetime.date.today())
-
-        st.subheader("大戶門檻設定")
-        col_m1, col_m2 = st.columns(2)
-        with col_m1:
-            s_m1 = st.selectbox("大戶門檻 1 (張)", options=[100, 200, 400, 600, 800, 1000], index=5)
-        with col_m2:
-            s_m2 = st.selectbox("大戶門檻 2 (張)", options=[100, 200, 400, 600, 800, 1000], index=2)
-
-        is_mobile = st.checkbox("手機緊湊版面優化", value=True)
-
-        col_b1, col_b2 = st.columns([1, 1])
-        with col_b1:
-            s_btn = st.button("查詢", type="primary", use_container_width=True)
-        with col_b2:
-            c_btn = st.button("清除歷史", use_container_width=True)
-
-        if c_btn:
-            st.session_state.history_list = clear_stock_history()
-            st.session_state.current_index = 0
-            st.rerun()
-
-    # 4. 頂部看板與頂部導航按鈕
-    st.markdown(get_legend_html(version_tag=MODULE_VERSION), unsafe_allow_html=True)
-
-    nav_col1, nav_col2, _ = st.columns([1, 1, 6])
-    with nav_col1:
-        st.button("⏮ 上一個", on_click=on_prev_click, key="btn_prev_top")
-    with nav_col2:
-        st.button("⏭ 下一個", on_click=on_next_click, key="btn_next_top")
-
-    status_box = st.empty()
-
-    target_symbol = parse_pure_code(s_ticker)
-    if not target_symbol:
-        st.info("請輸入台股代號以開始分析。")
-        return
-
-    # 5. 執行圖表運算
+if st.button("開始抓取與對應"):
     try:
-        fig_top, fig_btm, df, c_name, end_idx, disp_n = build_split_figures(
-            raw_ticker=target_symbol,
-            period=s_period,
-            display_days=s_days,
-            base_date=s_base_date,
-            major1_thresh=s_m1,
-            major2_thresh=s_m2,
-            is_mobile=is_mobile,
-            status_placeholder=status_box
-        )
-        status_box.empty()
+        storage = StockChipStorage(stock_code)
+        holding_df = storage.load_holding_df()
+        
+        if holding_df.empty:
+            st.warning(f"[{stock_code}] 資料庫中查無大戶持股資料。")
+        else:
+            holding_df['date'] = pd.to_datetime(holding_df['date']).dt.normalize()
+            
+            m1_levels = HOLDING_LEVEL_MAP.get(int(major1_thresh), [15])
+            m2_levels = HOLDING_LEVEL_MAP.get(int(major2_thresh), [11, 12, 13, 14, 15])
+
+            def get_weekly_sum(levels):
+                sub = holding_df[holding_df['level'].isin(levels)]
+                if sub.empty:
+                    return pd.Series(dtype=float)
+                return sub.groupby('date')['percent'].sum().sort_index()
+
+            m1_weekly = get_weekly_sum(m1_levels)
+            m2_weekly = get_weekly_sum(m2_levels)
+
+            pub_dates_m1 = pd.to_datetime(m1_weekly.index).values
+            pct_vals_m1 = m1_weekly.values
+            
+            pub_dates_m2 = pd.to_datetime(m2_weekly.index).values
+            pct_vals_m2 = m2_weekly.values
+
+            mock_dates = pd.date_range(end=pd.Timestamp.today(), periods=60, freq='B')
+            
+            results = []
+            for d in mock_dates:
+                d_val = pd.to_datetime(d).normalize().to_numpy()
+                
+                valid_m1 = np.where(pub_dates_m1 <= d_val)[0]
+                v1 = float(pct_vals_m1[valid_m1[-1]]) if len(valid_m1) > 0 else float('nan')
+                
+                valid_m2 = np.where(pub_dates_m2 <= d_val)[0]
+                v2 = float(pct_vals_m2[valid_m2[-1]]) if len(valid_m2) > 0 else float('nan')
+                
+                results.append({'Date': pd.to_datetime(d).strftime('%Y-%m-%d'), 'Major1_Pct': v1, 'Major2_Pct': v2})
+
+            res_df = pd.DataFrame(results)
+            st.success(f"成功抓取並對應 [{stock_code}] 近 60 個交易日的大戶持股數值！")
+            st.dataframe(res_df, use_container_width=True)
+            
     except Exception as e:
-        status_box.empty()
-        st.error(f"資料擷取或計算失敗：{e}")
-        st.code(traceback.format_exc(), language="text")
-        return
-
-    if df is None or df.empty:
-        st.warning(f"查無標的 `{target_symbol}` 之交易資料，請確認代號是否正確。")
-        return
-
-    # 6. 依操作類型決定是否變更順位
-    if not st.session_state.get('nav_mode', False):
-        saved_hist = save_stock_history(target_symbol, c_name)
-        st.session_state.history_list = saved_hist
-        st.session_state.current_index = 0
-    else:
-        st.session_state.nav_mode = False
-
-    # 7. 渲染前端圖表
-    component_html = get_component_html(
-        fig_top=fig_top,
-        fig_btm=fig_btm,
-        df=df,
-        raw_ticker=target_symbol,
-        major1_thresh=s_m1,
-        major2_thresh=s_m2,
-        initial_end_idx=end_idx,
-        initial_disp_days=disp_n,
-        is_mobile=is_mobile
-    )
-
-    chart_height = 1745 if is_mobile else 1800
-    components.html(component_html, height=chart_height, scrolling=False)
-
-    # 8. 底部重複導航按鈕
-    st.markdown("<div style='height: 10px;'></div>", unsafe_allow_html=True)
-    btm_col1, btm_col2, _ = st.columns([1, 1, 6])
-    with btm_col1:
-        st.button("⏮ 上一個", on_click=on_prev_click, key="btn_prev_bottom")
-    with btm_col2:
-        st.button("⏭ 下一個", on_click=on_next_click, key="btn_next_bottom")
-
-
-if __name__ == "__main__":
-    run_app()
-
-
-# 【臨時測試區塊】驗證近 60 日大戶持股數值
-with st.sidebar.expander("大戶持股近60日數值檢測"):
-    if st.button("執行測試"):
-        try:
-            storage = StockChipStorage(pure_code)
-            holding_df = storage.load_holding_df()
-            if not holding_df.empty:
-                holding_df['date'] = pd.to_datetime(holding_df['date']).dt.normalize()
-                # 以大戶1（>=1000張，level 15）為例
-                m1_sub = holding_df[holding_df['level'] == 15].groupby('date')['percent'].sum().sort_index()
-                
-                mock_dates = pd.date_range(end=pd.Timestamp.today(), periods=60, freq='B')
-                pub_dates = pd.to_datetime(m1_sub.index).values
-                pct_vals = m1_sub.values
-                
-                res = []
-                for d in mock_dates:
-                    d_val = pd.to_datetime(d).normalize().to_numpy()
-                    valid = np.where(pub_dates <= d_val)[0]
-                    v = float(pct_vals[valid[-1]]) if len(valid) > 0 else float('nan')
-                    res.append({'Date': pd.to_datetime(d).strftime('%Y-%m-%d'), 'Major1_Pct': v})
-                
-                st.dataframe(pd.DataFrame(res).tail(15))
-            else:
-                st.warning("資料庫中無大戶持股資料")
-        except Exception as e:
-            st.error(f"錯誤: {e}")
-
+        st.error(f"執行發生錯誤: {e}")
