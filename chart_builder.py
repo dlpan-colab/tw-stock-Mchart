@@ -3,7 +3,7 @@
 """
 
 MODULE_NAME = "chart_builder"
-MODULE_VERSION = "202610301100"
+MODULE_VERSION = "202610301300"
 
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
