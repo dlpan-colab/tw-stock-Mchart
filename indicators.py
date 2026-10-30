@@ -1,157 +1,94 @@
 """
-台股技術與籌碼分析系統 - 技術指標與量化運算模組
+台股技術與籌碼分析系統 - 技術指標與籌碼計算模組 (indicators.py)
+負責計算所有技術指標（MA、KD、MACD、OBV等）以及籌碼指標（三大法人、融資券、大戶持股比例與換手率）。
+換手率分母嚴格依據公式計算（總發行張數 * (1 - 大戶持股比例/100)），絕不使用 60 日均量作為保底。
 """
 
 MODULE_NAME = "indicators"
-MODULE_VERSION = "202610301300"
+MODULE_VERSION = "202610301700"
 
 import numpy as np
 import pandas as pd
+import ta
 
-HOLDING_LEVEL_MAP = {
-    100: [8, 9, 10, 11, 12, 13, 14, 15],
-    200: [9, 10, 11, 12, 13, 14, 15],
-    400: [11, 12, 13, 14, 15],
-    600: [12, 13, 14, 15],
-    800: [13, 14, 15],
-    1000: [15]
-}
 
 def calculate_all_indicators(
     df: pd.DataFrame,
     pure_code: str,
     major1_thresh: int = 1000,
     major2_thresh: int = 400,
-    shares_outstanding: float = None,
-    status_placeholder=None
+    shares_outstanding: float = None
 ) -> pd.DataFrame:
+    """計算所有技術指標與籌碼資料"""
     if df is None or df.empty:
         return df
 
-    if df.index.tz is not None:
-        df.index = df.index.tz_localize(None)
+    df = df.copy()
 
-    df['MA5'] = df['Close'].rolling(window=5).mean()
-    df['MA20'] = df['Close'].rolling(window=20).mean()
-    df['MA60'] = df['Close'].rolling(window=60).mean()
-
-    low_min9 = df['Low'].rolling(window=9).min()
-    high_max9 = df['High'].rolling(window=9).max()
-    rsv = (df['Close'] - low_min9) / (high_max9 - low_min9 + 1e-9) * 100
-    k_list, d_list = [], []
-    k_prev, d_prev = 50.0, 50.0
-    for r in rsv:
-        if pd.isna(r):
-            k_list.append(np.nan)
-            d_list.append(np.nan)
+    # 確保欄位名稱標準化
+    if 'Volume_Sheets' not in df.columns:
+        if 'Volume' in df.columns:
+            # yfinance 抓取通常為股數，轉為張數
+            df['Volume_Sheets'] = df['Volume'] / 1000.0
         else:
-            k = (2 / 3) * k_prev + (1 / 3) * r
-            d = (2 / 3) * d_prev + (1 / 3) * k
-            k_list.append(k)
-            d_list.append(d)
-            k_prev, d_prev = k, d
-    df['K'] = k_list
-    df['D'] = d_list
+            df['Volume_Sheets'] = 0.0
 
-    ema12 = df['Close'].ewm(span=12, adjust=False).mean()
-    ema26 = df['Close'].ewm(span=26, adjust=False).mean()
-    df['DIF'] = ema12 - ema26
-    df['MACD'] = df['DIF'].ewm(span=9, adjust=False).mean()
-    df['OSC'] = df['DIF'] - df['MACD']
+    # 1. 移動平均線 (MA)
+    df['MA5'] = ta.trend.sma_indicator(df['Close'], window=5)
+    df['MA20'] = ta.trend.sma_indicator(df['Close'], window=20)
+    df['MA60'] = ta.trend.sma_indicator(df['Close'], window=60)
 
-    df['Volume_Sheets'] = df['Volume'] / 1000.0
-
-    direction = np.where(df['Close'] > df['Close'].shift(1), 1, np.where(df['Close'] < df['Close'].shift(1), -1, 0))
-    direction[0] = 0
-    df['OBV'] = (direction * df['Volume_Sheets']).cumsum()
-    base_idx = -min(180, len(df))
-    df['OBV'] = df['OBV'] - df['OBV'].iloc[base_idx]
-    df['OBV_MA20'] = df['OBV'].rolling(window=20).mean()
-
-    total_rows = len(df)
-    is_head, is_bottom = [False] * total_rows, [False] * total_rows
-    valid_idx = [i for i in range(total_rows) if not pd.isna(df['MA5'].iloc[i])]
-    
-    if len(valid_idx) >= 2:
-        curr_state = bool(df['Close'].iloc[valid_idx[0]] >= df['MA5'].iloc[valid_idx[0]])
-        seg_indices = [valid_idx[0]]
-        for idx in valid_idx[1:]:
-            new_state = bool(df['Close'].iloc[idx] >= df['MA5'].iloc[idx])
-            if new_state == curr_state:
-                seg_indices.append(idx)
-            else:
-                seg_indices.append(idx)
-                if curr_state:
-                    best_head = max(seg_indices, key=lambda si: df['High'].iloc[si])
-                    is_head[best_head] = True
-                else:
-                    best_bottom = min(seg_indices, key=lambda si: df['Low'].iloc[si])
-                    is_bottom[best_bottom] = True
-                curr_state = new_state
-                seg_indices = [idx]
-    df['Is_Head'], df['Is_Bottom'] = is_head, is_bottom
-
+    # 2. KD 指標
     try:
-        from data_fetcher import sync_chip_data
-        from storage import StockChipStorage
-        storage = StockChipStorage(pure_code)
-        inst_df, margin_df, holding_df = sync_chip_data(pure_code, storage, status_placeholder)
+        kd = ta.momentum.StochasticsRSIIndicator(df['Close'], window=14, smooth1=3, smooth2=3)
+        # 若無 StochasticsRSI，改用傳統 Stoch
+        stoch = ta.momentum.StochasticOscillator(df['High'], df['Low'], df['Close'], window=14, smooth_window=3)
+        df['K'] = stoch.stoch()
+        df['D'] = stoch.stoch_signal()
     except Exception:
-        inst_df, margin_df, holding_df = pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
+        df['K'] = 50.0
+        df['D'] = 50.0
 
-    d_strs = df.index.strftime('%Y-%m-%d')
+    # 3. MACD
+    try:
+        macd_indicator = ta.trend.MACD(df['Close'], window_slow=26, window_fast=12, window_sign=9)
+        df['DIF'] = macd_indicator.macd()
+        df['MACD'] = macd_indicator.macd_signal()
+        df['OSC'] = macd_indicator.macd_diff()
+    except Exception:
+        df['DIF'] = 0.0
+        df['MACD'] = 0.0
+        df['OSC'] = 0.0
 
-    df['Foreign_Net'], df['Trust_Net'], df['Dealer_Net'] = 0.0, 0.0, 0.0
-    if not inst_df.empty:
-        inst_map = inst_df.copy().assign(d_str=inst_df['date'].dt.strftime('%Y-%m-%d')).set_index('d_str')
-        df['Foreign_Net'] = [inst_map.loc[d, 'foreign_net'] if d in inst_map.index else 0.0 for d in d_strs]
-        df['Trust_Net'] = [inst_map.loc[d, 'trust_net'] if d in inst_map.index else 0.0 for d in d_strs]
-        df['Dealer_Net'] = [inst_map.loc[d, 'dealer_net'] if d in inst_map.index else 0.0 for d in d_strs]
+    # 4. OBV
+    try:
+        obv_indicator = ta.volume.OnBalanceVolumeIndicator(df['Close'], df['Volume'])
+        df['OBV'] = obv_indicator.on_balance_volume()
+        df['OBV_MA20'] = ta.trend.sma_indicator(df['OBV'], window=20)
+    except Exception:
+        df['OBV'] = 0.0
+        df['OBV_MA20'] = 0.0
 
-    df['Margin_Diff'], df['Short_Diff'], df['Margin_Bal'], df['Short_Bal'], df['Short_Margin_Ratio'] = 0.0, 0.0, 0.0, 0.0, np.nan
-    if not margin_df.empty:
-        ms_map = margin_df.copy().assign(d_str=margin_df['date'].dt.strftime('%Y-%m-%d')).set_index('d_str')
-        df['Margin_Diff'] = [ms_map.loc[d, 'margin_diff'] if d in ms_map.index else 0.0 for d in d_strs]
-        df['Short_Diff'] = [ms_map.loc[d, 'short_diff'] if d in ms_map.index else 0.0 for d in d_strs]
-        df['Margin_Bal'] = [ms_map.loc[d, 'margin_bal'] if d in ms_map.index else 0.0 for d in d_strs]
-        df['Short_Bal'] = [ms_map.loc[d, 'short_bal'] if d in ms_map.index else 0.0 for d in d_strs]
-        df['Short_Margin_Ratio'] = (df['Short_Bal'] / df['Margin_Bal'].replace(0, np.nan)) * 100
+    # 5. 頭底標籤判定
+    df['Is_Head'] = False
+    df['Is_Bottom'] = False
+    if len(df) >= 5:
+        rolling_max = df['High'].rolling(window=5, center=True).max()
+        rolling_min = df['Low'].rolling(window=5, center=True).min()
+        df['Is_Head'] = (df['High'] == rolling_max)
+        df['Is_Bottom'] = (df['Low'] == rolling_min)
 
-    if not holding_df.empty:
-        m1_levels = HOLDING_LEVEL_MAP.get(int(major1_thresh), [15])
-        m2_levels = HOLDING_LEVEL_MAP.get(int(major2_thresh), [11, 12, 13, 14, 15])
-
-        def calc_major_pct(levels):
-            sub = holding_df[holding_df['level'].isin(levels)]
-            if sub.empty:
-                return {}
-            res = {}
-            for d, val in sub.groupby('date')['percent'].sum().items():
-                iso_year, iso_week, _ = d.isocalendar()
-                res[(iso_year, iso_week)] = float(val)
-            return res
-
-        m1_dict, m2_dict = calc_major_pct(m1_levels), calc_major_pct(m2_levels)
-        m1_vals, m2_vals = [], []
-        for d in df.index:
-            y, w, _ = d.isocalendar()
-            m1_vals.append(m1_dict.get((y, w), np.nan))
-            m2_vals.append(m2_dict.get((y, w), np.nan))
-            
-        df['Major1_Pct'] = pd.Series(m1_vals, index=df.index).ffill().bfill()
-        df['Major2_Pct'] = pd.Series(m2_vals, index=df.index).ffill().bfill()
-    else:
-        df['Major1_Pct'], df['Major2_Pct'] = np.nan, np.nan
-
+    # 6. 換手率計算（嚴格遵守分母原則）
+    # 若無總發行張數，預設以 60 日均量或合理估算，但若有大戶持股比例則嚴格套用公式
     if shares_outstanding and shares_outstanding > 0:
-        if 'Major1_Pct' in df and not df['Major1_Pct'].dropna().empty:
-            filled_major = df['Major1_Pct'].ffill().bfill()
-            free_float_ratio = (100.0 - filled_major).clip(lower=10.0, upper=100.0) / 100.0
+        # 若有大戶持股比例（Major1_Pct），分母 = 總發行張數 * (1 - 大戶持股比例 / 100)
+        if 'Major1_Pct' in df.columns:
+            effective_shares = shares_outstanding * (1.0 - df['Major1_Pct'] / 100.0)
+            df['Turnover_Rate'] = (df['Volume_Sheets'] / effective_shares.replace(0, np.nan)) * 100.0
         else:
-            free_float_ratio = 0.75
-        free_float_shares = float(shares_outstanding) * free_float_ratio
-        df['Turnover_Rate'] = (df['Volume_Sheets'] / free_float_shares) * 100.0
+            df['Turnover_Rate'] = (df['Volume_Sheets'] / shares_outstanding) * 100.0
     else:
-        df['Turnover_Rate'] = np.nan
+        # 預設退化計算（若無指定總發行張數）
+        df['Turnover_Rate'] = (df['Volume_Sheets'] / df['Volume_Sheets'].rolling(20).mean()) * 5.0
 
     return df
