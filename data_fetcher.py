@@ -16,12 +16,156 @@ from datetime import datetime, timedelta
 import pandas as pd
 import numpy as np
 
-from storage import StockChipStorage, get_stock_chinese_name
+# 嘗試相容性匯入，若 storage.py 命名不一致則使用本檔內建實作
+try:
+    from storage import ChipStorage as BaseStorage
+except ImportError:
+    try:
+        from storage import StockChipStorage as BaseStorage
+    except ImportError:
+        BaseStorage = object
 
-FINMIND_TOKEN = ""
+STORAGE_DIR = "."
+NAMES_CACHE_FILE = os.path.join(STORAGE_DIR, "tw_stock_names.json")
+
+COMMON_STOCK_NAMES = {
+    "1101": "台泥", "1102": "亞泥", "1104": "環泥", "1216": "統一",
+    "1301": "台塑", "1303": "南亞", "1312": "國喬", "1326": "台化",
+    "1504": "東元", "2002": "中鋼", "2105": "正新", "2303": "聯電",
+    "2308": "台達電", "2312": "金寶", "2317": "鴻海", "2324": "仁寶",
+    "2327": "國巨", "2330": "台積電", "2374": "佳能", "2382": "廣達",
+    "2454": "聯發科", "2478": "大毅", "2492": "華新科", "2609": "陽明",
+    "2615": "萬海", "3008": "大立光", "3022": "威強電", "3088": "艾訊",
+    "3231": "緯創", "3481": "群創", "3653": "健策", "3661": "世芯-KY",
+    "4526": "東台", "6191": "精成科", "6217": "中探針", "6456": "GIS-KY",
+    "6505": "台塑化", "8111": "立碁"
+}
 
 def fetch_stock_name(pure_code: str) -> str:
-    return get_stock_chinese_name(pure_code)
+    if pure_code in COMMON_STOCK_NAMES:
+        return COMMON_STOCK_NAMES[pure_code]
+
+    if os.path.exists(NAMES_CACHE_FILE):
+        try:
+            with open(NAMES_CACHE_FILE, "r", encoding="utf-8") as f:
+                cached = json.load(f)
+                if pure_code in cached and cached[pure_code]:
+                    return cached[pure_code]
+        except Exception:
+            pass
+
+    try:
+        url = f"https://isin.twse.com.tw/isin/single_main.jsp?owncode={pure_code}&stockname="
+        res = requests.get(url, timeout=5)
+        if res.status_code == 200:
+            soup = BeautifulSoup(res.text, 'html.parser')
+            rows = soup.find_all('tr')
+            for r in rows:
+                cols = r.find_all('td')
+                if len(cols) >= 3 and cols[1].text.strip() == pure_code:
+                    c_name = cols[2].text.strip()
+                    if c_name:
+                        COMMON_STOCK_NAMES[pure_code] = c_name
+                        return c_name
+    except Exception:
+        pass
+
+    return pure_code
+
+class StockChipStorage:
+    def __init__(self, pure_code):
+        self.pure_code = pure_code
+        self.db_name = f"data_{pure_code}.db"
+        self.db_path = os.path.join(STORAGE_DIR, self.db_name)
+        self._init_db()
+
+    def _init_db(self):
+        with sqlite3.connect(self.db_path) as conn:
+            cur = conn.cursor()
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS institutional_investors (
+                    date TEXT PRIMARY KEY,
+                    foreign_net REAL,
+                    trust_net REAL,
+                    dealer_net REAL
+                )
+            """)
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS shareholding_distribution (
+                    date TEXT,
+                    level INTEGER,
+                    percent REAL,
+                    PRIMARY KEY (date, level)
+                )
+            """)
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS margin_short (
+                    date TEXT PRIMARY KEY,
+                    margin_diff REAL,
+                    short_diff REAL,
+                    margin_bal REAL,
+                    short_bal REAL
+                )
+            """)
+            conn.commit()
+
+    def get_latest_inst_date(self):
+        with sqlite3.connect(self.db_path) as conn:
+            cur = conn.cursor()
+            cur.execute("SELECT MAX(date) FROM institutional_investors")
+            row = cur.fetchone()
+            return row[0] if row and row[0] else None
+
+    def get_latest_margin_date(self):
+        with sqlite3.connect(self.db_path) as conn:
+            cur = conn.cursor()
+            cur.execute("SELECT MAX(date) FROM margin_short")
+            row = cur.fetchone()
+            return row[0] if row and row[0] else None
+
+    def save_institutional_data(self, records):
+        if not records: return
+        with sqlite3.connect(self.db_path) as conn:
+            cur = conn.cursor()
+            cur.executemany("INSERT OR REPLACE INTO institutional_investors VALUES (?, ?, ?, ?)", records)
+            conn.commit()
+
+    def save_margin_data(self, records):
+        if not records: return
+        with sqlite3.connect(self.db_path) as conn:
+            cur = conn.cursor()
+            cur.executemany("INSERT OR REPLACE INTO margin_short VALUES (?, ?, ?, ?, ?)", records)
+            conn.commit()
+
+    def save_holding_data(self, records):
+        if not records: return
+        with sqlite3.connect(self.db_path) as conn:
+            cur = conn.cursor()
+            cur.executemany("INSERT OR REPLACE INTO shareholding_distribution VALUES (?, ?, ?)", records)
+            conn.commit()
+
+    def load_institutional_df(self):
+        with sqlite3.connect(self.db_path) as conn:
+            df = pd.read_sql("SELECT date, foreign_net, trust_net, dealer_net FROM institutional_investors ORDER BY date", conn)
+            if not df.empty:
+                df['date'] = pd.to_datetime(df['date']).dt.normalize()
+            return df
+
+    def load_margin_df(self):
+        with sqlite3.connect(self.db_path) as conn:
+            df = pd.read_sql("SELECT * FROM margin_short ORDER BY date", conn)
+            if not df.empty:
+                df['date'] = pd.to_datetime(df['date']).dt.normalize()
+            return df
+
+    def load_holding_df(self):
+        with sqlite3.connect(self.db_path) as conn:
+            df = pd.read_sql("SELECT date, level, percent FROM shareholding_distribution ORDER BY date, level", conn)
+            if not df.empty:
+                df['date'] = pd.to_datetime(df['date']).dt.normalize()
+            return df
+
+FINMIND_TOKEN = ""
 
 def fetch_stock_daily_k(raw_ticker: str, period: str = "1y", base_date: str = None):
     import yfinance as yf
@@ -169,7 +313,7 @@ def sync_chip_data(pure_code: str, df_dates, status_placeholder=None):
         except Exception:
             pass
 
-    # 3. 同步集保大戶持股 (主動抓足 15 週五歷史)
+    # 3. 同步集保大戶持股 (主動推算 15 週五日期)
     holding_df = storage.load_holding_df()
     existing_weeks = set(holding_df['date'].dt.strftime('%Y%m%d')) if not holding_df.empty else set()
     
@@ -221,5 +365,4 @@ def sync_chip_data(pure_code: str, df_dates, status_placeholder=None):
         except Exception:
             pass
 
-    # 嚴格回傳 3 個變數
     return storage.load_institutional_df(), storage.load_margin_df(), storage.load_holding_df()
