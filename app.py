@@ -1,165 +1,215 @@
 """
-大戶持股正確週對齊測試程式 (app.py) - 完整顯示 15 週版
+台股技術與籌碼分析系統 - 模組化主程式入口 (app.py)
+整合側邊欄參數設定、歷史紀錄快捷選取、前後導航狀態機、
+圖表渲染及雙執行環境支援。
 """
 
+MODULE_NAME = "app"
+MODULE_VERSION = "202610300010"
+
+import re
+import datetime
+import traceback
 import streamlit as st
-import pandas as pd
-import numpy as np
-import requests
-from bs4 import BeautifulSoup
-import sqlite3
+import streamlit.components.v1 as components
 
-class StockChipStorage:
-    def __init__(self, pure_code):
-        self.pure_code = pure_code
-        self.db_path = f"data_{pure_code}.db"
-        self._init_db()
+from storage import (
+    load_stock_history,
+    save_stock_history,
+    clear_stock_history
+)
+from chart_builder import build_split_figures
+from frontend import get_legend_html, get_component_html
 
-    def _init_db(self):
-        with sqlite3.connect(self.db_path) as conn:
-            cur = conn.cursor()
-            cur.execute("""
-                CREATE TABLE IF NOT EXISTS shareholding_distribution (
-                    date TEXT,
-                    level INTEGER,
-                    percent REAL,
-                    PRIMARY KEY (date, level)
-                )
-            """)
-            conn.commit()
+DEFAULT_DISPLAY_DAYS = 20
+DEFAULT_MAJOR1_THRESH = 1000
+DEFAULT_MAJOR2_THRESH = 400
 
-    def load_holding_df(self):
-        with sqlite3.connect(self.db_path) as conn:
-            df = pd.read_sql("SELECT date, level, percent FROM shareholding_distribution ORDER BY date, level", conn)
-            if not df.empty:
-                df['date'] = pd.to_datetime(df['date'])
-            return df
 
-    def save_holding_data(self, records):
-        if not records:
+def parse_pure_code(input_str: str) -> str:
+    if not input_str:
+        return ""
+    m = re.search(r'\b(\d{4,6})\b', str(input_str))
+    return m.group(1) if m else str(input_str).strip()
+
+
+def run_app():
+    st.set_page_config(
+        page_title="台股技術與籌碼分析(模組化)",
+        layout="wide",
+        initial_sidebar_state="expanded"
+    )
+
+    # 1. 狀態初始化
+    if 'history_list' not in st.session_state:
+        st.session_state.history_list = load_stock_history()
+    if 'current_index' not in st.session_state:
+        st.session_state.current_index = 0
+    if 'nav_mode' not in st.session_state:
+        st.session_state.nav_mode = False
+    if 'ticker_input_field' not in st.session_state:
+        init_code = st.session_state.history_list[0]['code'] if st.session_state.history_list else "2330"
+        st.session_state.ticker_input_field = init_code
+
+    # 2. 連動回調函式
+    def on_hist_change():
+        selected = st.session_state.get('hist_select')
+        if selected and selected != "(選擇歷史標的)":
+            chosen_code = parse_pure_code(selected)
+            if chosen_code:
+                st.session_state.nav_mode = False
+                st.session_state.ticker_input_field = chosen_code
+
+    def on_prev_click():
+        hist = st.session_state.history_list
+        if not hist:
             return
-        with sqlite3.connect(self.db_path) as conn:
-            cur = conn.cursor()
-            cur.executemany("""
-                INSERT OR REPLACE INTO shareholding_distribution (date, level, percent)
-                VALUES (?, ?, ?)
-            """, records)
-            conn.commit()
+        st.session_state.nav_mode = True
+        st.session_state.current_index = (st.session_state.current_index - 1) % len(hist)
+        target_code = hist[st.session_state.current_index]['code']
+        st.session_state.ticker_input_field = target_code
+        st.session_state.hist_select = "(選擇歷史標的)"
 
-def fetch_tdcc_history(pure_code):
-    storage = StockChipStorage(pure_code)
-    holding_df = storage.load_holding_df()
-    existing_weeks = set(holding_df['date'].dt.strftime('%Y%m%d')) if not holding_df.empty else set()
-    
-    headers = {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-        'Referer': 'https://www.tdcc.com.tw/portal/zh/smWeb/qryStock',
-        'Origin': 'https://www.tdcc.com.tw'
-    }
-    
+    def on_next_click():
+        hist = st.session_state.history_list
+        if not hist:
+            return
+        st.session_state.nav_mode = True
+        st.session_state.current_index = (st.session_state.current_index + 1) % len(hist)
+        target_code = hist[st.session_state.current_index]['code']
+        st.session_state.ticker_input_field = target_code
+        st.session_state.hist_select = "(選擇歷史標的)"
+
+    # 3. 側邊欄參數設定
+    with st.sidebar:
+        st.header("參數設定")
+
+        hist = st.session_state.history_list
+        hist_options = ["(選擇歷史標的)"] + [f"{h.get('code')} ({h.get('name')})" for h in hist]
+        
+        st.selectbox(
+            "歷史紀錄快速選取",
+            options=hist_options,
+            index=0,
+            key="hist_select",
+            on_change=on_hist_change
+        )
+
+        s_ticker = st.text_input(
+            "股票代號 / 名稱",
+            key="ticker_input_field"
+        ).strip()
+
+        s_days = st.number_input(
+            "顯示日數",
+            min_value=5,
+            max_value=120,
+            value=DEFAULT_DISPLAY_DAYS,
+            step=5
+        )
+
+        s_period = st.selectbox(
+            "資料週期",
+            options=["6mo", "1y", "2y"],
+            index=1
+        )
+
+        use_base_date = st.checkbox("指定基準日 (復盤模式)", value=False)
+        s_base_date = None
+        if use_base_date:
+            s_base_date = st.date_input("基準日期", value=datetime.date.today())
+
+        st.subheader("大戶門檻設定")
+        col_m1, col_m2 = st.columns(2)
+        with col_m1:
+            s_m1 = st.selectbox("大戶門檻 1 (張)", options=[100, 200, 400, 600, 800, 1000], index=5)
+        with col_m2:
+            s_m2 = st.selectbox("大戶門檻 2 (張)", options=[100, 200, 400, 600, 800, 1000], index=2)
+
+        is_mobile = st.checkbox("手機緊湊版面優化", value=True)
+
+        col_b1, col_b2 = st.columns([1, 1])
+        with col_b1:
+            s_btn = st.button("查詢", type="primary", use_container_width=True)
+        with col_b2:
+            c_btn = st.button("清除歷史", use_container_width=True)
+
+        if c_btn:
+            st.session_state.history_list = clear_stock_history()
+            st.session_state.current_index = 0
+            st.rerun()
+
+    # 4. 頂部看板與頂部導航按鈕
+    st.markdown(get_legend_html(version_tag=MODULE_VERSION), unsafe_allow_html=True)
+
+    nav_col1, nav_col2, _ = st.columns([1, 1, 6])
+    with nav_col1:
+        st.button("⏮ 上一個", on_click=on_prev_click, key="btn_prev_top")
+    with nav_col2:
+        st.button("⏭ 下一個", on_click=on_next_click, key="btn_next_top")
+
+    status_box = st.empty()
+
+    target_symbol = parse_pure_code(s_ticker)
+    if not target_symbol:
+        st.info("請輸入台股代號以開始分析。")
+        return
+
+    # 5. 執行圖表運算
     try:
-        session_tdcc = requests.Session()
-        url_tdcc = "https://www.tdcc.com.tw/portal/zh/smWeb/qryStock"
-        r_init = session_tdcc.get(url_tdcc, headers=headers, timeout=10)
-        soup_init = BeautifulSoup(r_init.text, 'html.parser')
-
-        base_payload = {}
-        for inp in soup_init.find_all('input'):
-            n = inp.get('name')
-            if n:
-                base_payload[n] = inp.get('value', '')
-
-        available_dates = []
-        for o in soup_init.find_all('option'):
-            v = o.get('value', '').strip()
-            if v.isdigit() and len(v) == 8 and v.startswith('20'):
-                available_dates.append(v)
-
-        missing_dates = [d for d in available_dates if d not in existing_weeks]
-
-        for d_str in missing_dates:
-            payload = base_payload.copy()
-            payload.update({
-                'scaDate': d_str,
-                'sqlMethod': 'StockNo',
-                'stockNo': pure_code,
-                'stockName': '',
-                'sub': '查詢'
-            })
-            res_tdcc = session_tdcc.post(url_tdcc, data=payload, headers=headers, timeout=10)
-            if res_tdcc.status_code == 200:
-                soup_post = BeautifulSoup(res_tdcc.text, 'html.parser')
-                tables = soup_post.find_all('table')
-                hold_records = []
-                for t in tables:
-                    if "1,000,001" in t.get_text():
-                        date_fmt = pd.to_datetime(d_str).strftime('%Y-%m-%d')
-                        for tr in t.find_all('tr'):
-                            cols = [td.get_text().strip().replace(',', '') for td in tr.find_all(['td', 'th'])]
-                            if cols and cols[0] in [str(i) for i in range(1, 16)]:
-                                lvl = int(cols[0])
-                                if 1 <= lvl <= 15:
-                                    hold_records.append((date_fmt, lvl, float(cols[-1].replace('%', ''))))
-                        break
-                if hold_records:
-                    storage.save_holding_data(hold_records)
+        fig_top, fig_btm, df, c_name, end_idx, disp_n = build_split_figures(
+            raw_ticker=target_symbol,
+            period=s_period,
+            display_days=s_days,
+            base_date=s_base_date,
+            major1_thresh=s_m1,
+            major2_thresh=s_m2,
+            is_mobile=is_mobile,
+            status_placeholder=status_box
+        )
+        status_box.empty()
     except Exception as e:
-        st.error(f"爬取錯誤: {e}")
+        status_box.empty()
+        st.error(f"資料擷取或計算失敗：{e}")
+        st.code(traceback.format_exc(), language="text")
+        return
 
-HOLDING_LEVEL_MAP = {
-    100: [8, 9, 10, 11, 12, 13, 14, 15],
-    200: [9, 10, 11, 12, 13, 14, 15],
-    400: [11, 12, 13, 14, 15],
-    600: [12, 13, 14, 15],
-    800: [13, 14, 15],
-    1000: [15]
-}
+    if df is None or df.empty:
+        st.warning(f"查無標的 `{target_symbol}` 之交易資料，請確認代號是否正確。")
+        return
 
-st.set_page_config(page_title="大戶持股週歸屬對齊檢測", layout="wide")
-st.title("大戶持股依週精準歸屬檢測（完整 15 週）")
-
-stock_code = st.text_input("輸入股票代號", value="2330")
-major1_thresh = st.selectbox("大戶1門檻 (張)", [1000, 800, 600, 400, 200, 100], index=0)
-major2_thresh = st.selectbox("大戶2門檻 (張)", [1000, 800, 600, 400, 200, 100], index=3)
-
-if st.button("同步歷史並執行對齊"):
-    with st.spinner("正在爬取 TDCC 歷史資料..."):
-        fetch_tdcc_history(stock_code)
-    
-    storage = StockChipStorage(stock_code)
-    holding_df = storage.load_holding_df()
-    
-    if holding_df.empty:
-        st.warning(f"[{stock_code}] 資料庫無資料。")
+    # 6. 依操作類型決定是否變更順位
+    if not st.session_state.get('nav_mode', False):
+        saved_hist = save_stock_history(target_symbol, c_name)
+        st.session_state.history_list = saved_hist
+        st.session_state.current_index = 0
     else:
-        holding_df['date'] = pd.to_datetime(holding_df['date']).dt.normalize()
-        holding_df['week_key'] = holding_df['date'].dt.strftime('%G-%V')
+        st.session_state.nav_mode = False
 
-        m1_levels = HOLDING_LEVEL_MAP.get(int(major1_thresh), [15])
-        m2_levels = HOLDING_LEVEL_MAP.get(int(major2_thresh), [11, 12, 13, 14, 15])
+    # 7. 渲染前端圖表
+    component_html = get_component_html(
+        fig_top=fig_top,
+        fig_btm=fig_btm,
+        df=df,
+        raw_ticker=target_symbol,
+        major1_thresh=s_m1,
+        major2_thresh=s_m2,
+        initial_end_idx=end_idx,
+        initial_disp_days=disp_n,
+        is_mobile=is_mobile
+    )
 
-        def calc_weekly_summary(levels):
-            sub = holding_df[holding_df['level'].isin(levels)]
-            if sub.empty:
-                return pd.DataFrame(columns=['week_key', 'percent'])
-            sub_sorted = sub.sort_values('date')
-            weekly = sub_sorted.groupby(['week_key', 'date'])['percent'].sum().reset_index()
-            weekly_last = weekly.groupby('week_key').last().reset_index()[['week_key', 'percent']]
-            return weekly_last
+    chart_height = 1745 if is_mobile else 1800
+    components.html(component_html, height=chart_height, scrolling=False)
 
-        m1_weekly = calc_weekly_summary(m1_levels).rename(columns={'percent': 'Major1_Pct'})
-        m2_weekly = calc_weekly_summary(m2_levels).rename(columns={'percent': 'Major2_Pct'})
+    # 8. 底部重複導航按鈕
+    st.markdown("<div style='height: 10px;'></div>", unsafe_allow_html=True)
+    btm_col1, btm_col2, _ = st.columns([1, 1, 6])
+    with btm_col1:
+        st.button("⏮ 上一個", on_click=on_prev_click, key="btn_prev_bottom")
+    with btm_col2:
+        st.button("⏭ 下一個", on_click=on_next_click, key="btn_next_bottom")
 
-        # 生成 15 週交易日（15 週 * 5 工作日 = 75 天）
-        trading_dates = pd.date_range(end=pd.Timestamp.today(), periods=75, freq='B')
-        trading_df = pd.DataFrame({'date': pd.to_datetime(trading_dates).normalize()})
-        trading_df['week_key'] = trading_df['date'].dt.strftime('%G-%V')
 
-        merged_df = pd.merge(trading_df, m1_weekly, on='week_key', how='left')
-        merged_df = pd.merge(merged_df, m2_weekly, on='week_key', how='left')
-
-        merged_df['Date'] = merged_df['date'].dt.strftime('%Y-%m-%d')
-        result_df = merged_df[['Date', 'Major1_Pct', 'Major2_Pct']].sort_values('Date')
-
-        st.success(f"完成 [{stock_code}] 大戶持股完整 15 週對齊檢測（共 {len(result_df)} 筆交易日）")
-        st.dataframe(result_df, use_container_width=True, height=800)
+if __name__ == "__main__":
+    run_app()
