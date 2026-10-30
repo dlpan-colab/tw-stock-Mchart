@@ -3,7 +3,7 @@
 """
 
 MODULE_NAME = "chart_builder"
-MODULE_VERSION = "202610301000"
+MODULE_VERSION = "202610301100"
 
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
@@ -14,7 +14,6 @@ def create_stock_chart(df: pd.DataFrame, stock_name: str, stock_code: str) -> go
     if df is None or df.empty:
         return go.Figure()
 
-    # 恢復原本的多子圖結構 (價格、成交量、外資、投信、自營、資券、大戶...)
     fig = make_subplots(
         rows=8, cols=1, shared_xaxes=True,
         vertical_spacing=0.02,
@@ -25,7 +24,6 @@ def create_stock_chart(df: pd.DataFrame, stock_name: str, stock_code: str) -> go
         )
     )
 
-    # 1. 主圖：K線與均線、轉折高低點
     fig.add_trace(go.Candlestick(
         x=df.index,
         open=df['Open'], high=df['High'], low=df['Low'], close=df['Close'],
@@ -52,7 +50,6 @@ def create_stock_chart(df: pd.DataFrame, stock_name: str, stock_code: str) -> go
                 textfont=dict(color='#ef5350', size=12), name='波段低點'
             ), row=1, col=1)
 
-    # 2. 成交量與換手率標示 (10%~20% 藍色正三角 ▲, >=20% 黃色倒三角 ▼)
     colors = ['#ef5350' if c >= o else '#26a69a' for c, o in zip(df['Close'], df['Open'])]
     fig.add_trace(go.Bar(
         x=df.index, y=df['Volume_Sheets'], name='成交量', marker_color=colors
@@ -77,33 +74,27 @@ def create_stock_chart(df: pd.DataFrame, stock_name: str, stock_code: str) -> go
                 name='換手率 >= 20%'
             ), row=2, col=1)
 
-    # 3. 外資買賣超
     if 'Foreign_Net' in df.columns:
         f_colors = ['#ef5350' if val >= 0 else '#26a69a' for val in df['Foreign_Net']]
         fig.add_trace(go.Bar(x=df.index, y=df['Foreign_Net'], name='外資', marker_color=f_colors), row=3, col=1)
 
-    # 4. 投信買賣超
     if 'Trust_Net' in df.columns:
         t_colors = ['#ef5350' if val >= 0 else '#26a69a' for val in df['Trust_Net']]
         fig.add_trace(go.Bar(x=df.index, y=df['Trust_Net'], name='投信', marker_color=t_colors), row=4, col=1)
 
-    # 5. 自營商買賣超
     if 'Dealer_Net' in df.columns:
         d_colors = ['#ef5350' if val >= 0 else '#26a69a' for val in df['Dealer_Net']]
         fig.add_trace(go.Bar(x=df.index, y=df['Dealer_Net'], name='自營', marker_color=d_colors), row=5, col=1)
 
-    # 6. 資券餘額
     if 'Margin_Diff' in df.columns:
         fig.add_trace(go.Bar(x=df.index, y=df['Margin_Diff'], name='融資增減', marker_color='#ef5350'), row=6, col=1)
     if 'Short_Diff' in df.columns:
         fig.add_trace(go.Bar(x=df.index, y=df['Short_Diff'], name='融券增減', marker_color='#26a69a'), row=6, col=1)
 
-    # 7. KD 指標
     if 'K' in df.columns and 'D' in df.columns:
         fig.add_trace(go.Scatter(x=df.index, y=df['K'], name='K', line=dict(color='#ffa726', width=1)), row=7, col=1)
         fig.add_trace(go.Scatter(x=df.index, y=df['D'], name='D', line=dict(color='#29b6f6', width=1)), row=7, col=1)
 
-    # 8. 大戶持股比例
     if 'Major1_Pct' in df.columns:
         fig.add_trace(go.Scatter(x=df.index, y=df['Major1_Pct'], name='大戶比例', line=dict(color='#ab47bc', width=1.5)), row=8, col=1)
 
