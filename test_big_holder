@@ -1,8 +1,4 @@
-"""
-大戶持股近 60 日數值檢測小程式 (test_holding.py)
-用於獨立印出並檢視指定股票近 60 個交易日所對應的大戶 1 與大戶 2 持股比例數值。
-"""
-
+import numpy as np
 import pandas as pd
 from storage import StockChipStorage
 
@@ -37,37 +33,31 @@ def test_recent_holding_values(pure_code: str, major1_thresh: int = 1000, major2
     m1_weekly = get_weekly_sum(m1_levels)
     m2_weekly = get_weekly_sum(m2_levels)
 
-    print("=== 資料庫中實際儲存的週公告明細 ===")
-    print("大戶1週資料總筆數:", len(m1_weekly))
-    print(m1_weekly.tail(10))
-    print("----------------------------------------")
-
-    # 模擬從 yfinance 或其他來源取得的近期日 K 線索引（取近 60 個交易日）
-    # 此處以模擬最近交易日為例，實際執行時可帶入您的 df.index
-    mock_dates = pd.date_range(end=pd.Timestamp.today(), periods=60, freq='B')
-    
-    pub_dates_m1 = m1_weekly.index.values
+    pub_dates_m1 = pd.to_datetime(m1_weekly.index).values
     pct_vals_m1 = m1_weekly.values
     
-    pub_dates_m2 = m2_weekly.index.values
+    pub_dates_m2 = pd.to_datetime(m2_weekly.index).values
     pct_vals_m2 = m2_weekly.values
 
+    mock_dates = pd.date_range(end=pd.Timestamp.today(), periods=60, freq='B')
+    
     results = []
     for d in mock_dates:
-        # 大戶1對應
-        valid_m1 = np.where(pub_dates_m1 <= d)[0]
+        d_val = pd.to_datetime(d).normalize().to_numpy()
+        
+        valid_m1 = np.where(pub_dates_m1 <= d_val)[0]
         v1 = float(pct_vals_m1[valid_m1[-1]]) if len(valid_m1) > 0 else float('nan')
         
-        # 大戶2對應
-        valid_m2 = np.where(pub_dates_m2 <= d)[0]
+        valid_m2 = np.where(pub_dates_m2 <= d_val)[0]
         v2 = float(pct_vals_m2[valid_m2[-1]]) if len(valid_m2) > 0 else float('nan')
         
-        results.append({'Date': d.strftime('%Y-%m-%d'), 'Major1_Pct': v1, 'Major2_Pct': v2})
+        results.append({'Date': pd.to_datetime(d).strftime('%Y-%m-%d'), 'Major1_Pct': v1, 'Major2_Pct': v2})
 
     res_df = pd.DataFrame(results)
-    print("=== 近 60 個交易日對應結果（最後 15 筆） ===")
+    print(f"=== 股票 {pure_code} 近 60 個交易日對應結果（最後 15 筆） ===")
     print(res_df.tail(15).to_string(index=False))
 
 if __name__ == '__main__':
-    # 請在此填入您的測試股票代號（例如 '2330'）
-    test_recent_holding_values('2330', major1_thresh=1000, major2_thresh=400)
+    # 請在此直接修改您想測試的股號字串，例如 '2330', '2317' 等
+    target_stock_code = '2330' 
+    test_recent_holding_values(target_stock_code, major1_thresh=1000, major2_thresh=400)
