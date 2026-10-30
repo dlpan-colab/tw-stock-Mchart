@@ -5,7 +5,7 @@
 """
 
 MODULE_NAME = "indicators"
-MODULE_VERSION = "202610302600"
+MODULE_VERSION = "202610302700"
 
 import numpy as np
 import pandas as pd
@@ -34,7 +34,7 @@ def calculate_all_indicators(
     *args,
     **kwargs
 ) -> pd.DataFrame:
-    """計算所有技術指標與籌碼資料，確保週資料對齊與圖表數值正確"""
+    """計算所有技術指標與籌碼資料，確保大戶週資料嚴格依每週六公告生效、歷史不中斷"""
     if df is None or df.empty:
         return df
 
@@ -159,7 +159,7 @@ def calculate_all_indicators(
     except Exception:
         pass
 
-    # 載入大戶持股資料（週資料對齊：以每週日作為該週歸屬鍵，確保同週交易日數值相同，非強行直線填滿）
+    # 載入大戶持股資料（嚴格依每週六公告生效：未達公告日前維持 NaN，公告後生效並延續至新公告前）
     try:
         holding_df = storage.load_holding_df()
         if not holding_df.empty and 'date' in holding_df.columns and 'level' in holding_df.columns:
@@ -167,25 +167,40 @@ def calculate_all_indicators(
             m1_levels = HOLDING_LEVEL_MAP.get(int(major1_thresh), [15])
             m2_levels = HOLDING_LEVEL_MAP.get(int(major2_thresh), [11, 12, 13, 14, 15])
 
-            def calc_major_pct(levels):
+            def build_holding_series(levels):
                 sub = holding_df[holding_df['level'].isin(levels)]
                 if sub.empty:
-                    return {}
-                res = {}
-                for d, val in sub.groupby('date')['percent'].sum().items():
-                    week_key = d + pd.to_timedelta(6 - d.weekday(), unit='D')
-                    res[week_key] = float(val)
-                return res
+                    return pd.Series(np.nan, index=df.index)
+                
+                # 計算每週六公告日的門檻持股總百分比
+                weekly_sum = sub.groupby('date')['percent'].sum().sort_index()
+                if weekly_sum.empty:
+                    return pd.Series(np.nan, index=df.index)
 
-            m1_dict, m2_dict = calc_major_pct(m1_levels), calc_major_pct(m2_levels)
-            m1_vals, m2_vals = [], []
-            for d in df.index:
-                week_key = d + pd.to_timedelta(6 - d.weekday(), unit='D')
-                m1_vals.append(m1_dict.get(week_key, np.nan))
-                m2_vals.append(m2_dict.get(week_key, np.nan))
+                # 建立以日為索引的對齊序列，並利用 merge_asof 嚴格確保「交易日必須大於等於週六公告日」才帶入數值
+                holding_srs = pd.Series(dtype=float)
+                for sat_date, val in weekly_sum.items():
+                    # 公告生效日為週六之次一營業日（或直接以週六公告日作為時間點進行 asof 對齊）
+                    holding_srs.loc[sat_date] = float(val)
 
-            df['Major1_Pct'] = m1_vals
-            df['Major2_Pct'] = m2_vals
+                # 將日 K 線 index 轉為 DataFrame 進行 asof 匹配
+                temp_df = pd.DataFrame(index=df.index).sort_index()
+                holding_df_temp = holding_srs.reset_index()
+                holding_df_temp.columns = ['pub_date', 'pct_val']
+                holding_df_temp = holding_df_temp.sort_values('pub_date')
+
+                merged = pd.merge_asof(
+                    temp_df.reset_index(),
+                    holding_df_temp,
+                    left_on='index',
+                    right_on='pub_date',
+                    direction='backward'  # 尋找最近且小於等於當前交易日的公告日數值
+                )
+                merged.set_index('index', inplace=True)
+                return merged['pct_val']
+
+            df['Major1_Pct'] = build_holding_series(m1_levels)
+            df['Major2_Pct'] = build_holding_series(m2_levels)
     except Exception:
         pass
 
