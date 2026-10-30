@@ -3,7 +3,7 @@
 """
 
 MODULE_NAME = "frontend"
-MODULE_VERSION = "202610300900"
+MODULE_VERSION = "202610301100"
 
 import streamlit as st
 import pandas as pd
@@ -21,12 +21,17 @@ from chart_builder import create_stock_chart
 
 
 def render_sidebar():
-    st.sidebar.title("台股技術與籌碼分析")
+    st.sidebar.markdown(f"`{MODULE_VERSION}` 台股技術與籌碼分析 (模組化)")
     
-    # 輸入股票代號
-    code_input = st.sidebar.text_input("輸入股票代號", value="2330").strip().upper()
+    col_prev, col_next = st.sidebar.columns(2)
+    nav_action = None
+    if col_prev.button("上一個"):
+        nav_action = "prev"
+    if col_next.button("下一個"):
+        nav_action = "next"
+
+    code_input = st.sidebar.text_input("輸入股票代號", value="6234").strip().upper()
     
-    # 歷史紀錄清單
     st.sidebar.markdown("---")
     st.sidebar.subheader("最近查詢紀錄")
     
@@ -48,7 +53,7 @@ def render_sidebar():
     
     shares_outstanding = st.sidebar.number_input("總發行張數 (預設留空由系統計算)", value=0.0, step=1000.0)
 
-    return code_input, major1_thresh, major2_thresh, shares_outstanding
+    return code_input, major1_thresh, major2_thresh, shares_outstanding, nav_action
 
 
 def render_main_content(code: str, major1_thresh: int, major2_thresh: int, shares_outstanding: float):
@@ -56,22 +61,13 @@ def render_main_content(code: str, major1_thresh: int, major2_thresh: int, share
         st.warning("請輸入有效的股票代號。")
         return
 
-    # 取得中文名稱
     stock_name = fetch_stock_name(code)
-    
-    # 儲存至歷史清單
     save_stock_history(code, stock_name)
 
-    st.header(f"{code} {stock_name}")
-
-    # 初始化資料庫與同步
     storage = StockChipStorage(code)
     
     with st.spinner("正在載入股價與籌碼資料..."):
-        from data_fetcher import DataLoader
         import yfinance as yf
-        
-        # 抓取股價歷史
         df = yf.download(f"{code}.TW", period="1y", progress=False)
         if df.empty:
             df = yf.download(f"{code}.TWO", period="1y", progress=False)
@@ -80,11 +76,9 @@ def render_main_content(code: str, major1_thresh: int, major2_thresh: int, share
             st.error(f"無法取得代號 {code} 之股價資料。")
             return
 
-        # 處理 MultiIndex 欄位
         if isinstance(df.columns, pd.MultiIndex):
             df.columns = df.columns.droplevel(1)
 
-        # 計算指標與籌碼
         df = calculate_all_indicators(
             df=df,
             pure_code=code,
@@ -93,11 +87,9 @@ def render_main_content(code: str, major1_thresh: int, major2_thresh: int, share
             shares_outstanding=shares_outstanding if shares_outstanding > 0 else None
         )
 
-    # 繪製圖表
     fig = create_stock_chart(df, stock_name, code)
     st.plotly_chart(fig, use_container_width=True)
 
-    # 數值摘要表格
     st.subheader("近期籌碼與技術摘要")
     if not df.empty:
         latest = df.iloc[-1]
