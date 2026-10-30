@@ -1,7 +1,6 @@
 """
 data_fetcher.py - 外部資料抓取與增量同步模組
-- 包含週四提早公告之動態偵測
-- 完整包含 StockChipStorage 與股票名稱對照
+版本: 202610301645
 """
 
 import os
@@ -160,6 +159,9 @@ class StockChipStorage:
 FINMIND_TOKEN = ""
 
 def fetch_stock_daily_k(raw_ticker: str, period: str = "1y", base_date: str = None):
+    """
+    抓取日 K 資料與發行股數 shares_outstanding
+    """
     import yfinance as yf
     raw_str = str(raw_ticker).strip().upper()
     match = re.search(r'\d+', raw_str)
@@ -167,6 +169,7 @@ def fetch_stock_daily_k(raw_ticker: str, period: str = "1y", base_date: str = No
 
     ticker_obj = None
     df = pd.DataFrame()
+    shares_outstanding = None
 
     for suffix in ['.TW', '.TWO', '']:
         test_ticker = f"{pure_code}{suffix}" if suffix else pure_code
@@ -176,12 +179,16 @@ def fetch_stock_daily_k(raw_ticker: str, period: str = "1y", base_date: str = No
             if not d.empty and len(d) >= 5:
                 df = d
                 ticker_obj = t
+                try:
+                    shares_outstanding = t.fast_info.shares
+                except Exception:
+                    shares_outstanding = None
                 break
         except Exception:
             continue
 
     if df.empty or ticker_obj is None:
-        return None, ""
+        return None, "", None
 
     if df.index.tz is not None:
         df.index = df.index.tz_localize(None)
@@ -219,7 +226,7 @@ def fetch_stock_daily_k(raw_ticker: str, period: str = "1y", base_date: str = No
         except Exception:
             pass
 
-    return df, ticker_obj.ticker
+    return df, ticker_obj.ticker, shares_outstanding
 
 def sync_chip_data(pure_code: str, df_dates, status_placeholder=None):
     storage = StockChipStorage(pure_code)
@@ -301,7 +308,7 @@ def sync_chip_data(pure_code: str, df_dates, status_placeholder=None):
         except Exception:
             pass
 
-    # 3. 集保 (動態抓取官網所有公布的歷史選項 + 補足目標週)
+    # 3. 集保
     holding_df = storage.load_holding_df()
     existing_weeks = set(holding_df['date'].dt.strftime('%Y%m%d')) if not holding_df.empty else set()
     
@@ -315,17 +322,15 @@ def sync_chip_data(pure_code: str, df_dates, status_placeholder=None):
             action = form.get('action', '') if form else ''
             target_url = f"https://www.tdcc.com.tw{action}" if action.startswith('/') else (action if action.startswith('http') else f"https://www.tdcc.com.tw/portal/zh/smWeb/{action}")
 
-            # 抓取集保官網當前所有提供之日期選項（含 10/22 等非週五之提早結算日）
             available_dates = [o.get('value').strip() for o in soup_home.find_all('option')
                                if o.get('value') and o.get('value').strip().isdigit() and len(o.get('value').strip()) == 8 and o.get('value').strip().startswith('20')]
             
-            # 再主動合併過去 16 週的週五與週四，避免漏掉提早公告日
             today = datetime.today()
             target_dates = list(available_dates)
             for i in range(16):
                 d = today - timedelta(days=today.weekday() + 7 * i)
-                target_dates.append((d + timedelta(days=4)).strftime('%Y%m%d')) # 週五
-                target_dates.append((d + timedelta(days=3)).strftime('%Y%m%d')) # 週四
+                target_dates.append((d + timedelta(days=4)).strftime('%Y%m%d'))
+                target_dates.append((d + timedelta(days=3)).strftime('%Y%m%d'))
 
             target_dates = sorted(list(set(target_dates)), reverse=True)
             missing_dates = [d for d in target_dates if d not in existing_weeks][:20]
