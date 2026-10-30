@@ -1,11 +1,11 @@
 """
-台股技術與籌碼分析系統 - 技術指標與量化運算模組 (indicators.py)
+台股技術與籌碼分析系統 - 技術指標與量化運算模組 (indicators.py) - 完整版
 負責 MA5/20/60、KD(9)、MACD(12,26,9)、OBV、5MA 頭底轉折點演算法、
-法人/資券資料正規化對齊、集保分級持股比率（嚴格同週對齊）與自由流通換手率計算。
+法人/資券資料字串精準對齊、集保分級持股比率（嚴格同週對齊）與自由流通換手率計算。
 """
 
 MODULE_NAME = "indicators"
-MODULE_VERSION = "202610301600"
+MODULE_VERSION = "202610301630"
 
 import numpy as np
 import pandas as pd
@@ -111,33 +111,33 @@ def calculate_all_indicators(
     except Exception:
         inst_df, margin_df, holding_df = pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
 
-    # 確保日 K 日期索引為純日期物件以供精準對齊
-    trade_dates = pd.to_datetime(df.index).normalize()
+    # 統一轉換為 YYYY-MM-DD 純文字格式作為比對鍵值，杜絕型態不匹配
+    trade_date_strs = [pd.to_datetime(d).strftime('%Y-%m-%d') for d in df.index]
 
-    # --- 法人買賣超對齊 ---
+    # --- 法人買賣超對齊 (精準字串比對) ---
     df['Foreign_Net'] = 0.0
     df['Trust_Net'] = 0.0
     df['Dealer_Net'] = 0.0
     if not inst_df.empty:
-        inst_df['norm_date'] = pd.to_datetime(inst_df['date']).dt.normalize()
-        inst_map = inst_df.drop_duplicates(subset=['norm_date']).set_index('norm_date')
-        df['Foreign_Net'] = [float(inst_map.loc[d, 'foreign_net']) if d in inst_map.index else 0.0 for d in trade_dates]
-        df['Trust_Net'] = [float(inst_map.loc[d, 'trust_net']) if d in inst_map.index else 0.0 for d in trade_dates]
-        df['Dealer_Net'] = [float(inst_map.loc[d, 'dealer_net']) if d in inst_map.index else 0.0 for d in trade_dates]
+        inst_df['str_date'] = pd.to_datetime(inst_df['date']).dt.strftime('%Y-%m-%d')
+        inst_map = inst_df.drop_duplicates(subset=['str_date']).set_index('str_date')
+        df['Foreign_Net'] = [float(inst_map.loc[d, 'foreign_net']) if d in inst_map.index else 0.0 for d in trade_date_strs]
+        df['Trust_Net'] = [float(inst_map.loc[d, 'trust_net']) if d in inst_map.index else 0.0 for d in trade_date_strs]
+        df['Dealer_Net'] = [float(inst_map.loc[d, 'dealer_net']) if d in inst_map.index else 0.0 for d in trade_date_strs]
 
-    # --- 資券對齊 ---
+    # --- 資券對齊 (精準字串比對) ---
     df['Margin_Diff'] = 0.0
     df['Short_Diff'] = 0.0
     df['Margin_Bal'] = 0.0
     df['Short_Bal'] = 0.0
     df['Short_Margin_Ratio'] = np.nan
     if not margin_df.empty:
-        margin_df['norm_date'] = pd.to_datetime(margin_df['date']).dt.normalize()
-        ms_map = margin_df.drop_duplicates(subset=['norm_date']).set_index('norm_date')
-        df['Margin_Diff'] = [float(ms_map.loc[d, 'margin_diff']) if d in ms_map.index else 0.0 for d in trade_dates]
-        df['Short_Diff'] = [float(ms_map.loc[d, 'short_diff']) if d in ms_map.index else 0.0 for d in trade_dates]
-        df['Margin_Bal'] = [float(ms_map.loc[d, 'margin_bal']) if d in ms_map.index else 0.0 for d in trade_dates]
-        df['Short_Bal'] = [float(ms_map.loc[d, 'short_bal']) if d in ms_map.index else 0.0 for d in trade_dates]
+        margin_df['str_date'] = pd.to_datetime(margin_df['date']).dt.strftime('%Y-%m-%d')
+        ms_map = margin_df.drop_duplicates(subset=['str_date']).set_index('str_date')
+        df['Margin_Diff'] = [float(ms_map.loc[d, 'margin_diff']) if d in ms_map.index else 0.0 for d in trade_date_strs]
+        df['Short_Diff'] = [float(ms_map.loc[d, 'short_diff']) if d in ms_map.index else 0.0 for d in trade_date_strs]
+        df['Margin_Bal'] = [float(ms_map.loc[d, 'margin_bal']) if d in ms_map.index else 0.0 for d in trade_date_strs]
+        df['Short_Bal'] = [float(ms_map.loc[d, 'short_bal']) if d in ms_map.index else 0.0 for d in trade_date_strs]
         df['Short_Margin_Ratio'] = (df['Short_Bal'] / df['Margin_Bal'].replace(0, np.nan)) * 100.0
 
     # --- 大戶持股門檻（嚴格同週對齊，絕不跨週填充） ---
@@ -150,13 +150,12 @@ def calculate_all_indicators(
             sub = holding_df[holding_df['level'].isin(levels)]
             if sub.empty:
                 return {}
-            # 每週可能有提早公告，取該週最新一筆
+            # 每週保留該週最新一次公告值（防假日提前公告）
             sub_sorted = sub.sort_values('norm_date')
             weekly_sum = sub_sorted.groupby('norm_date')['percent'].sum().reset_index()
             weekly_sum['iso_year'] = weekly_sum['norm_date'].dt.isocalendar().year
             weekly_sum['iso_week'] = weekly_sum['norm_date'].dt.isocalendar().week
             
-            # 以 (year, week) 為鍵，保留該週最後公告值
             last_in_week = weekly_sum.groupby(['iso_year', 'iso_week']).last().reset_index()
             return {(row['iso_year'], row['iso_week']): float(row['percent']) for _, row in last_in_week.iterrows()}
 
@@ -164,9 +163,9 @@ def calculate_all_indicators(
         m2_dict = calc_major_weekly_dict(m2_levels)
 
         m1_vals, m2_vals = [], []
-        for d in trade_dates:
-            iso_y, iso_w, _ = d.isocalendar()
-            # 僅同週匹配，當週無公告則為 NaN，絕不向後或向前補值
+        for d in df.index:
+            iso_y, iso_w, _ = pd.to_datetime(d).isocalendar()
+            # 僅精確同週匹配，當週無公告則為 NaN，絕不向後或向前補值
             m1_vals.append(m1_dict.get((iso_y, iso_w), np.nan))
             m2_vals.append(m2_dict.get((iso_y, iso_w), np.nan))
 
