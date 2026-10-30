@@ -1,7 +1,6 @@
 """
 indicators.py - 技術指標與籌碼計算模組
-- 法人、資券、大戶持股精準對齊日 K
-- 大戶持股嚴格同週對齊，絕不跨週向後填充
+版本: 202610301630
 """
 
 import numpy as np
@@ -90,34 +89,62 @@ def calculate_all_indicators(df, pure_code, major1_thresh, major2_thresh, shares
     df['Is_Head'], df['Is_Bottom'] = is_head, is_bottom
 
     # 7. 籌碼同步與對齊
+    inst_df, margin_df, holding_df = pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
     try:
         from data_fetcher import sync_chip_data
-        inst_df, margin_df, holding_df = sync_chip_data(pure_code, df.index, status_placeholder)
+        try:
+            chip_res = sync_chip_data(pure_code, df.index, status_placeholder)
+        except TypeError:
+            chip_res = sync_chip_data(pure_code, df.index)
+
+        if isinstance(chip_res, tuple):
+            if len(chip_res) == 3:
+                inst_df, margin_df, holding_df = chip_res
+            elif len(chip_res) == 2:
+                inst_df, holding_df = chip_res
     except Exception:
-        inst_df, margin_df, holding_df = pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
+        pass
 
-    d_strs = [pd.to_datetime(d).strftime('%Y-%m-%d') for d in df.index]
+    # 若任一 DataFrame 缺失，直接由 SQLite 本機快取補齊
+    if inst_df.empty or margin_df.empty or holding_df.empty:
+        try:
+            from storage import StockChipStorage
+            storage = StockChipStorage(pure_code)
+            if inst_df.empty and hasattr(storage, 'load_institutional_df'):
+                inst_df = storage.load_institutional_df()
+            if margin_df.empty and hasattr(storage, 'load_margin_df'):
+                margin_df = storage.load_margin_df()
+            if holding_df.empty and hasattr(storage, 'load_holding_df'):
+                holding_df = storage.load_holding_df()
+        except Exception:
+            pass
 
-    # 法人買賣超對齊
-    df['Foreign_Net'], df['Trust_Net'], df['Dealer_Net'] = 0.0, 0.0, 0.0
+    trade_date_strs = [pd.to_datetime(d).strftime('%Y-%m-%d') for d in df.index]
+
+    # 法人買賣超對齊 (以 YYYY-MM-DD 字串 exact join)
+    df['Foreign_Net'] = 0.0
+    df['Trust_Net'] = 0.0
+    df['Dealer_Net'] = 0.0
     if not inst_df.empty:
-        inst_map = inst_df.copy()
-        inst_map['d_str'] = pd.to_datetime(inst_map['date']).dt.strftime('%Y-%m-%d')
-        inst_map = inst_map.drop_duplicates(subset=['d_str']).set_index('d_str')
-        df['Foreign_Net'] = [float(inst_map.loc[d, 'foreign_net']) if d in inst_map.index else 0.0 for d in d_strs]
-        df['Trust_Net'] = [float(inst_map.loc[d, 'trust_net']) if d in inst_map.index else 0.0 for d in d_strs]
-        df['Dealer_Net'] = [float(inst_map.loc[d, 'dealer_net']) if d in inst_map.index else 0.0 for d in d_strs]
+        inst_df['str_date'] = pd.to_datetime(inst_df['date']).dt.strftime('%Y-%m-%d')
+        inst_map = inst_df.drop_duplicates(subset=['str_date']).set_index('str_date')
+        df['Foreign_Net'] = [float(inst_map.loc[d, 'foreign_net']) if d in inst_map.index else 0.0 for d in trade_date_strs]
+        df['Trust_Net'] = [float(inst_map.loc[d, 'trust_net']) if d in inst_map.index else 0.0 for d in trade_date_strs]
+        df['Dealer_Net'] = [float(inst_map.loc[d, 'dealer_net']) if d in inst_map.index else 0.0 for d in trade_date_strs]
 
-    # 資券對齊
-    df['Margin_Diff'], df['Short_Diff'], df['Margin_Bal'], df['Short_Bal'], df['Short_Margin_Ratio'] = 0.0, 0.0, 0.0, 0.0, np.nan
+    # 資券對齊 (以 YYYY-MM-DD 字串 exact join)
+    df['Margin_Diff'] = 0.0
+    df['Short_Diff'] = 0.0
+    df['Margin_Bal'] = 0.0
+    df['Short_Bal'] = 0.0
+    df['Short_Margin_Ratio'] = np.nan
     if not margin_df.empty:
-        ms_map = margin_df.copy()
-        ms_map['d_str'] = pd.to_datetime(ms_map['date']).dt.strftime('%Y-%m-%d')
-        ms_map = ms_map.drop_duplicates(subset=['d_str']).set_index('d_str')
-        df['Margin_Diff'] = [float(ms_map.loc[d, 'margin_diff']) if d in ms_map.index else 0.0 for d in d_strs]
-        df['Short_Diff'] = [float(ms_map.loc[d, 'short_diff']) if d in ms_map.index else 0.0 for d in d_strs]
-        df['Margin_Bal'] = [float(ms_map.loc[d, 'margin_bal']) if d in ms_map.index else 0.0 for d in d_strs]
-        df['Short_Bal'] = [float(ms_map.loc[d, 'short_bal']) if d in ms_map.index else 0.0 for d in d_strs]
+        margin_df['str_date'] = pd.to_datetime(margin_df['date']).dt.strftime('%Y-%m-%d')
+        ms_map = margin_df.drop_duplicates(subset=['str_date']).set_index('str_date')
+        df['Margin_Diff'] = [float(ms_map.loc[d, 'margin_diff']) if d in ms_map.index else 0.0 for d in trade_date_strs]
+        df['Short_Diff'] = [float(ms_map.loc[d, 'short_diff']) if d in ms_map.index else 0.0 for d in trade_date_strs]
+        df['Margin_Bal'] = [float(ms_map.loc[d, 'margin_bal']) if d in ms_map.index else 0.0 for d in trade_date_strs]
+        df['Short_Bal'] = [float(ms_map.loc[d, 'short_bal']) if d in ms_map.index else 0.0 for d in trade_date_strs]
         df['Short_Margin_Ratio'] = (df['Short_Bal'] / df['Margin_Bal'].replace(0, np.nan)) * 100.0
 
     # 大戶持股門檻（嚴格同週對齊，絕不跨週向後填充）
