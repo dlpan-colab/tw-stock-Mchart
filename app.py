@@ -54,8 +54,10 @@ def test_recent_holding_values(pure_code: str, major1_thresh: int = 1000, major2
         results.append({'Date': pd.to_datetime(d).strftime('%Y-%m-%d'), 'Major1_Pct': v1, 'Major2_Pct': v2})
 
     res_df = pd.DataFrame(results)
-    print("=== 近 60 個交易日對應結果（最後 15 筆） ===")
+    print(f"=== 股票 {pure_code} 近 60 個交易日對應結果（最後 15 筆） ===")
     print(res_df.tail(15).to_string(index=False))
 
 if __name__ == '__main__':
-    test_recent_holding_values('2330', major1_thresh=1000, major2_thresh=400)
+    # 請在此直接修改您想測試的股號字串，例如 '2330', '2317' 等
+    target_stock_code = '2330' 
+    test_recent_holding_values(target_stock_code, major1_thresh=1000, major2_thresh=400)
