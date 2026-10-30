@@ -1,6 +1,7 @@
 """
 data_fetcher.py - 外部資料抓取與增量同步模組
-版本: 202610301630
+- 包含週四提早公告之動態偵測
+- 完整包含 StockChipStorage 與股票名稱對照
 """
 
 import os
@@ -15,15 +16,6 @@ from bs4 import BeautifulSoup
 from datetime import datetime, timedelta
 import pandas as pd
 import numpy as np
-
-# 嘗試相容性匯入，若 storage.py 命名不一致則使用本檔內建實作
-try:
-    from storage import ChipStorage as BaseStorage
-except ImportError:
-    try:
-        from storage import StockChipStorage as BaseStorage
-    except ImportError:
-        BaseStorage = object
 
 STORAGE_DIR = "."
 NAMES_CACHE_FILE = os.path.join(STORAGE_DIR, "tw_stock_names.json")
@@ -230,10 +222,6 @@ def fetch_stock_daily_k(raw_ticker: str, period: str = "1y", base_date: str = No
     return df, ticker_obj.ticker
 
 def sync_chip_data(pure_code: str, df_dates, status_placeholder=None):
-    """
-    增量同步法人、資券與集保持股資料
-    回傳值明確規範為: inst_df, margin_df, holding_df (共3個)
-    """
     storage = StockChipStorage(pure_code)
 
     headers = {
@@ -249,7 +237,7 @@ def sync_chip_data(pure_code: str, df_dates, status_placeholder=None):
     margin_query_start = (pd.to_datetime(last_margin_date) + timedelta(days=1)).strftime('%Y-%m-%d') if last_margin_date else target_start_date
     latest_trade_date_str = df_dates[-1].strftime('%Y-%m-%d')
 
-    # 1. 同步三大法人買賣超
+    # 1. 法人
     if not last_inst_date or inst_query_start <= latest_trade_date_str:
         try:
             url_inst = "https://api.finmindtrade.com/api/v4/data"
@@ -279,7 +267,7 @@ def sync_chip_data(pure_code: str, df_dates, status_placeholder=None):
         except Exception:
             pass
 
-    # 2. 同步資券增減
+    # 2. 資券
     if not last_margin_date or margin_query_start <= latest_trade_date_str:
         try:
             url_ms = "https://api.finmindtrade.com/api/v4/data"
@@ -313,56 +301,62 @@ def sync_chip_data(pure_code: str, df_dates, status_placeholder=None):
         except Exception:
             pass
 
-    # 3. 同步集保大戶持股 (主動推算 15 週五日期)
+    # 3. 集保 (動態抓取官網所有公布的歷史選項 + 補足目標週)
     holding_df = storage.load_holding_df()
     existing_weeks = set(holding_df['date'].dt.strftime('%Y%m%d')) if not holding_df.empty else set()
     
-    today = datetime.today()
-    days_ahead = 4 - today.weekday()
-    if days_ahead > 0:
-        days_ahead -= 7
-    last_friday = today + timedelta(days=days_ahead)
-    target_fridays = [(last_friday - timedelta(weeks=i)).strftime('%Y%m%d') for i in range(16)]
-    missing_dates = [d for d in target_fridays if d not in existing_weeks]
+    try:
+        session_tdcc = requests.Session()
+        url_home = "https://www.tdcc.com.tw/portal/zh/smWeb/qryStock"
+        r_home = session_tdcc.get(url_home, headers=headers, timeout=10)
+        if r_home.status_code == 200:
+            soup_home = BeautifulSoup(r_home.text, 'html.parser')
+            form = soup_home.find('form')
+            action = form.get('action', '') if form else ''
+            target_url = f"https://www.tdcc.com.tw{action}" if action.startswith('/') else (action if action.startswith('http') else f"https://www.tdcc.com.tw/portal/zh/smWeb/{action}")
 
-    if missing_dates:
-        try:
-            session_tdcc = requests.Session()
-            url_home = "https://www.tdcc.com.tw/portal/zh/smWeb/qryStock"
-            r_home = session_tdcc.get(url_home, headers=headers, timeout=10)
-            if r_home.status_code == 200:
-                soup_home = BeautifulSoup(r_home.text, 'html.parser')
-                form = soup_home.find('form')
-                action = form.get('action', '') if form else ''
-                target_url = f"https://www.tdcc.com.tw{action}" if action.startswith('/') else (action if action.startswith('http') else f"https://www.tdcc.com.tw/portal/zh/smWeb/{action}")
+            # 抓取集保官網當前所有提供之日期選項（含 10/22 等非週五之提早結算日）
+            available_dates = [o.get('value').strip() for o in soup_home.find_all('option')
+                               if o.get('value') and o.get('value').strip().isdigit() and len(o.get('value').strip()) == 8 and o.get('value').strip().startswith('20')]
+            
+            # 再主動合併過去 16 週的週五與週四，避免漏掉提早公告日
+            today = datetime.today()
+            target_dates = list(available_dates)
+            for i in range(16):
+                d = today - timedelta(days=today.weekday() + 7 * i)
+                target_dates.append((d + timedelta(days=4)).strftime('%Y%m%d')) # 週五
+                target_dates.append((d + timedelta(days=3)).strftime('%Y%m%d')) # 週四
 
-                h_rec = []
-                for d_str in missing_dates:
-                    try:
-                        r_page = session_tdcc.get(url_home, headers=headers, timeout=8)
-                        sp_page = BeautifulSoup(r_page.text, 'html.parser')
-                        cur_form = sp_page.find('form')
-                        payload = {inp.get('name'): inp.get('value', '') for inp in cur_form.find_all('input') if inp.get('name')}
-                        payload.update({'scaDate': d_str, 'sqlMethod': 'StockNo', 'stockNo': pure_code, 'stockName': '', 'sub': '查詢'})
-                        resp = session_tdcc.post(target_url, data=payload, headers=headers, timeout=8)
-                        dfs = pd.read_html(StringIO(resp.text))
+            target_dates = sorted(list(set(target_dates)), reverse=True)
+            missing_dates = [d for d in target_dates if d not in existing_weeks][:20]
 
-                        target_tbl = next((d for d in dfs if '1' in d.iloc[:, 0].astype(str).tolist() and '15' in d.iloc[:, 0].astype(str).tolist()), None)
-                        if target_tbl is not None:
-                            lvl_col, pct_col = target_tbl.columns[0], target_tbl.columns[-1]
-                            sub = target_tbl[target_tbl[lvl_col].astype(str).isin([str(i) for i in range(1, 16)])].copy()
-                            d_fmt = f"{d_str[:4]}-{d_str[4:6]}-{d_str[6:]}"
-                            for _, row in sub.iterrows():
-                                try:
-                                    h_rec.append((d_fmt, int(row[lvl_col]), float(str(row[pct_col]).replace('%', '').replace(',', ''))))
-                                except ValueError:
-                                    pass
-                        time.sleep(0.15)
-                    except Exception:
-                        continue
-                if h_rec:
-                    storage.save_holding_data(h_rec)
-        except Exception:
-            pass
+            h_rec = []
+            for d_str in missing_dates:
+                try:
+                    r_page = session_tdcc.get(url_home, headers=headers, timeout=8)
+                    sp_page = BeautifulSoup(r_page.text, 'html.parser')
+                    cur_form = sp_page.find('form')
+                    payload = {inp.get('name'): inp.get('value', '') for inp in cur_form.find_all('input') if inp.get('name')}
+                    payload.update({'scaDate': d_str, 'sqlMethod': 'StockNo', 'stockNo': pure_code, 'stockName': '', 'sub': '查詢'})
+                    resp = session_tdcc.post(target_url, data=payload, headers=headers, timeout=8)
+                    dfs = pd.read_html(StringIO(resp.text))
+
+                    target_tbl = next((d for d in dfs if '1' in d.iloc[:, 0].astype(str).tolist() and '15' in d.iloc[:, 0].astype(str).tolist()), None)
+                    if target_tbl is not None:
+                        lvl_col, pct_col = target_tbl.columns[0], target_tbl.columns[-1]
+                        sub = target_tbl[target_tbl[lvl_col].astype(str).isin([str(i) for i in range(1, 16)])].copy()
+                        d_fmt = f"{d_str[:4]}-{d_str[4:6]}-{d_str[6:]}"
+                        for _, row in sub.iterrows():
+                            try:
+                                h_rec.append((d_fmt, int(row[lvl_col]), float(str(row[pct_col]).replace('%', '').replace(',', ''))))
+                            except ValueError:
+                                pass
+                    time.sleep(0.15)
+                except Exception:
+                    continue
+            if h_rec:
+                storage.save_holding_data(h_rec)
+    except Exception:
+        pass
 
     return storage.load_institutional_df(), storage.load_margin_df(), storage.load_holding_df()
