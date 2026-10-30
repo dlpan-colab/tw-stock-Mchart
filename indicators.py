@@ -1,11 +1,6 @@
 """
-台股技術與籌碼分析系統 - 技術指標與量化運算模組 (indicators.py) - 完整版
-負責 MA5/20/60、KD(9)、MACD(12,26,9)、OBV、5MA 頭底轉折點演算法、
-法人/資券資料字串精準對齊、集保分級持股比率（嚴格同週對齊）與自由流通換手率計算。
+indicators.py - 技術指標與籌碼計算模組
 """
-
-MODULE_NAME = "indicators"
-MODULE_VERSION = "202610301630"
 
 import numpy as np
 import pandas as pd
@@ -20,21 +15,10 @@ HOLDING_LEVEL_MAP = {
     1000: [15]
 }
 
-def calculate_all_indicators(
-    df: pd.DataFrame,
-    pure_code: str,
-    major1_thresh: int = 1000,
-    major2_thresh: int = 400,
-    shares_outstanding: float = None,
-    status_placeholder=None
-) -> pd.DataFrame:
-    """
-    全量指標計算函式：完全相容 chart_builder.py 呼叫介面
-    """
+def calculate_all_indicators(df, pure_code, major1_thresh, major2_thresh, shares_outstanding=None, status_placeholder=None):
     if df is None or df.empty:
         return df
 
-    # 時區剝除防護
     if df.index.tz is not None:
         df.index = df.index.tz_localize(None)
 
@@ -54,8 +38,8 @@ def calculate_all_indicators(
             k_list.append(np.nan)
             d_list.append(np.nan)
         else:
-            k = (2 / 3) * k_prev + (1 / 3) * r
-            d = (2 / 3) * d_prev + (1 / 3) * k
+            k = (2/3) * k_prev + (1/3) * r
+            d = (2/3) * d_prev + (1/3) * k
             k_list.append(k)
             d_list.append(d)
             k_prev, d_prev = k, d
@@ -111,13 +95,10 @@ def calculate_all_indicators(
     except Exception:
         inst_df, margin_df, holding_df = pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
 
-    # 統一轉換為 YYYY-MM-DD 純文字格式作為比對鍵值，杜絕型態不匹配
     trade_date_strs = [pd.to_datetime(d).strftime('%Y-%m-%d') for d in df.index]
 
-    # --- 法人買賣超對齊 (精準字串比對) ---
-    df['Foreign_Net'] = 0.0
-    df['Trust_Net'] = 0.0
-    df['Dealer_Net'] = 0.0
+    # 法人買賣超對齊
+    df['Foreign_Net'], df['Trust_Net'], df['Dealer_Net'] = 0.0, 0.0, 0.0
     if not inst_df.empty:
         inst_df['str_date'] = pd.to_datetime(inst_df['date']).dt.strftime('%Y-%m-%d')
         inst_map = inst_df.drop_duplicates(subset=['str_date']).set_index('str_date')
@@ -125,12 +106,8 @@ def calculate_all_indicators(
         df['Trust_Net'] = [float(inst_map.loc[d, 'trust_net']) if d in inst_map.index else 0.0 for d in trade_date_strs]
         df['Dealer_Net'] = [float(inst_map.loc[d, 'dealer_net']) if d in inst_map.index else 0.0 for d in trade_date_strs]
 
-    # --- 資券對齊 (精準字串比對) ---
-    df['Margin_Diff'] = 0.0
-    df['Short_Diff'] = 0.0
-    df['Margin_Bal'] = 0.0
-    df['Short_Bal'] = 0.0
-    df['Short_Margin_Ratio'] = np.nan
+    # 資券對齊
+    df['Margin_Diff'], df['Short_Diff'], df['Margin_Bal'], df['Short_Bal'], df['Short_Margin_Ratio'] = 0.0, 0.0, 0.0, 0.0, np.nan
     if not margin_df.empty:
         margin_df['str_date'] = pd.to_datetime(margin_df['date']).dt.strftime('%Y-%m-%d')
         ms_map = margin_df.drop_duplicates(subset=['str_date']).set_index('str_date')
@@ -140,7 +117,7 @@ def calculate_all_indicators(
         df['Short_Bal'] = [float(ms_map.loc[d, 'short_bal']) if d in ms_map.index else 0.0 for d in trade_date_strs]
         df['Short_Margin_Ratio'] = (df['Short_Bal'] / df['Margin_Bal'].replace(0, np.nan)) * 100.0
 
-    # --- 大戶持股門檻（嚴格同週對齊，絕不跨週填充） ---
+    # 大戶持股門檻（嚴格同週對齊，絕不跨週向後填充）
     if not holding_df.empty:
         holding_df['norm_date'] = pd.to_datetime(holding_df['date']).dt.normalize()
         m1_levels = HOLDING_LEVEL_MAP.get(int(major1_thresh), [15])
@@ -150,7 +127,6 @@ def calculate_all_indicators(
             sub = holding_df[holding_df['level'].isin(levels)]
             if sub.empty:
                 return {}
-            # 每週保留該週最新一次公告值（防假日提前公告）
             sub_sorted = sub.sort_values('norm_date')
             weekly_sum = sub_sorted.groupby('norm_date')['percent'].sum().reset_index()
             weekly_sum['iso_year'] = weekly_sum['norm_date'].dt.isocalendar().year
@@ -165,7 +141,6 @@ def calculate_all_indicators(
         m1_vals, m2_vals = [], []
         for d in df.index:
             iso_y, iso_w, _ = pd.to_datetime(d).isocalendar()
-            # 僅精確同週匹配，當週無公告則為 NaN，絕不向後或向前補值
             m1_vals.append(m1_dict.get((iso_y, iso_w), np.nan))
             m2_vals.append(m2_dict.get((iso_y, iso_w), np.nan))
 
@@ -175,7 +150,7 @@ def calculate_all_indicators(
         df['Major1_Pct'] = np.nan
         df['Major2_Pct'] = np.nan
 
-    # 8. 自由流通換手率計算
+    # 自由流通換手率計算
     if shares_outstanding and shares_outstanding > 0:
         if 'Major1_Pct' in df and not df['Major1_Pct'].dropna().empty:
             filled_major = df['Major1_Pct'].ffill().bfill()
