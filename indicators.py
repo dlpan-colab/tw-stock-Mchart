@@ -5,7 +5,7 @@
 """
 
 MODULE_NAME = "indicators"
-MODULE_VERSION = "202610302000"
+MODULE_VERSION = "202610302100"
 
 import numpy as np
 import pandas as pd
