@@ -1,9 +1,12 @@
 """
 chart_builder.py - Plotly 圖表建構模組
-負責主圖與副圖繪製、各子圖 Y 軸範圍鎖定 (fixedrange=True)、主標題掛載版本識別字串。
+- 主圖 Y 軸價格、成交量中文標示完全移除 (title_text='')
+- 各子圖 Y 軸鎖定不上下移動 (fixedrange=True)
+- 修正外資、投信、自營商 marker_color 繪圖異常
+- 大戶持股開啟 connectgaps=True 階梯繪製
 """
 
-VERSION_TAG = "202610301610"
+VERSION_TAG = "202610301620"
 
 from typing import Tuple, Optional
 import numpy as np
@@ -32,7 +35,7 @@ def build_split_figures(
     c_name = fetch_stock_name(raw_ticker)
     market = "上市" if full_ticker.endswith(".TW") else "上櫃"
 
-    # 指標與籌碼計算 (含集保同週嚴格對齊)
+    # 指標與籌碼計算
     df = calculate_all_indicators(
         df=df_raw,
         pure_code=raw_ticker,
@@ -166,7 +169,6 @@ def build_split_figures(
     fig_top.add_trace(go.Bar(x=date_str_list, y=df['Volume_Sheets'], marker_color=vol_colors, name='成交量', hoverinfo='none'), secondary_y=False, row=2, col=1)
     fig_top.add_trace(go.Scatter(x=date_str_list, y=df['Turnover_Rate'], line=dict(color='#1e3799', width=3.9), connectgaps=True, name='換手率', hoverinfo='none'), secondary_y=True, row=2, col=1)
 
-    # 主圖標題掛載版本識別字串 VERSION_TAG
     fig_top.update_layout(
         title=dict(text=f'{c_name or raw_ticker} ({market}) 多指標+籌碼技術分析圖({VERSION_TAG})', font=dict(size=16)),
         font=dict(size=16),
@@ -178,9 +180,9 @@ def build_split_figures(
     fig_top.update_xaxes(type='category', range=[start_idx - 0.5, end_idx + 0.5], domain=[0, 1], row=1, col=1)
     fig_top.update_xaxes(type='category', range=[start_idx - 0.5, end_idx + 0.5], domain=[0, 1], showticklabels=True, tickvals=month_ticks_vals, ticktext=month_ticks_text, row=2, col=1)
 
-    # 鎖定 Y 軸不上下移動 (fixedrange=True)
-    fig_top.update_yaxes(title_text='價格', range=[p_min - (p_max - p_min) * 0.08, p_max + p_pad], fixedrange=True, row=1, col=1)
-    fig_top.update_yaxes(title_text='成交量', range=[0, vol_upper], fixedrange=True, secondary_y=False, row=2, col=1)
+    # 移除中文標示：價格與成交量 Y 軸 title_text 設為空字串
+    fig_top.update_yaxes(title_text='', range=[p_min - (p_max - p_min) * 0.08, p_max + p_pad], fixedrange=True, row=1, col=1)
+    fig_top.update_yaxes(title_text='', range=[0, vol_upper], fixedrange=True, secondary_y=False, row=2, col=1)
     fig_top.update_yaxes(title_text='', range=to_range, fixedrange=True, secondary_y=True, showgrid=False, showticklabels=False, row=2, col=1)
 
     # ===== 下半部副圖 =====
