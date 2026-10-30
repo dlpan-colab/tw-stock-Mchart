@@ -3,7 +3,7 @@
 """
 
 MODULE_NAME = "app"
-MODULE_VERSION = "202610300900"
+MODULE_VERSION = "202610301100"
 
 import streamlit as st
 from frontend import render_sidebar, render_main_content
@@ -15,7 +15,7 @@ st.set_page_config(
 )
 
 def main():
-    code, major1_thresh, major2_thresh, shares_outstanding = render_sidebar()
+    code, major1_thresh, major2_thresh, shares_outstanding, nav_action = render_sidebar()
     render_main_content(code, major1_thresh, major2_thresh, shares_outstanding)
 
 if __name__ == "__main__":
