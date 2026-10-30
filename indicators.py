@@ -5,7 +5,7 @@
 """
 
 MODULE_NAME = "indicators"
-MODULE_VERSION = "202610302100"
+MODULE_VERSION = "202610302300"
 
 import numpy as np
 import pandas as pd
@@ -34,7 +34,7 @@ def calculate_all_indicators(
     *args,
     **kwargs
 ) -> pd.DataFrame:
-    """計算所有技術指標與籌碼資料，確保所有副圖欄位完整對齊"""
+    """計算所有技術指標與籌碼資料，確保技術指標與週資料正確運算與對齊"""
     if df is None or df.empty:
         return df
 
@@ -56,30 +56,50 @@ def calculate_all_indicators(
     df['MA20'] = df['Close'].rolling(window=20).mean()
     df['MA60'] = df['Close'].rolling(window=60).mean()
 
-    # 2. KD 指標
+    # 2. KD 指標（確保走勢正常計算，不因版本報錯陷於常數 50）
     try:
+        low_min9 = df['Low'].rolling(window=9).min()
+        high_max9 = df['High'].rolling(window=9).max()
+        rsv = (df['Close'] - low_min9) / (high_max9 - low_min9 + 1e-9) * 100
+        k_list, d_list = [], []
+        k_prev, d_prev = 50.0, 50.0
+        for r in rsv:
+            if pd.isna(r):
+                k_list.append(np.nan)
+                d_list.append(np.nan)
+            else:
+                k = (2 / 3) * k_prev + (1 / 3) * r
+                d = (2 / 3) * d_prev + (1 / 3) * k
+                k_list.append(k)
+                d_list.append(d)
+                k_prev, d_prev = k, d
+        df['K'] = k_list
+        df['D'] = d_list
+    except Exception:
         stoch = ta.momentum.StochasticOscillator(df['High'], df['Low'], df['Close'], window=14, smooth_window=3)
         df['K'] = stoch.stoch()
         df['D'] = stoch.stoch_signal()
-    except Exception:
-        df['K'] = 50.0
-        df['D'] = 50.0
 
-    # 3. MACD
+    # 3. MACD（確保動態計算，不因例外陷入 0）
     try:
+        ema12 = df['Close'].ewm(span=12, adjust=False).mean()
+        ema26 = df['Close'].ewm(span=26, adjust=False).mean()
+        df['DIF'] = ema12 - ema26
+        df['MACD'] = df['DIF'].ewm(span=9, adjust=False).mean()
+        df['OSC'] = df['DIF'] - df['MACD']
+    except Exception:
         macd_indicator = ta.trend.MACD(df['Close'], window_slow=26, window_fast=12, window_sign=9)
         df['DIF'] = macd_indicator.macd()
         df['MACD'] = macd_indicator.macd_signal()
         df['OSC'] = macd_indicator.macd_diff()
-    except Exception:
-        df['DIF'] = 0.0
-        df['MACD'] = 0.0
-        df['OSC'] = 0.0
 
     # 4. OBV
     try:
-        obv_indicator = ta.volume.OnBalanceVolumeIndicator(df['Close'], df['Volume'])
-        df['OBV'] = obv_indicator.on_balance_volume()
+        direction = np.where(df['Close'] > df['Close'].shift(1), 1, np.where(df['Close'] < df['Close'].shift(1), -1, 0))
+        direction[0] = 0
+        df['OBV'] = (direction * df['Volume_Sheets']).cumsum()
+        base_idx = -min(180, len(df))
+        df['OBV'] = df['OBV'] - df['OBV'].iloc[base_idx]
         df['OBV_MA20'] = df['OBV'].rolling(window=20).mean()
     except Exception:
         df['OBV'] = 0.0
@@ -94,10 +114,10 @@ def calculate_all_indicators(
         df['Is_Head'] = (df['High'] == rolling_max)
         df['Is_Bottom'] = (df['Low'] == rolling_min)
 
-    # 6. 從 Storage 載入籌碼資料並繫結至 DataFrame（對應副圖顯示）
+    # 6. 從 Storage 載入籌碼資料並繫結至 DataFrame
     storage = StockChipStorage(pure_code)
     
-    # 初始化預設籌碼欄位以防空資料報錯
+    # 初始化預設籌碼欄位
     df['Foreign_Net'] = 0.0
     df['Trust_Net'] = 0.0
     df['Dealer_Net'] = 0.0
@@ -109,7 +129,7 @@ def calculate_all_indicators(
     df['Major1_Pct'] = np.nan
     df['Major2_Pct'] = np.nan
 
-    # 載入法人資料
+    # 載入法人資料（日資料）
     try:
         inst_df = storage.load_institutional_df()
         if not inst_df.empty and 'date' in inst_df.columns:
@@ -122,7 +142,7 @@ def calculate_all_indicators(
     except Exception:
         pass
 
-    # 載入資券資料
+    # 載入資券資料（日資料）
     try:
         margin_df = storage.load_margin_df()
         if not margin_df.empty and 'date' in margin_df.columns:
@@ -137,7 +157,7 @@ def calculate_all_indicators(
     except Exception:
         pass
 
-    # 載入大戶持股資料
+    # 載入大戶持股資料（週資料：同一週數值相同，不同週依每週六公告為準，不以直線強行填滿）
     try:
         holding_df = storage.load_holding_df()
         if not holding_df.empty and 'date' in holding_df.columns and 'level' in holding_df.columns:
@@ -162,15 +182,16 @@ def calculate_all_indicators(
                 m1_vals.append(m1_dict.get((y, w), np.nan))
                 m2_vals.append(m2_dict.get((y, w), np.nan))
 
-            df['Major1_Pct'] = pd.Series(m1_vals, index=df.index).ffill().bfill()
-            df['Major2_Pct'] = pd.Series(m2_vals, index=df.index).ffill().bfill()
+            df['Major1_Pct'] = pd.Series(m1_vals, index=df.index)
+            df['Major2_Pct'] = pd.Series(m2_vals, index=df.index)
     except Exception:
         pass
 
-    # 7. 換手率計算（嚴格遵守分母原則）
+    # 7. 換手率計算（嚴格遵守分母原則：總發行張數 * (1 - 大戶持股比例/100)）
     if shares_outstanding and shares_outstanding > 0:
         if 'Major1_Pct' in df.columns and not df['Major1_Pct'].dropna().empty:
-            effective_shares = shares_outstanding * (1.0 - df['Major1_Pct'] / 100.0)
+            filled_major = df['Major1_Pct'].ffill()  # 換手率分母允許前向對齊最近一週大戶比例作為動態估算
+            effective_shares = shares_outstanding * (1.0 - filled_major / 100.0)
             df['Turnover_Rate'] = (df['Volume_Sheets'] / effective_shares.replace(0, np.nan)) * 100.0
         else:
             df['Turnover_Rate'] = (df['Volume_Sheets'] / shares_outstanding) * 100.0
