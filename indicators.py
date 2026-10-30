@@ -1,11 +1,12 @@
 """
 indicators.py - 技術指標與籌碼計算模組
+- 法人、資券、大戶持股精準對齊日 K
+- 大戶持股嚴格同週對齊，絕不跨週向後填充
 """
 
 import numpy as np
 import pandas as pd
 
-# 集保張數門檻等級映射表
 HOLDING_LEVEL_MAP = {
     100: [8, 9, 10, 11, 12, 13, 14, 15],
     200: [9, 10, 11, 12, 13, 14, 15],
@@ -95,26 +96,28 @@ def calculate_all_indicators(df, pure_code, major1_thresh, major2_thresh, shares
     except Exception:
         inst_df, margin_df, holding_df = pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
 
-    trade_date_strs = [pd.to_datetime(d).strftime('%Y-%m-%d') for d in df.index]
+    d_strs = [pd.to_datetime(d).strftime('%Y-%m-%d') for d in df.index]
 
     # 法人買賣超對齊
     df['Foreign_Net'], df['Trust_Net'], df['Dealer_Net'] = 0.0, 0.0, 0.0
     if not inst_df.empty:
-        inst_df['str_date'] = pd.to_datetime(inst_df['date']).dt.strftime('%Y-%m-%d')
-        inst_map = inst_df.drop_duplicates(subset=['str_date']).set_index('str_date')
-        df['Foreign_Net'] = [float(inst_map.loc[d, 'foreign_net']) if d in inst_map.index else 0.0 for d in trade_date_strs]
-        df['Trust_Net'] = [float(inst_map.loc[d, 'trust_net']) if d in inst_map.index else 0.0 for d in trade_date_strs]
-        df['Dealer_Net'] = [float(inst_map.loc[d, 'dealer_net']) if d in inst_map.index else 0.0 for d in trade_date_strs]
+        inst_map = inst_df.copy()
+        inst_map['d_str'] = pd.to_datetime(inst_map['date']).dt.strftime('%Y-%m-%d')
+        inst_map = inst_map.drop_duplicates(subset=['d_str']).set_index('d_str')
+        df['Foreign_Net'] = [float(inst_map.loc[d, 'foreign_net']) if d in inst_map.index else 0.0 for d in d_strs]
+        df['Trust_Net'] = [float(inst_map.loc[d, 'trust_net']) if d in inst_map.index else 0.0 for d in d_strs]
+        df['Dealer_Net'] = [float(inst_map.loc[d, 'dealer_net']) if d in inst_map.index else 0.0 for d in d_strs]
 
     # 資券對齊
     df['Margin_Diff'], df['Short_Diff'], df['Margin_Bal'], df['Short_Bal'], df['Short_Margin_Ratio'] = 0.0, 0.0, 0.0, 0.0, np.nan
     if not margin_df.empty:
-        margin_df['str_date'] = pd.to_datetime(margin_df['date']).dt.strftime('%Y-%m-%d')
-        ms_map = margin_df.drop_duplicates(subset=['str_date']).set_index('str_date')
-        df['Margin_Diff'] = [float(ms_map.loc[d, 'margin_diff']) if d in ms_map.index else 0.0 for d in trade_date_strs]
-        df['Short_Diff'] = [float(ms_map.loc[d, 'short_diff']) if d in ms_map.index else 0.0 for d in trade_date_strs]
-        df['Margin_Bal'] = [float(ms_map.loc[d, 'margin_bal']) if d in ms_map.index else 0.0 for d in trade_date_strs]
-        df['Short_Bal'] = [float(ms_map.loc[d, 'short_bal']) if d in ms_map.index else 0.0 for d in trade_date_strs]
+        ms_map = margin_df.copy()
+        ms_map['d_str'] = pd.to_datetime(ms_map['date']).dt.strftime('%Y-%m-%d')
+        ms_map = ms_map.drop_duplicates(subset=['d_str']).set_index('d_str')
+        df['Margin_Diff'] = [float(ms_map.loc[d, 'margin_diff']) if d in ms_map.index else 0.0 for d in d_strs]
+        df['Short_Diff'] = [float(ms_map.loc[d, 'short_diff']) if d in ms_map.index else 0.0 for d in d_strs]
+        df['Margin_Bal'] = [float(ms_map.loc[d, 'margin_bal']) if d in ms_map.index else 0.0 for d in d_strs]
+        df['Short_Bal'] = [float(ms_map.loc[d, 'short_bal']) if d in ms_map.index else 0.0 for d in d_strs]
         df['Short_Margin_Ratio'] = (df['Short_Bal'] / df['Margin_Bal'].replace(0, np.nan)) * 100.0
 
     # 大戶持股門檻（嚴格同週對齊，絕不跨週向後填充）
@@ -133,14 +136,15 @@ def calculate_all_indicators(df, pure_code, major1_thresh, major2_thresh, shares
             weekly_sum['iso_week'] = weekly_sum['norm_date'].dt.isocalendar().week
             
             last_in_week = weekly_sum.groupby(['iso_year', 'iso_week']).last().reset_index()
-            return {(row['iso_year'], row['iso_week']): float(row['percent']) for _, row in last_in_week.iterrows()}
+            return {(int(row['iso_year']), int(row['iso_week'])): float(row['percent']) for _, row in last_in_week.iterrows()}
 
         m1_dict = calc_major_weekly_dict(m1_levels)
         m2_dict = calc_major_weekly_dict(m2_levels)
 
         m1_vals, m2_vals = [], []
         for d in df.index:
-            iso_y, iso_w, _ = pd.to_datetime(d).isocalendar()
+            iso_cal = pd.to_datetime(d).isocalendar()
+            iso_y, iso_w = int(iso_cal.year), int(iso_cal.week)
             m1_vals.append(m1_dict.get((iso_y, iso_w), np.nan))
             m2_vals.append(m2_dict.get((iso_y, iso_w), np.nan))
 
