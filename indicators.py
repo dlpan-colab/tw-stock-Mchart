@@ -5,7 +5,7 @@
 """
 
 MODULE_NAME = "indicators"
-MODULE_VERSION = "202610301700"
+MODULE_VERSION = "202610301730"
 
 import numpy as np
 import pandas as pd
@@ -17,7 +17,10 @@ def calculate_all_indicators(
     pure_code: str,
     major1_thresh: int = 1000,
     major2_thresh: int = 400,
-    shares_outstanding: float = None
+    shares_outstanding: float = None,
+    status_placeholder=None,
+    *args,
+    **kwargs
 ) -> pd.DataFrame:
     """計算所有技術指標與籌碼資料"""
     if df is None or df.empty:
@@ -28,7 +31,6 @@ def calculate_all_indicators(
     # 確保欄位名稱標準化
     if 'Volume_Sheets' not in df.columns:
         if 'Volume' in df.columns:
-            # yfinance 抓取通常為股數，轉為張數
             df['Volume_Sheets'] = df['Volume'] / 1000.0
         else:
             df['Volume_Sheets'] = 0.0
@@ -40,8 +42,6 @@ def calculate_all_indicators(
 
     # 2. KD 指標
     try:
-        kd = ta.momentum.StochasticsRSIIndicator(df['Close'], window=14, smooth1=3, smooth2=3)
-        # 若無 StochasticsRSI，改用傳統 Stoch
         stoch = ta.momentum.StochasticOscillator(df['High'], df['Low'], df['Close'], window=14, smooth_window=3)
         df['K'] = stoch.stoch()
         df['D'] = stoch.stoch_signal()
@@ -79,16 +79,13 @@ def calculate_all_indicators(
         df['Is_Bottom'] = (df['Low'] == rolling_min)
 
     # 6. 換手率計算（嚴格遵守分母原則）
-    # 若無總發行張數，預設以 60 日均量或合理估算，但若有大戶持股比例則嚴格套用公式
     if shares_outstanding and shares_outstanding > 0:
-        # 若有大戶持股比例（Major1_Pct），分母 = 總發行張數 * (1 - 大戶持股比例 / 100)
         if 'Major1_Pct' in df.columns:
             effective_shares = shares_outstanding * (1.0 - df['Major1_Pct'] / 100.0)
             df['Turnover_Rate'] = (df['Volume_Sheets'] / effective_shares.replace(0, np.nan)) * 100.0
         else:
             df['Turnover_Rate'] = (df['Volume_Sheets'] / shares_outstanding) * 100.0
     else:
-        # 預設退化計算（若無指定總發行張數）
         df['Turnover_Rate'] = (df['Volume_Sheets'] / df['Volume_Sheets'].rolling(20).mean()) * 5.0
 
     return df
