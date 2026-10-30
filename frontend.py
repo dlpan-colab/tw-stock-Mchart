@@ -1,28 +1,25 @@
 """
 frontend.py - 前端互動視圖模組
-版本: 202610301650
-- 圖例同步更新：換手率標示為 ▲換手≥10% 與 ▼換手≥20%
-- JS 動態極值重算移除對已刪除的換手率次軸 (yaxis3) 之依賴
+版本: 202610302000
 """
 
 import json
 import pandas as pd
 
-VERSION_TAG = "202610301650"
+VERSION_TAG = "202610302000"
 
 def get_legend_html(version_tag: str = VERSION_TAG) -> str:
+    """
+    僅保留簡潔的版本識別標籤與運作指示燈，刪除冗長文字圖例
+    """
     return f"""
 <style>
   @keyframes app-spin {{ 0% {{ transform: rotate(0deg); }} 100% {{ transform: rotate(360deg); }} }}
-  .app-loading-ring {{ display: inline-block; width: 14px; height: 14px; border: 2.5px solid rgba(41, 128, 185, 0.25); border-top: 2.5px solid #2980b9; border-radius: 50%; animation: app-spin 0.8s linear infinite; vertical-align: middle; margin-left: 6px; }}
+  .app-loading-ring {{ display: inline-block; width: 13px; height: 13px; border: 2px solid rgba(41, 128, 185, 0.25); border-top: 2px solid #2980b9; border-radius: 50%; animation: app-spin 0.8s linear infinite; vertical-align: middle; margin-left: 6px; }}
 </style>
-<div style="font-size: 15px; line-height: 1.6; margin-bottom: 6px; padding: 4px 10px; background: #f8fafc; border-radius: 6px; border: 1px solid #e2e8f0;">
-  <span style="background:#2c3e50; color:#ffffff; padding: 1px 6px; border-radius: 4px; font-weight:bold; margin-right: 6px;">v{version_tag}</span>
-  <span id="app_loading_spinner" class="app-loading-ring" style="display:none;" title="系統運作中..."></span>
-  <b>主圖：</b><span style="color:#eb4d4b;">■</span> K線 <span style="color:#27ae60;font-weight:bold;">〔頭〕</span> <span style="color:#e74c3c;font-weight:bold;">〔底〕</span> <span style="color:#f1c40f;">MA5</span> <span style="color:#e67e22;">MA20</span> <span style="color:#9b59b6;">MA60</span> |
-  <b>技術：</b><span style="color:#eb4d4b;">■</span> 量/OSC <span style="color:#1e3799; font-weight:bold;">▲</span>≥10% <span style="color:#f1c40f; font-weight:bold;">▼</span>≥20% <span style="color:#e74c3c;">K</span> <span style="color:#3498db;">D</span> <span style="color:#f39c12;">DIF</span> <span style="color:#2980b9;">MACD</span> <span style="color:#16a085;">OBV</span> |
-  <b>法人：</b><span style="color:#eb4d4b;">■</span> 外/投/自 <span style="color:#c0392b;">大1</span> <span style="color:#8e44ad;">大2</span> |
-  <b>資券：</b><span style="color:#eb4d4b;">■</span>(左)融資 <span style="color:#f1c40f;">■</span>(右)融券 <span style="color:#e67e22;">━</span> 券資比
+<div style="font-size: 14px; margin-bottom: 4px; padding: 2px 8px; display: inline-flex; align-items: center; background: #f8fafc; border-radius: 4px; border: 1px solid #e2e8f0;">
+  <span style="background:#2c3e50; color:#ffffff; padding: 1px 6px; border-radius: 4px; font-weight:bold; font-size:12px;">v{version_tag}</span>
+  <span id="app_loading_spinner" class="app-loading-ring" style="display:none;" title="運作中..."></span>
 </div>
 """
 
