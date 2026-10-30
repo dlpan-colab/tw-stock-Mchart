@@ -3,7 +3,7 @@
 """
 
 MODULE_NAME = "indicators"
-MODULE_VERSION = "202610300900"
+MODULE_VERSION = "202610301300"
 
 import numpy as np
 import pandas as pd
@@ -140,11 +140,6 @@ def calculate_all_indicators(
             
         df['Major1_Pct'] = pd.Series(m1_vals, index=df.index).ffill().bfill()
         df['Major2_Pct'] = pd.Series(m2_vals, index=df.index).ffill().bfill()
-        
-        latest_tdcc = holding_df['date'].max()
-        if pd.notna(latest_tdcc):
-            df.loc[df.index > latest_tdcc, 'Major1_Pct'] = np.nan
-            df.loc[df.index > latest_tdcc, 'Major2_Pct'] = np.nan
     else:
         df['Major1_Pct'], df['Major2_Pct'] = np.nan, np.nan
 
@@ -152,14 +147,10 @@ def calculate_all_indicators(
         if 'Major1_Pct' in df and not df['Major1_Pct'].dropna().empty:
             filled_major = df['Major1_Pct'].ffill().bfill()
             free_float_ratio = (100.0 - filled_major).clip(lower=10.0, upper=100.0) / 100.0
-        elif 'Major2_Pct' in df and not df['Major2_Pct'].dropna().empty:
-            filled_major = df['Major2_Pct'].ffill().bfill()
-            free_float_ratio = (100.0 - filled_major).clip(lower=10.0, upper=100.0) / 100.0
         else:
             free_float_ratio = 0.75
-
         free_float_shares = float(shares_outstanding) * free_float_ratio
-        df['Turnover_Rate'] = (df['Volume'] / free_float_shares) * 100.0
+        df['Turnover_Rate'] = (df['Volume_Sheets'] / free_float_shares) * 100.0
     else:
         df['Turnover_Rate'] = np.nan
 
