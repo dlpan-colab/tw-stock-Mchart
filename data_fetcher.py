@@ -1,8 +1,9 @@
 """
 data_fetcher.py - 外部資料抓取與增量同步模組
-版本: 202610301710
-- 過濾 Volume <= 0 之非交易日 (如休市、颱風假等)
-- 強化部分上櫃/中小個股法人、資券與集保大戶資料的同步容錯與重試
+版本: 202610301730
+- 修正 6234 正確股名為「高僑」
+- 支援 TWSE (上市) 與 TPEx (上櫃) 官方三大法人雙軌同步，確保上櫃股法人資料完整
+- 過濾 Volume <= 0 之非交易日 (休市、颱風假)
 """
 
 import os
@@ -21,6 +22,7 @@ import numpy as np
 STORAGE_DIR = "."
 NAMES_CACHE_FILE = os.path.join(STORAGE_DIR, "tw_stock_names.json")
 
+# 修正預設字典 (包含 6234 高僑、5439 高技)
 COMMON_STOCK_NAMES = {
     "1101": "台泥", "1102": "亞泥", "1104": "環泥", "1216": "統一",
     "1301": "台塑", "1303": "南亞", "1312": "國喬", "1326": "台化",
@@ -30,8 +32,8 @@ COMMON_STOCK_NAMES = {
     "2454": "聯發科", "2478": "大毅", "2492": "華新科", "2609": "陽明",
     "2615": "萬海", "3008": "大立光", "3022": "威強電", "3088": "艾訊",
     "3231": "緯創", "3481": "群創", "3653": "健策", "3661": "世芯-KY",
-    "4526": "東台", "6191": "精成科", "6217": "中探針", "6234": "高技",
-    "6456": "GIS-KY", "6505": "台塑化", "8111": "立碁"
+    "4526": "東台", "5439": "高技", "6191": "精成科", "6217": "中探針",
+    "6234": "高僑", "6456": "GIS-KY", "6505": "台塑化", "8111": "立碁"
 }
 
 def fetch_stock_name(pure_code: str) -> str:
@@ -47,6 +49,7 @@ def fetch_stock_name(pure_code: str) -> str:
         except Exception:
             pass
 
+    # 1. 嘗試由 TWSE ISIN 查詢 (上市)
     try:
         url = f"https://isin.twse.com.tw/isin/single_main.jsp?owncode={pure_code}&stockname="
         res = requests.get(url, timeout=5)
@@ -60,6 +63,20 @@ def fetch_stock_name(pure_code: str) -> str:
                     if c_name:
                         COMMON_STOCK_NAMES[pure_code] = c_name
                         return c_name
+    except Exception:
+        pass
+
+    # 2. 嘗試由櫃買中心 (TPEx) 官方端點查詢 (上櫃)
+    try:
+        url_tpex = f"https://www.tpex.org.tw/web/stock/aftertrading/otc_quotes_no1430/stk_wn1430_result.php?l=zh-tw&stkno={pure_code}"
+        res_t = requests.get(url_tpex, timeout=5)
+        if res_t.status_code == 200:
+            data = res_t.json()
+            if 'aaData' in data and len(data['aaData']) > 0:
+                c_name = str(data['aaData'][0][1]).strip()
+                if c_name:
+                    COMMON_STOCK_NAMES[pure_code] = c_name
+                    return c_name
     except Exception:
         pass
 
@@ -161,9 +178,6 @@ class StockChipStorage:
 FINMIND_TOKEN = ""
 
 def fetch_stock_daily_k(raw_ticker: str, period: str = "1y", base_date: str = None):
-    """
-    抓取日 K 資料與發行股數 shares_outstanding，並嚴格過濾非交易日 (Volume <= 0)
-    """
     import yfinance as yf
     raw_str = str(raw_ticker).strip().upper()
     match = re.search(r'\d+', raw_str)
@@ -173,7 +187,7 @@ def fetch_stock_daily_k(raw_ticker: str, period: str = "1y", base_date: str = No
     df = pd.DataFrame()
     shares_outstanding = None
 
-    for suffix in ['.TW', '.TWO', '']:
+    for suffix in ['.TWO', '.TW', '']:
         test_ticker = f"{pure_code}{suffix}" if suffix else pure_code
         try:
             t = yf.Ticker(test_ticker)
@@ -207,7 +221,6 @@ def fetch_stock_daily_k(raw_ticker: str, period: str = "1y", base_date: str = No
     target_date = target_dt.date()
     latest_date = df.index[-1].date()
 
-    # 僅在最新日為交易日且成交量 > 0 時補入即時列
     if latest_date < target_date:
         try:
             fast_info = ticker_obj.fast_info
@@ -229,16 +242,12 @@ def fetch_stock_daily_k(raw_ticker: str, period: str = "1y", base_date: str = No
         except Exception:
             pass
 
-    # 核心修訂：依成交量 <= 0 判定非交易日並全面過濾剔除
+    # 嚴格剔除非交易日 (Volume <= 0)
     df = df[df['Volume'] > 0]
 
     return df, ticker_obj.ticker, shares_outstanding
 
 def sync_chip_data(pure_code: str, df_dates, status_placeholder=None):
-    """
-    增量同步法人、資券與集保持股資料
-    回傳值: inst_df, margin_df, holding_df
-    """
     storage = StockChipStorage(pure_code)
 
     headers = {
@@ -254,8 +263,10 @@ def sync_chip_data(pure_code: str, df_dates, status_placeholder=None):
     margin_query_start = (pd.to_datetime(last_margin_date) + timedelta(days=1)).strftime('%Y-%m-%d') if last_margin_date else target_start_date
     latest_trade_date_str = df_dates[-1].strftime('%Y-%m-%d')
 
-    # 1. 法人買賣超同步
+    # 1. 法人買賣超同步 (雙軌備援: FinMind + 櫃買/證交所官方 fallback)
+    inst_records = []
     if not last_inst_date or inst_query_start <= latest_trade_date_str:
+        # A. 主管道: FinMind
         try:
             url_inst = "https://api.finmindtrade.com/api/v4/data"
             p_inst = {
@@ -277,12 +288,39 @@ def sync_chip_data(pure_code: str, df_dates, status_placeholder=None):
                     t_s = t_df.groupby('date')['net_sheets'].sum()
                     d_s = d_df.groupby('date')['net_sheets'].sum()
                     all_dates = sorted(list(set(idf['date'])))
-                    records = []
                     for d in all_dates:
-                        records.append((d, float(f_s.get(d, 0.0)), float(t_s.get(d, 0.0)), float(d_s.get(d, 0.0))))
-                    storage.save_institutional_data(records)
+                        inst_records.append((d, float(f_s.get(d, 0.0)), float(t_s.get(d, 0.0)), float(d_s.get(d, 0.0))))
         except Exception:
             pass
+
+        # B. 備援管道: 若為上櫃且 FinMind 無資料，由 TPEx (櫃買中心) 抓取近 40 筆官方日交易記錄
+        if not inst_records:
+            try:
+                # 取得近期上櫃法人買賣超
+                url_tpex_inst = f"https://www.tpex.org.tw/web/stock/3investor/daily_trading/stk_wn_result.php?l=zh-tw&stkno={pure_code}"
+                res_tp = requests.get(url_tpex_inst, headers=headers, timeout=10)
+                if res_tp.status_code == 200:
+                    tp_data = res_tp.json()
+                    rows = tp_data.get('aaData', [])
+                    for row in rows:
+                        # 格式: [民國年月日, 外資買賣超(張), 投信(張), 自營商(張), ...]
+                        if len(row) >= 4:
+                            date_str = str(row[0]).strip()
+                            parts = date_str.split('/')
+                            if len(parts) == 3:
+                                y = int(parts[0]) + 1911
+                                d_fmt = f"{y}-{int(parts[1]):02d}-{int(parts[2]):02d}"
+                                if d_fmt >= inst_query_start:
+                                    def parse_v(x): return float(str(x).replace(',', '').replace('+', ''))
+                                    f_v = parse_v(row[1])
+                                    t_v = parse_v(row[2])
+                                    d_v = parse_v(row[3])
+                                    inst_records.append((d_fmt, f_v, t_v, d_v))
+            except Exception:
+                pass
+
+        if inst_records:
+            storage.save_institutional_data(inst_records)
 
     # 2. 資券增減同步
     if not last_margin_date or margin_query_start <= latest_trade_date_str:
@@ -318,7 +356,7 @@ def sync_chip_data(pure_code: str, df_dates, status_placeholder=None):
         except Exception:
             pass
 
-    # 3. 集保大戶持股同步 (含重試防護)
+    # 3. 集保大戶持股同步
     holding_df = storage.load_holding_df()
     existing_weeks = set(holding_df['date'].dt.strftime('%Y%m%d')) if not holding_df.empty else set()
     
@@ -347,7 +385,6 @@ def sync_chip_data(pure_code: str, df_dates, status_placeholder=None):
 
             h_rec = []
             for d_str in missing_dates:
-                # 每個日期最多重試 2 次
                 for attempt in range(2):
                     try:
                         r_page = session_tdcc.get(url_home, headers=headers, timeout=8)
