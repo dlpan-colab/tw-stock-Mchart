@@ -1,8 +1,6 @@
 """
 indicators.py - 技術指標與籌碼計算模組
-- 徹底移除 df.index > latest_tdcc 的單日抹除 bug
-- 嚴格落實同週對齊：同自然週（含提早公告）全週共用該週最新公告值
-- 只有尚未公告的次週之後才維持 NaN
+版本: 202610302000
 """
 
 import numpy as np
@@ -107,10 +105,10 @@ def calculate_all_indicators(df, pure_code, major1_thresh, major2_thresh, shares
     except Exception:
         pass
 
-    # 本機快取補齊防護
+    # 若任一 DataFrame 缺失，由本地快取補齊
     if inst_df.empty or margin_df.empty or holding_df.empty:
         try:
-            from data_fetcher import StockChipStorage
+            from storage import StockChipStorage
             storage = StockChipStorage(pure_code)
             if inst_df.empty and hasattr(storage, 'load_institutional_df'):
                 inst_df = storage.load_institutional_df()
@@ -123,19 +121,18 @@ def calculate_all_indicators(df, pure_code, major1_thresh, major2_thresh, shares
 
     trade_date_strs = [pd.to_datetime(d).strftime('%Y-%m-%d') for d in df.index]
 
-    # 法人買賣超對齊 (YYYY-MM-DD 精確比對)
+    # 法人買賣超對齊 (YYYY-MM-DD 比對)
     df['Foreign_Net'] = 0.0
     df['Trust_Net'] = 0.0
     df['Dealer_Net'] = 0.0
     if not inst_df.empty:
-        inst_map = inst_df.copy()
-        inst_map['d_str'] = pd.to_datetime(inst_map['date']).dt.strftime('%Y-%m-%d')
-        inst_map = inst_map.drop_duplicates(subset=['d_str']).set_index('d_str')
+        inst_df['str_date'] = pd.to_datetime(inst_df['date']).dt.strftime('%Y-%m-%d')
+        inst_map = inst_df.drop_duplicates(subset=['str_date']).set_index('str_date')
         df['Foreign_Net'] = [float(inst_map.loc[d, 'foreign_net']) if d in inst_map.index else 0.0 for d in trade_date_strs]
         df['Trust_Net'] = [float(inst_map.loc[d, 'trust_net']) if d in inst_map.index else 0.0 for d in trade_date_strs]
         df['Dealer_Net'] = [float(inst_map.loc[d, 'dealer_net']) if d in inst_map.index else 0.0 for d in trade_date_strs]
 
-    # 資券對齊 (YYYY-MM-DD 精確比對)
+    # 資券對齊 (YYYY-MM-DD 比對)
     df['Margin_Diff'] = 0.0
     df['Short_Diff'] = 0.0
     df['Margin_Bal'] = 0.0
@@ -160,13 +157,11 @@ def calculate_all_indicators(df, pure_code, major1_thresh, major2_thresh, shares
             sub = holding_df[holding_df['level'].isin(levels)]
             if sub.empty:
                 return {}
-            # 每週可能有提早公告（例如 10/22 週四公告），取該週最新一筆有效值
             sub_sorted = sub.sort_values('norm_date')
             weekly_sum = sub_sorted.groupby('norm_date')['percent'].sum().reset_index()
             weekly_sum['iso_year'] = weekly_sum['norm_date'].dt.isocalendar().year
             weekly_sum['iso_week'] = weekly_sum['norm_date'].dt.isocalendar().week
             
-            # 以 (iso_year, iso_week) 為唯一鍵值
             last_in_week = weekly_sum.groupby(['iso_year', 'iso_week']).last().reset_index()
             return {(int(row['iso_year']), int(row['iso_week'])): float(row['percent']) for _, row in last_in_week.iterrows()}
 
@@ -177,7 +172,6 @@ def calculate_all_indicators(df, pure_code, major1_thresh, major2_thresh, shares
         for d in df.index:
             iso_cal = pd.to_datetime(d).isocalendar()
             iso_y, iso_w = int(iso_cal.year), int(iso_cal.week)
-            # 僅依自然週歸屬，當週有值則整週（含 10/22、10/23）均享有，未公告之次週維持 NaN
             m1_vals.append(m1_dict.get((iso_y, iso_w), np.nan))
             m2_vals.append(m2_dict.get((iso_y, iso_w), np.nan))
 
