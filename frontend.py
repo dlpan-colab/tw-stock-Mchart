@@ -5,7 +5,7 @@
 """
 
 MODULE_NAME = "frontend"
-MODULE_VERSION = "202610301700"
+MODULE_VERSION = "202610301830"
 
 import streamlit as st
 
@@ -33,7 +33,7 @@ def get_component_html(
     initial_disp_days: int,
     is_mobile: bool = False
 ) -> str:
-    """組裝雙圖表與前端互動互動介面的完整 HTML 內容"""
+    """組裝雙圖表與前端互動介面的完整 HTML 內容，確保主圖與所有副圖完整顯示"""
     top_html = fig_top.to_html(include_plotlyjs='cdn', full_html=False)
     btm_html = fig_btm.to_html(include_plotlyjs=False, full_html=False)
     
