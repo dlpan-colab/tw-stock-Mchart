@@ -1,369 +1,267 @@
 """
-台股技術與籌碼分析系統 - 本地與歷史資料管理模組 (storage.py)
-以 Google Drive 雲端資料庫為單一真實來源。
-強化 SSL 連線防護與例外隔離，杜絕啟動時 Segmentation fault 崩潰。
-歷史導航清單維持嚴格 LRU（最近查詢置頂）排序。
+storage.py - 本地 SQLite 資料庫與股票歷史紀錄管理器
+版本: 202610302000
 """
 
-MODULE_NAME = "storage"
-MODULE_VERSION = "202610301700"
-
 import os
-import re
-import ssl
+import io
 import json
-import time
 import sqlite3
-import logging
-from pathlib import Path
-from typing import List, Dict, Optional
+import requests
+from bs4 import BeautifulSoup
 import pandas as pd
 
-from config import (
-    DATA_DIR,
-    DB_FILE_PATH,
-    HISTORY_FILE_PATH,
-    STOCK_NAMES_CACHE_PATH,
-    IS_COLAB
-)
+STORAGE_DIR = "."
+HISTORY_FILE = os.path.join(STORAGE_DIR, "stock_history.json")
+NAMES_CACHE_FILE = os.path.join(STORAGE_DIR, "tw_stock_names.json")
 
-logger = logging.getLogger(__name__)
+# 內建常用名稱對照表 (6234 正確對應「高僑」，5439 對應「高技」)
+COMMON_STOCK_NAMES = {
+    "1101": "台泥", "1102": "亞泥", "1104": "環泥", "1216": "統一",
+    "1301": "台塑", "1303": "南亞", "1312": "國喬", "1326": "台化",
+    "1504": "東元", "2002": "中鋼", "2105": "正新", "2303": "聯電",
+    "2308": "台達電", "2312": "金寶", "2317": "鴻海", "2324": "仁寶",
+    "2327": "國巨", "2330": "台積電", "2374": "佳能", "2382": "廣達",
+    "2454": "聯發科", "2478": "大毅", "2492": "華新科", "2609": "陽明",
+    "2615": "萬海", "3008": "大立光", "3022": "威強電", "3088": "艾訊",
+    "3231": "緯創", "3481": "群創", "3653": "健策", "3661": "世芯-KY",
+    "4526": "東台", "5439": "高技", "6191": "精成科", "6217": "中探針",
+    "6234": "高僑", "6456": "GIS-KY", "6505": "台塑化", "8111": "立碁"
+}
 
-os.makedirs(str(DATA_DIR), exist_ok=True)
+def get_stock_chinese_name(pure_code: str) -> str:
+    pure_code = str(pure_code).strip()
+    if pure_code in COMMON_STOCK_NAMES:
+        return COMMON_STOCK_NAMES[pure_code]
 
-# 全域快取：避免每次點擊查詢都重複向 Google Drive 發送全目錄掃描 API
-_CACHED_DRIVE_CODES: Optional[List[str]] = None
-_HISTORY_PULLED: bool = False
-
-
-def _get_cloud_sync():
-    try:
-        import cloud_sync
-        if hasattr(cloud_sync, "cloud_sync_manager"):
-            return cloud_sync.cloud_sync_manager
-        if hasattr(cloud_sync, "drive_sync"):
-            return cloud_sync.drive_sync
-    except Exception:
-        pass
-    return None
-
-
-def is_valid_tw_stock_name(name: str) -> bool:
-    """
-    通用名稱驗證：
-    1. 長度在 1 到 10 個字元內（支援一般中文、世芯-KY、GIS-KY、TPK-KY）
-    2. 排除 yfinance 常見的長英文全名與公司結尾關鍵字
-    """
-    if not name or not isinstance(name, str):
-        return False
-    clean_name = name.strip()
-    if len(clean_name) > 10 or len(clean_name) == 0:
-        return False
-    upper_name = clean_name.upper()
-    invalid_keywords = ['INC', 'LTD', 'CORP', 'HOLDING', 'TECH', 'CO.', 'LIMITED']
-    if any(kw in upper_name for kw in invalid_keywords):
-        return False
-    return True
-
-
-def load_stock_names_cache() -> Dict[str, str]:
-    if os.path.exists(STOCK_NAMES_CACHE_PATH):
+    if os.path.exists(NAMES_CACHE_FILE):
         try:
-            with open(STOCK_NAMES_CACHE_PATH, "r", encoding="utf-8") as f:
-                data = json.load(f)
-                if isinstance(data, dict):
-                    return data
+            with open(NAMES_CACHE_FILE, "r", encoding="utf-8") as f:
+                cached = json.load(f)
+                if pure_code in cached and cached[pure_code]:
+                    return cached[pure_code]
         except Exception:
             pass
-    return {}
 
-
-def save_stock_names_cache(cache: Dict[str, str]):
+    # 1. 查 TWSE (上市)
     try:
-        with open(STOCK_NAMES_CACHE_PATH, "w", encoding="utf-8") as f:
-            json.dump(cache, f, ensure_ascii=False, indent=2)
+        url_twse = f"https://isin.twse.com.tw/isin/single_main.jsp?owncode={pure_code}&stockname="
+        res = requests.get(url_twse, timeout=4)
+        if res.status_code == 200:
+            soup = BeautifulSoup(res.text, 'html.parser')
+            for r in soup.find_all('tr'):
+                cols = r.find_all('td')
+                if len(cols) >= 3 and cols[1].text.strip() == pure_code:
+                    c_name = cols[2].text.strip()
+                    if c_name:
+                        _save_name_cache(pure_code, c_name)
+                        return c_name
     except Exception:
         pass
 
+    # 2. 查 TPEx (上櫃)
+    try:
+        url_tpex = f"https://www.tpex.org.tw/web/stock/aftertrading/otc_quotes_no1430/stk_wn1430_result.php?l=zh-tw&stkno={pure_code}"
+        res_t = requests.get(url_tpex, timeout=4)
+        if res_t.status_code == 200:
+            data = res_t.json()
+            if 'aaData' in data and len(data['aaData']) > 0:
+                c_name = str(data['aaData'][0][1]).strip()
+                if c_name:
+                    _save_name_cache(pure_code, c_name)
+                    return c_name
+    except Exception:
+        pass
+
+    return pure_code
+
+def _save_name_cache(code: str, name: str):
+    COMMON_STOCK_NAMES[code] = name
+    try:
+        cached = {}
+        if os.path.exists(NAMES_CACHE_FILE):
+            with open(NAMES_CACHE_FILE, "r", encoding="utf-8") as f:
+                cached = json.load(f)
+        cached[code] = name
+        with open(NAMES_CACHE_FILE, "w", encoding="utf-8") as f:
+            json.dump(cached, f, ensure_ascii=False)
+    except Exception:
+        pass
+
+def load_stock_history():
+    data = []
+    if os.path.exists(HISTORY_FILE):
+        try:
+            with open(HISTORY_FILE, "r", encoding="utf-8") as f:
+                data = json.load(f)
+        except Exception:
+            data = []
+
+    if not isinstance(data, list) or not data:
+        data = [
+            {"code": "4526", "name": "東台"},
+            {"code": "1504", "name": "東元"},
+            {"code": "2382", "name": "廣達"},
+            {"code": "6456", "name": "GIS-KY"},
+            {"code": "2330", "name": "台積電"}
+        ]
+
+    # 清洗：確保 name 不為空且不等於 code
+    for item in data:
+        code = str(item.get("code", "")).strip()
+        curr_name = str(item.get("name", "")).strip()
+        if not curr_name or curr_name == code:
+            item["name"] = get_stock_chinese_name(code)
+
+    return data
+
+def save_stock_history(code: str, name: str = None):
+    """
+    輸入查詢或選單選取時調用：將該股票提升到清單第 1 筆 (Index 0)
+    """
+    code = str(code).strip()
+    if not code:
+        return load_stock_history()
+
+    c_name = name.strip() if name and name.strip() != code else get_stock_chinese_name(code)
+    history = load_stock_history()
+
+    # 移除舊有同代碼項
+    new_hist = [h for h in history if str(h.get("code")).strip() != code]
+    # 置頂
+    new_hist.insert(0, {"code": code, "name": c_name})
+    new_hist = new_hist[:30]
+
+    try:
+        with open(HISTORY_FILE, "w", encoding="utf-8") as f:
+            json.dump(new_hist, f, ensure_ascii=False, indent=2)
+    except Exception:
+        pass
+
+    return new_hist
+
+def update_stock_name_only(code: str, name: str):
+    """
+    上一檔/下一檔巡覽時調用：僅修正名稱缺漏，絕不變動歷史清單的排列順序
+    """
+    code = str(code).strip()
+    if not code or not name or name.strip() == code:
+        return
+    history = load_stock_history()
+    changed = False
+    for item in history:
+        if str(item.get("code")).strip() == code:
+            if item.get("name") != name:
+                item["name"] = name
+                changed = True
+            break
+    if changed:
+        try:
+            with open(HISTORY_FILE, "w", encoding="utf-8") as f:
+                json.dump(history, f, ensure_ascii=False, indent=2)
+        except Exception:
+            pass
+
+def clear_stock_history():
+    try:
+        if os.path.exists(HISTORY_FILE):
+            os.remove(HISTORY_FILE)
+    except Exception:
+        pass
+    return []
 
 class StockChipStorage:
     def __init__(self, pure_code: str):
-        self.pure_code = str(pure_code).strip().upper()
+        self.pure_code = str(pure_code).strip()
         self.db_name = f"data_{self.pure_code}.db"
-        self.db_path = str(DATA_DIR / self.db_name)
-
-        # 步驟 1：優先從 Google Drive 拉取雲端既有的 .db
-        sync = _get_cloud_sync()
-        if not IS_COLAB and sync and not os.path.exists(self.db_path):
-            try:
-                sync.pull_file(Path(self.db_path))
-            except (ssl.SSLError, OSError, Exception) as e:
-                logger.warning(f"從雲端拉取 {self.db_name} 失敗（已安全略過）: {e}")
-
-        # 步驟 2：初始化結構
+        self.db_path = os.path.join(STORAGE_DIR, self.db_name)
         self._init_db()
 
-        # 步驟 3：判定是否為初次
-        latest_date = self.get_latest_inst_date()
-        self.is_first_time = (latest_date is None)
-
     def _init_db(self):
-        for attempt in range(2):
-            try:
-                with sqlite3.connect(self.db_path) as conn:
-                    cur = conn.cursor()
-                    cur.execute("""
-                        CREATE TABLE IF NOT EXISTS institutional_investors (
-                            date TEXT PRIMARY KEY,
-                            foreign_net REAL,
-                            trust_net REAL,
-                            dealer_net REAL
-                        )
-                    """)
-                    cur.execute("""
-                        CREATE TABLE IF NOT EXISTS shareholding_distribution (
-                            date TEXT,
-                            level INTEGER,
-                            percent REAL,
-                            PRIMARY KEY (date, level)
-                        )
-                    """)
-                    cur.execute("""
-                        CREATE TABLE IF NOT EXISTS margin_short (
-                            date TEXT PRIMARY KEY,
-                            margin_diff REAL,
-                            short_diff REAL,
-                            margin_bal REAL,
-                            short_bal REAL
-                        )
-                    """)
-                    conn.commit()
-                    break
-            except sqlite3.DatabaseError:
-                if os.path.exists(self.db_path):
-                    os.remove(self.db_path)
+        with sqlite3.connect(self.db_path) as conn:
+            cur = conn.cursor()
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS institutional_investors (
+                    date TEXT PRIMARY KEY,
+                    foreign_net REAL,
+                    trust_net REAL,
+                    dealer_net REAL
+                )
+            """)
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS shareholding_distribution (
+                    date TEXT,
+                    level INTEGER,
+                    percent REAL,
+                    PRIMARY KEY (date, level)
+                )
+            """)
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS margin_short (
+                    date TEXT PRIMARY KEY,
+                    margin_diff REAL,
+                    short_diff REAL,
+                    margin_bal REAL,
+                    short_bal REAL
+                )
+            """)
+            conn.commit()
 
-    def get_latest_inst_date(self) -> Optional[str]:
+    def get_latest_inst_date(self):
         with sqlite3.connect(self.db_path) as conn:
             cur = conn.cursor()
             cur.execute("SELECT MAX(date) FROM institutional_investors")
             row = cur.fetchone()
             return row[0] if row and row[0] else None
 
-    def get_latest_holding_date(self) -> Optional[str]:
-        with sqlite3.connect(self.db_path) as conn:
-            cur = conn.cursor()
-            cur.execute("SELECT MAX(date) FROM shareholding_distribution")
-            row = cur.fetchone()
-            return row[0] if row and row[0] else None
-
-    def get_latest_margin_date(self) -> Optional[str]:
+    def get_latest_margin_date(self):
         with sqlite3.connect(self.db_path) as conn:
             cur = conn.cursor()
             cur.execute("SELECT MAX(date) FROM margin_short")
             row = cur.fetchone()
             return row[0] if row and row[0] else None
 
-    def save_institutional_data(self, records: list):
+    def save_institutional_data(self, records):
         if not records:
             return
         with sqlite3.connect(self.db_path) as conn:
             cur = conn.cursor()
-            cur.executemany("""
-                INSERT OR REPLACE INTO institutional_investors (date, foreign_net, trust_net, dealer_net)
-                VALUES (?, ?, ?, ?)
-            """, records)
+            cur.executemany("INSERT OR REPLACE INTO institutional_investors VALUES (?, ?, ?, ?)", records)
             conn.commit()
-        sync = _get_cloud_sync()
-        if not IS_COLAB and sync:
-            try:
-                sync.push_file(Path(self.db_path))
-            except (ssl.SSLError, OSError, Exception):
-                pass
 
-    def save_holding_data(self, records: list):
+    def save_margin_data(self, records):
         if not records:
             return
         with sqlite3.connect(self.db_path) as conn:
             cur = conn.cursor()
-            cur.executemany("""
-                INSERT OR REPLACE INTO shareholding_distribution (date, level, percent)
-                VALUES (?, ?, ?)
-            """, records)
+            cur.executemany("INSERT OR REPLACE INTO margin_short VALUES (?, ?, ?, ?, ?)", records)
             conn.commit()
-        sync = _get_cloud_sync()
-        if not IS_COLAB and sync:
-            try:
-                sync.push_file(Path(self.db_path))
-            except (ssl.SSLError, OSError, Exception):
-                pass
 
-    def save_margin_data(self, records: list):
+    def save_holding_data(self, records):
         if not records:
             return
         with sqlite3.connect(self.db_path) as conn:
             cur = conn.cursor()
-            cur.executemany("""
-                INSERT OR REPLACE INTO margin_short (date, margin_diff, short_diff, margin_bal, short_bal)
-                VALUES (?, ?, ?, ?, ?)
-            """, records)
+            cur.executemany("INSERT OR REPLACE INTO shareholding_distribution VALUES (?, ?, ?)", records)
             conn.commit()
-        sync = _get_cloud_sync()
-        if not IS_COLAB and sync:
-            try:
-                sync.push_file(Path(self.db_path))
-            except (ssl.SSLError, OSError, Exception):
-                pass
 
-    def load_institutional_df(self) -> pd.DataFrame:
+    def load_institutional_df(self):
         with sqlite3.connect(self.db_path) as conn:
             df = pd.read_sql("SELECT date, foreign_net, trust_net, dealer_net FROM institutional_investors ORDER BY date", conn)
             if not df.empty:
                 df['date'] = pd.to_datetime(df['date']).dt.normalize()
             return df
 
-    def load_holding_df(self) -> pd.DataFrame:
-        with sqlite3.connect(self.db_path) as conn:
-            df = pd.read_sql("SELECT date, level, percent FROM shareholding_distribution ORDER BY date, level", conn)
-            if not df.empty:
-                df['date'] = pd.to_datetime(df['date']).dt.normalize()
-            return df
-
-    def load_margin_df(self) -> pd.DataFrame:
+    def load_margin_df(self):
         with sqlite3.connect(self.db_path) as conn:
             df = pd.read_sql("SELECT * FROM margin_short ORDER BY date", conn)
             if not df.empty:
                 df['date'] = pd.to_datetime(df['date']).dt.normalize()
             return df
 
-
-def load_stock_history() -> List[dict]:
-    global _CACHED_DRIVE_CODES, _HISTORY_PULLED
-    history_file = Path(HISTORY_FILE_PATH)
-    sync = _get_cloud_sync()
-
-    if not IS_COLAB and sync and not _HISTORY_PULLED:
-        for attempt in range(3):
-            try:
-                sync.pull_file(history_file)
-                _HISTORY_PULLED = True
-                break
-            except (ssl.SSLError, OSError, Exception) as e:
-                if attempt == 2:
-                    logger.warning(f"同步 stock_history.json 失敗: {e}")
-                time.sleep(1)
-
-    existing_history = []
-    if history_file.exists():
-        try:
-            with open(history_file, "r", encoding="utf-8") as f:
-                data = json.load(f)
-                if isinstance(data, list):
-                    for item in data:
-                        if isinstance(item, dict) and "code" in item:
-                            c = str(item["code"]).strip().upper()
-                            n = str(item.get("name", c))
-                            if not is_valid_tw_stock_name(n):
-                                n = c
-                            existing_history.append({"code": c, "name": n})
-        except Exception:
-            pass
-
-    if _CACHED_DRIVE_CODES is None:
-        drive_codes = []
-        if not IS_COLAB and sync and hasattr(sync, "service") and sync.service and sync.folder_id:
-            try:
-                q = f"'{sync.folder_id}' in parents and trashed = false and name contains '.db'"
-                res = sync.service.files().list(q=q, fields="files(name)").execute()
-                for item in res.get("files", []):
-                    m = re.search(r'data_(\w+)\.db', item.get("name", ""))
-                    if m and m.group(1) != "XXXX":
-                        drive_codes.append(m.group(1).upper())
-            except Exception as e:
-                logger.warning(f"掃描雲端 db 清單略過: {e}")
-        _CACHED_DRIVE_CODES = drive_codes
-    else:
-        drive_codes = _CACHED_DRIVE_CODES
-
-    local_codes = []
-    try:
-        for f in os.listdir(str(DATA_DIR)):
-            m = re.search(r'data_(\w+)\.db', f)
-            if m and m.group(1) != "XXXX":
-                local_codes.append(m.group(1).upper())
-    except Exception:
-        pass
-
-    ordered_list = []
-    seen = set()
-    for item in existing_history:
-        code = item.get("code")
-        if code and code not in seen:
-            ordered_list.append(item)
-            seen.add(code)
-
-    name_cache = load_stock_names_cache()
-    all_found_codes = list(dict.fromkeys(drive_codes + local_codes))
-    for code in all_found_codes:
-        if code not in seen:
-            raw_n = name_cache.get(code, code)
-            c_name = raw_n if is_valid_tw_stock_name(raw_n) else code
-            ordered_list.append({"code": code, "name": c_name})
-            seen.add(code)
-
-    if ordered_list:
-        return ordered_list
-    return [{"code": "2330", "name": "台積電"}]
-
-
-def save_stock_history(code: str, name: str) -> List[dict]:
-    c = str(code).strip().upper()
-    n = str(name).strip()
-    if not is_valid_tw_stock_name(n):
-        n = c
-
-    name_cache = load_stock_names_cache()
-    if is_valid_tw_stock_name(n) and n != c:
-        name_cache[c] = n
-        save_stock_names_cache(name_cache)
-
-    current = load_stock_history()
-    new_list = [{"code": c, "name": n}]
-    for item in current:
-        if item.get("code") != c:
-            new_list.append(item)
-
-    history_file = Path(HISTORY_FILE_PATH)
-    try:
-        with open(history_file, "w", encoding="utf-8") as f:
-            json.dump(new_list, f, ensure_ascii=False, indent=2)
-    except Exception:
-        pass
-
-    sync = _get_cloud_sync()
-    if not IS_COLAB and sync:
-        try:
-            sync.push_file(history_file)
-        except (ssl.SSLError, OSError, Exception):
-            pass
-
-    return new_list
-
-
-def clear_stock_history() -> List[dict]:
-    history_file = Path(HISTORY_FILE_PATH)
-    default_list = [{"code": "2330", "name": "台積電"}]
-    try:
-        with open(history_file, "w", encoding="utf-8") as f:
-            json.dump(default_list, f, ensure_ascii=False, indent=2)
-    except Exception:
-        pass
-
-    sync = _get_cloud_sync()
-    if not IS_COLAB and sync:
-        try:
-            sync.push_file(history_file)
-        except (ssl.SSLError, OSError, Exception):
-            pass
-
-    return default_list
+    def load_holding_df(self):
+        with sqlite3.connect(self.db_path) as conn:
+            df = pd.read_sql("SELECT date, level, percent FROM shareholding_distribution ORDER BY date, level", conn)
+            if not df.empty:
+                df['date'] = pd.to_datetime(df['date']).dt.normalize()
+            return df
