@@ -1,12 +1,13 @@
 """
 chart_builder.py - Plotly 圖表建構模組
-版本: 202610301645
-- 換手率 ≥10% 與 ≥20% 標記於當日成交量柱上方
-- 主圖 Y 軸中文徹底移除
-- 支援 shares_outstanding 正確傳遞計算換手率
+版本: 202610301650
+- 移除換手率折線圖，主圖第 2 列改為單 Y 軸成交量
+- 換手率 >=10% 於成交量柱頂標示藍色正三角 ▲
+- 換手率 >=20% 於成交量柱頂標示黃色倒三角 ▼
+- 主圖 Y 軸中文徹底移除，各子圖鎖定純水平平移 (fixedrange=True)
 """
 
-VERSION_TAG = "202610301645"
+VERSION_TAG = "202610301650"
 
 from typing import Tuple, Optional
 import numpy as np
@@ -39,7 +40,7 @@ def build_split_figures(
     c_name = fetch_stock_name(raw_ticker)
     market = "上市" if full_ticker.endswith(".TW") else "上櫃"
 
-    # 指標與籌碼計算（傳入股數）
+    # 指標與籌碼計算
     df = calculate_all_indicators(
         df=df_raw,
         pure_code=raw_ticker,
@@ -131,17 +132,12 @@ def build_split_figures(
     r_pad = max(0.5, (r_max - r_min) * 0.15) if r_max > r_min else 1.0
     ratio_range = [max(0, r_min - r_pad), r_max + r_pad]
 
-    to_clean = sub_df['Turnover_Rate'].dropna()
-    to_max = float(to_clean.max()) if not to_clean.empty else 1.0
-    to_range = [0, max(1.0, to_max * 1.35)]
-
     top_height = 340 if is_mobile else 380
     btm_height = 1050 if is_mobile else 1150
 
-    # ===== 上半部主圖 =====
+    # ===== 上半部主圖 (單一成交量軸，不開 secondary_y) =====
     fig_top = make_subplots(
-        rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.035, row_heights=[0.72, 0.28],
-        specs=[[{}], [{"secondary_y": True}]]
+        rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.035, row_heights=[0.72, 0.28]
     )
     fig_top.add_trace(go.Candlestick(
         x=date_str_list, open=df['Open'], high=df['High'], low=df['Low'], close=df['Close'],
@@ -170,13 +166,10 @@ def build_split_figures(
             textfont=dict(family='Arial Black, sans-serif', size=13, color='#e74c3c'), hoverinfo='none'
         ), row=1, col=1)
 
-    # 成交量柱狀圖 (主軸)
-    fig_top.add_trace(go.Bar(x=date_str_list, y=df['Volume_Sheets'], marker_color=vol_colors, name='成交量', hoverinfo='none'), secondary_y=False, row=2, col=1)
-    
-    # 換手率加粗折線 (副軸)
-    fig_top.add_trace(go.Scatter(x=date_str_list, y=df['Turnover_Rate'], line=dict(color='#1e3799', width=3.9), connectgaps=True, name='換手率', hoverinfo='none'), secondary_y=True, row=2, col=1)
+    # 成交量柱狀圖
+    fig_top.add_trace(go.Bar(x=date_str_list, y=df['Volume_Sheets'], marker_color=vol_colors, name='成交量', hoverinfo='none'), row=2, col=1)
 
-    # 換手率 ≥10% 與 ≥20% 標記在成交量柱上方
+    # 換手率標記：>=10% 為藍色正三角 ▲，>=20% 為黃色倒三角 ▼
     to_series = df['Turnover_Rate']
     to_10_mask = (to_series >= 10.0) & (to_series < 20.0)
     to_20_mask = (to_series >= 20.0)
@@ -184,24 +177,24 @@ def build_split_figures(
     if to_10_mask.any():
         fig_top.add_trace(go.Scatter(
             x=[date_str_list[i] for i in range(total_len) if to_10_mask.iloc[i]],
-            y=df.loc[to_10_mask, 'Volume_Sheets'] * 1.05,
+            y=df.loc[to_10_mask, 'Volume_Sheets'] * 1.06,
             mode='text',
-            text=['<b>10%</b>' for _ in range(to_10_mask.sum())],
+            text=['▲' for _ in range(to_10_mask.sum())],
             textposition='top center',
-            textfont=dict(family='Arial Black, sans-serif', size=11, color='#f39c12'),
+            textfont=dict(family='Arial Black, sans-serif', size=14, color='#1e3799'),
             showlegend=False, hoverinfo='none'
-        ), secondary_y=False, row=2, col=1)
+        ), row=2, col=1)
 
     if to_20_mask.any():
         fig_top.add_trace(go.Scatter(
             x=[date_str_list[i] for i in range(total_len) if to_20_mask.iloc[i]],
-            y=df.loc[to_20_mask, 'Volume_Sheets'] * 1.05,
+            y=df.loc[to_20_mask, 'Volume_Sheets'] * 1.06,
             mode='text',
-            text=['<b>20%</b>' for _ in range(to_20_mask.sum())],
+            text=['▼' for _ in range(to_20_mask.sum())],
             textposition='top center',
-            textfont=dict(family='Arial Black, sans-serif', size=12, color='#e74c3c'),
+            textfont=dict(family='Arial Black, sans-serif', size=14, color='#f1c40f'),
             showlegend=False, hoverinfo='none'
-        ), secondary_y=False, row=2, col=1)
+        ), row=2, col=1)
 
     fig_top.update_layout(
         title=dict(text=f'{c_name or raw_ticker} ({market}) 多指標+籌碼技術分析圖({VERSION_TAG})', font=dict(size=16)),
@@ -214,10 +207,9 @@ def build_split_figures(
     fig_top.update_xaxes(type='category', range=[start_idx - 0.5, end_idx + 0.5], domain=[0, 1], row=1, col=1)
     fig_top.update_xaxes(type='category', range=[start_idx - 0.5, end_idx + 0.5], domain=[0, 1], showticklabels=True, tickvals=month_ticks_vals, ticktext=month_ticks_text, row=2, col=1)
 
-    # 移除中文標示
+    # 移除中文標籤
     fig_top.update_yaxes(title_text='', range=[p_min - (p_max - p_min) * 0.08, p_max + p_pad], fixedrange=True, row=1, col=1)
-    fig_top.update_yaxes(title_text='', range=[0, vol_upper], fixedrange=True, secondary_y=False, row=2, col=1)
-    fig_top.update_yaxes(title_text='', range=to_range, fixedrange=True, secondary_y=True, showgrid=False, showticklabels=False, row=2, col=1)
+    fig_top.update_yaxes(title_text='', range=[0, vol_upper], fixedrange=True, row=2, col=1)
 
     # ===== 下半部副圖 =====
     fig_btm = make_subplots(
