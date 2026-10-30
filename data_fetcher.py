@@ -1,10 +1,9 @@
 """
 台股技術與籌碼分析系統 - 資料擷取模組
-負責股價歷史資料、三大法人、資券餘額、集保分散表及中文名稱抓取。
 """
 
 MODULE_NAME = "data_fetcher"
-MODULE_VERSION = "202610300900"
+MODULE_VERSION = "202610301200"
 
 import os
 import requests
@@ -17,12 +16,8 @@ from storage import StockChipStorage, is_valid_tw_stock_name
 
 
 def fetch_stock_name(pure_code: str) -> str:
-    """
-    強固型中文名稱抓取：依序透過 TWSE/TPEX 查詢、Yahoo Finance 標題爬蟲與 FinMind 資訊。
-    """
     pure_code = str(pure_code).strip().upper()
     
-    # 1. 嘗試從 FinMind 取得台灣股票基本資料
     try:
         api_token = os.environ.get("FINMIND_TOKEN", "")
         dl = DataLoader()
@@ -38,7 +33,6 @@ def fetch_stock_name(pure_code: str) -> str:
     except Exception:
         pass
 
-    # 2. 嘗試從 Yahoo Finance 抓取網頁標題解析
     try:
         url = f"https://finance.yahoo.com/quote/{pure_code}.TW"
         headers = {'User-Agent': 'Mozilla/5.0'}
@@ -48,7 +42,6 @@ def fetch_stock_name(pure_code: str) -> str:
             title_tag = soup.find('title')
             if title_tag:
                 title_text = title_tag.text
-                # 範例格式: "台積電 (2330.TW) Stock Price..."
                 if '(' in title_text:
                     name = title_text.split('(')[0].strip()
                     if is_valid_tw_stock_name(name):
@@ -56,7 +49,6 @@ def fetch_stock_name(pure_code: str) -> str:
     except Exception:
         pass
 
-    # 3. 嘗試上櫃尾綴 .TWO
     try:
         url = f"https://finance.yahoo.com/quote/{pure_code}.TWO"
         headers = {'User-Agent': 'Mozilla/5.0'}
@@ -77,9 +69,6 @@ def fetch_stock_name(pure_code: str) -> str:
 
 
 def sync_chip_data(pure_code: str, storage: StockChipStorage, status_placeholder=None):
-    """
-    同步三大法人、資券餘額與集保大戶資料
-    """
     api_token = os.environ.get("FINMIND_TOKEN", "")
     dl = DataLoader()
     if api_token:
@@ -87,16 +76,13 @@ def sync_chip_data(pure_code: str, storage: StockChipStorage, status_placeholder
 
     start_date = (datetime.now() - timedelta(days=365)).strftime('%Y-%m-%d')
     
-    # 1. 三大法人
     inst_df = pd.DataFrame()
     try:
         df_inst = dl.taiwan_stock_institutional_investors(
             stock_id=pure_code, start_date=start_date
         )
         if not df_inst.empty:
-            # 整理三大法人買賣超
             piv = df_inst.pivot_table(index='date', columns='name', values='buy_sell', aggfunc='sum').fillna(0)
-            # 對應欄位：外資、投信、自營商
             cols = piv.columns
             f_col = next((c for c in cols if '外資' in c), None)
             t_col = next((c for c in cols if '投信' in c), None)
@@ -113,7 +99,6 @@ def sync_chip_data(pure_code: str, storage: StockChipStorage, status_placeholder
     except Exception:
         inst_df = storage.load_institutional_df()
 
-    # 2. 資券餘額
     margin_df = pd.DataFrame()
     try:
         df_margin = dl.taiwan_stock_margin_purchase_short_sale(
@@ -133,11 +118,8 @@ def sync_chip_data(pure_code: str, storage: StockChipStorage, status_placeholder
     except Exception:
         margin_df = storage.load_margin_df()
 
-    # 3. 集保戶股權分散表 (TDCC OpenData)
     holding_df = pd.DataFrame()
     try:
-        url = f"https://www.tdcc.com.tw/portal/zh/smc/infocode?stockId={pure_code}"
-        # 透過 FinMind 或 TDCC OpenData 取得集保資料
         df_holding = dl.taiwan_stock_holding_shares_per(stock_id=pure_code, start_date=start_date)
         if not df_holding.empty:
             records = []
