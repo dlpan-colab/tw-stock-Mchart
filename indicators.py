@@ -5,7 +5,7 @@
 """
 
 MODULE_NAME = "indicators"
-MODULE_VERSION = "202610301800"
+MODULE_VERSION = "202610301900"
 
 import numpy as np
 import pandas as pd
@@ -35,7 +35,7 @@ def calculate_all_indicators(
         else:
             df['Volume_Sheets'] = 0.0
 
-    # 1. 移動平均線 (MA) - 使用 Pandas 內建 rolling 確保 100% 穩定相容
+    # 1. 移動平均線 (MA) - 使用 Pandas 內建 rolling 確保穩定相容
     df['MA5'] = df['Close'].rolling(window=5).mean()
     df['MA20'] = df['Close'].rolling(window=20).mean()
     df['MA60'] = df['Close'].rolling(window=60).mean()
