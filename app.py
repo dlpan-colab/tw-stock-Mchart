@@ -1,8 +1,8 @@
 """
 app.py - 主應用程式介面與生命週期控制
-版本: 202610311915
+版本: 202610311950
 """
-MODULE_VERSION = "202610311915"
+MODULE_VERSION = "202610311950"
 
 import re
 import datetime
@@ -164,7 +164,7 @@ if fig_top is not None:
     if c_name and c_name != target_code:
         update_stock_name_only(target_code, c_name)
 
-    total_h = 1650 if is_mobile else 1750
+    total_h = 1850 if is_mobile else 1950
     html_content = get_component_html(
         fig_top, fig_btm, df, target_code, s_m1, s_m2, end_idx, disp_n, is_mobile=is_mobile
     )
