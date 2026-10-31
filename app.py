@@ -81,12 +81,12 @@ def handle_next():
     elif len(history_codes) > 0:
         st.session_state.stock_id = history_codes[0]
 
-# 3. 第三行：[上一檔][下一檔]功能鍵
-c1, c2, _ = st.columns([2, 2, 8])
+# 第三行：[上一檔][下一檔]功能鍵
+c1, c2, _ = st.columns([1, 1, 3])
 with c1:
-    st.button("◀ 上一檔", key="top_prev", on_click=handle_prev)
+    st.button("◀ 上一檔", key="top_prev", on_click=handle_prev, use_container_width=True)
 with c2:
-    st.button("下一檔 ▶", key="top_next", on_click=handle_next)
+    st.button("下一檔 ▶", key="top_next", on_click=handle_next, use_container_width=True)
 
 # 側邊欄設定
 with st.sidebar:
@@ -205,10 +205,11 @@ if df is not None and not df.empty:
     st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
 
     # 第三塊資訊區下方：[◀ 上一檔] [下一檔 ▶] 功能鍵
-    b1, b2, _ = st.columns([2, 2, 8])
-    with b1:
-        st.button("◀ 上一檔", key="bottom_prev", on_click=handle_prev)
-    with b2:
-        st.button("下一檔 ▶", key="bottom_next", on_click=handle_next)
+b1, b2, _ = st.columns([1, 1, 3])
+with b1:
+    st.button("◀ 上一檔", key="bottom_prev", on_click=handle_prev, use_container_width=True)
+with b2:
+    st.button("下一檔 ▶", key="bottom_next", on_click=handle_next, use_container_width=True)
+    
 else:
     st.error(f"查無標的代碼 {current_code} 之相關資料。")
