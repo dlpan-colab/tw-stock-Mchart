@@ -1,12 +1,12 @@
 """
 frontend.py - 前端 HTML/CSS 渲染與手勢/游標跨圖同步模組
-版本: 202610312150
+版本: 202610312148
 """
 
 import os
 import re
 
-MODULE_VERSION = "202610312150"
+MODULE_VERSION = "202610312148"
 
 
 def get_system_version() -> str:
@@ -102,6 +102,16 @@ js_template = """
     display: none;
     z-index: 999;
   }
+  .sync-price-line {
+    position: absolute;
+    left: 80px;
+    right: 15px;
+    height: 1px;
+    border-top: 1px dashed rgba(44, 62, 80, 0.75);
+    pointer-events: none;
+    display: none;
+    z-index: 999;
+  }
 </style>
 
 <div class="plot-main-container" id="__CHART_ID___container">
@@ -109,6 +119,7 @@ js_template = """
   
   <div id="__CHART_ID___top" class="touch-plot-box" style="height: __TOP_H__;">
     <div id="__CHART_ID___line_top" class="sync-crosshair-line"></div>
+    <div id="__CHART_ID___line_price" class="sync-price-line"></div>
   </div>
 
   <div class="middle-inserted-bar">
@@ -145,6 +156,7 @@ js_template = """
   var elBtm = document.getElementById('__CHART_ID___btm');
   var lineTop = document.getElementById('__CHART_ID___line_top');
   var lineBtm = document.getElementById('__CHART_ID___line_btm');
+  var linePrice = document.getElementById('__CHART_ID___line_price');
   
   var info1 = document.getElementById('__CHART_ID___info1');
   var infoTech = document.getElementById('__CHART_ID___info_tech');
@@ -226,7 +238,6 @@ js_template = """
   }).then(function() {
     updateAllPanes(initEnd);
 
-    // 雙圖縮放平移同步
     function syncXAxis(srcEl, destEl) {
       srcEl.on('plotly_relayout', function(ed) {
         if (isUpdating) return;
@@ -260,12 +271,12 @@ js_template = """
     syncXAxis(elTop, elBtm);
     syncXAxis(elBtm, elTop);
 
-    // 游標與手機觸控統一分派
     function processPointer(clientX) {
       var rect = elTop.getBoundingClientRect();
       var relX = clientX - rect.left;
 
       var xaxis = elTop._fullLayout ? elTop._fullLayout.xaxis : null;
+      var yaxis = elTop._fullLayout ? elTop._fullLayout.yaxis : null;
       if (!xaxis || typeof xaxis.p2c !== 'function') return;
 
       var coord = xaxis.p2c(relX - (xaxis._offset || 0));
@@ -279,6 +290,12 @@ js_template = """
         lineBtm.style.left = snapX + 'px';
         lineTop.style.display = 'block';
         lineBtm.style.display = 'block';
+
+        if (yaxis && typeof yaxis.c2p === 'function' && closes[idx] !== null && closes[idx] !== undefined) {
+          var snapY = yaxis.c2p(closes[idx]) + (yaxis._offset || 0);
+          linePrice.style.top = snapY + 'px';
+          linePrice.style.display = 'block';
+        }
       }
     }
 
@@ -295,6 +312,7 @@ js_template = """
     function onPointerLeave() {
       lineTop.style.display = 'none';
       lineBtm.style.display = 'none';
+      linePrice.style.display = 'none';
     }
 
     container.addEventListener('mousemove', onPointerMove);
