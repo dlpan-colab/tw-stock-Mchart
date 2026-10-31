@@ -1,12 +1,12 @@
 """
 app.py - 主應用程式介面與生命週期控制
-版本: 202610312130
+版本: 202610312150
 """
 
 import streamlit as st
 import streamlit.components.v1 as components
 
-MODULE_VERSION = "202610312130"
+MODULE_VERSION = "202610312150"
 
 from storage import load_stock_history, save_stock_history, clear_stock_history
 from chart_builder import build_split_figures
@@ -98,7 +98,25 @@ with st.sidebar:
 
 st.subheader(f"台股技術與籌碼分析 v{MODULE_VERSION}")
 
+# 頂部：上一檔 / 下一檔 功能列
 stock_id = st.session_state.stock_id
+hist_records = load_stock_history()
+hist_codes = [str(item.get("code")).strip() for item in hist_records if item.get("code")]
+
+if hist_codes and stock_id in hist_codes:
+    curr_idx = hist_codes.index(stock_id)
+    top_c1, top_c2 = st.columns(2)
+    with top_c1:
+        if st.button("◀ 上一檔", key="btn_top_prev", use_container_width=True):
+            prev_idx = (curr_idx - 1) % len(hist_codes)
+            st.session_state.stock_id = hist_codes[prev_idx]
+            st.rerun()
+    with top_c2:
+        if st.button("下一檔 ▶", key="btn_top_next", use_container_width=True):
+            next_idx = (curr_idx + 1) % len(hist_codes)
+            st.session_state.stock_id = hist_codes[next_idx]
+            st.rerun()
+
 fig_top, fig_btm, df, c_name, end_idx, disp_n = build_split_figures(
     raw_ticker=stock_id,
     period=st.session_state.period,
@@ -113,7 +131,7 @@ if fig_top is None or fig_btm is None or df is None or df.empty:
     st.error(f"無法取得股票代號 {stock_id} 之歷史行情資料，請確認網路連線或稍後點擊查詢重試。")
     st.stop()
 
-top_height = 540 if is_mobile else 580
+top_height = 420 if is_mobile else 460
 btm_height = 1180 if is_mobile else 1220
 
 html_content = get_component_html(
@@ -128,25 +146,24 @@ html_content = get_component_html(
     initial_end_idx=end_idx
 )
 
-total_h = 2350 if is_mobile else 2450
+total_h = 2250 if is_mobile else 2350
 components.html(
     html_content,
     height=total_h,
     scrolling=False
 )
 
-hist_records = load_stock_history()
-hist_codes = [str(item.get("code")).strip() for item in hist_records if item.get("code")]
+# 底部：上一檔 / 下一檔 功能列
 if hist_codes and stock_id in hist_codes:
     curr_idx = hist_codes.index(stock_id)
-    c1, c2 = st.columns(2)
-    with c1:
-        if st.button("◀ 上一檔", use_container_width=True):
+    btm_c1, btm_c2 = st.columns(2)
+    with btm_c1:
+        if st.button("◀ 上一檔", key="btn_btm_prev", use_container_width=True):
             prev_idx = (curr_idx - 1) % len(hist_codes)
             st.session_state.stock_id = hist_codes[prev_idx]
             st.rerun()
-    with c2:
-        if st.button("下一檔 ▶", use_container_width=True):
+    with btm_c2:
+        if st.button("下一檔 ▶", key="btn_btm_next", use_container_width=True):
             next_idx = (curr_idx + 1) % len(hist_codes)
             st.session_state.stock_id = hist_codes[next_idx]
             st.rerun()
