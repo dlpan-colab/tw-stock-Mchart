@@ -1,12 +1,11 @@
 """
-frontend.py - 前端互動視圖模組
-版本: 202610311740
+frontend.py - 前端 HTML/CSS 渲染與版本彙整模組
+版本: 202610311930
 """
+MODULE_VERSION = "202610311930"
 
 import json
 import pandas as pd
-
-MODULE_VERSION = "202610311740"
 
 def get_system_version() -> str:
     versions = [MODULE_VERSION]
@@ -23,23 +22,36 @@ def get_system_version() -> str:
 
 SYSTEM_VERSION = get_system_version()
 VERSION_TAG = SYSTEM_VERSION
-
+########################################################################
 def get_legend_html(version_tag: str = None) -> str:
     """
-    僅保留簡潔的版本識別標籤與運作指示燈，刪除冗長文字圖例
+    台股技術與籌碼分析[頂部版本識別]標籤與運作指示燈
     """
     tag = version_tag if version_tag else SYSTEM_VERSION
     return f"""
-<style>
-  @keyframes app-spin {{ 0% {{ transform: rotate(0deg); }} 100% {{ transform: rotate(360deg); }} }}
-  .app-loading-ring {{ display: inline-block; width: 13px; height: 13px; border: 2px solid rgba(41, 128, 185, 0.25); border-top: 2px solid #2980b9; border-radius: 50%; animation: app-spin 0.8s linear infinite; vertical-align: middle; margin-left: 6px; }}
-</style>
-<div style="font-size: 14px; margin-bottom: 4px; padding: 2px 8px; display: inline-flex; align-items: center; background: #f8fafc; border-radius: 4px; border: 1px solid #e2e8f0;">
-  <span style="background:#2c3e50; color:#ffffff; padding: 1px 6px; border-radius: 4px; font-weight:bold; font-size:12px;">v{tag}</span>
-  <span id="app_loading_spinner" class="app-loading-ring" style="display:none;" title="運作中..."></span>
-</div>
-"""
-
+    <style>
+    @keyframes app-spin {{
+        0% {{ transform: rotate(0deg); }}
+        100% {{ transform: rotate(360deg); }}
+    }}
+    .app-loading-ring {{
+        display: inline-block;
+        width: 13px;
+        height: 13px;
+        border: 2px solid rgba(41, 128, 185, 0.25);
+        border-top: 2px solid #2980b9;
+        border-radius: 50%;
+        animation: app-spin 0.8s linear infinite;
+        vertical-align: middle;
+        margin-left: 6px;
+    }}
+    </style>
+    <div style="font-size: 14px; margin-bottom: 4px; padding: 2px 8px; display: inline-flex; align-items: center; background: #f8fafc; border-radius: 4px; border: 1px solid #e2e8f0;">
+        <span style="background:#2c3e50; color:#ffffff; padding: 2px 8px; border-radius: 4px; font-weight:bold; font-size:12px;">台股技術與籌碼分析 v{tag}</span>
+        <span id="app_loading_spinner" class="app-loading-ring" style="display:none;" title="運作中..."></span>
+    </div>
+    """
+###################################################################
 def get_component_html(fig_top, fig_btm, df, raw_ticker, major1_thresh, major2_thresh, initial_end_idx, initial_disp_days, is_mobile=False) -> str:
     chart_id = f"chart_{str(raw_ticker).replace('.', '_')}"
     top_h_css = "340px" if is_mobile else "380px"
