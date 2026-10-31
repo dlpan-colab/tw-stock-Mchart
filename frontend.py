@@ -1,11 +1,11 @@
 """
 frontend.py - 前端 HTML/CSS 渲染與版本彙整模組
-版本: 202610312015
+版本: 202610312020
 """
 import os
 import re
 
-MODULE_VERSION = "202610312015"
+MODULE_VERSION = "202610312020"
 
 def get_system_version() -> str:
     """自動萃取各模組版本並回傳系統最大版本號"""
@@ -433,3 +433,6 @@ def render_interactive_chart_html(
     html = html.replace("__INITIAL_END_IDX__", str(end_idx))
 
     return html
+
+# 相容 app.py 的函式名稱呼叫
+get_component_html = render_interactive_chart_html
