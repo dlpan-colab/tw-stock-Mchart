@@ -1,12 +1,12 @@
 """
 app.py - 主應用程式介面與生命週期控制
-版本: 202610312150
+版本: 202610312155
 """
 
 import streamlit as st
 import streamlit.components.v1 as components
 
-MODULE_VERSION = "202610312150"
+MODULE_VERSION = "202610312155"
 
 from storage import load_stock_history, save_stock_history, clear_stock_history
 from chart_builder import build_split_figures
@@ -146,7 +146,7 @@ html_content = get_component_html(
     initial_end_idx=end_idx
 )
 
-total_h = 2250 if is_mobile else 2350
+total_h = 1820 if is_mobile else 1880
 components.html(
     html_content,
     height=total_h,
