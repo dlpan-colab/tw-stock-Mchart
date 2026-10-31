@@ -1,30 +1,15 @@
 """
 app.py - 主應用程式介面與生命週期控制
-版本: 202610312052
+版本: 202610312054
 """
 import streamlit as st
 import streamlit.components.v1 as components
 
-MODULE_VERSION = "202610312052"
+MODULE_VERSION = "202610312054"
 
-from storage import load_stock_history, save_stock_history, clear_stock_history, get_stock_chinese_name
-from indicators import calculate_all_indicators
-from chart_builder import plot_stock_charts
-from frontend import get_legend_html
-
-try:
-    from data_fetcher import fetch_stock_data
-except ImportError:
-    import yfinance as yf
-    def fetch_stock_data(stock_id: str, period: str = "1y"):
-        code = f"{stock_id}.TW" if not (stock_id.endswith(".TW") or stock_id.endswith(".TWO")) else stock_id
-        df = yf.download(code, period=period, progress=False)
-        if df.empty and not stock_id.endswith(".TWO"):
-            df = yf.download(f"{stock_id}.TWO", period=period, progress=False)
-        if hasattr(df.columns, 'levels') and len(df.columns.levels) > 1:
-            df.columns = df.columns.get_level_values(0)
-        df = df.reset_index()
-        return df
+from storage import load_stock_history, save_stock_history, clear_stock_history
+from chart_builder import build_split_figures
+from frontend import get_legend_html, get_component_html
 
 st.set_page_config(
     page_title="台股多指標+籌碼技術分析",
@@ -92,10 +77,11 @@ with st.sidebar:
     st.session_state.disp_days = st.number_input("顯示日數", min_value=10, max_value=240, value=default_days, step=5)
 
     use_target_date = st.checkbox("指定基準日 (復盤模式)")
-    target_date_val = ""
+    target_date_val = None
     if use_target_date:
         target_date_input = st.text_input("基準日 (YYYY-MM-DD)", value="")
-        target_date_val = target_date_input.strip()
+        if target_date_input.strip():
+            target_date_val = target_date_input.strip()
 
     m1_thresh = st.number_input("大戶門檻1 (張)", min_value=100, max_value=2000, value=1000, step=100)
     m2_thresh = st.number_input("大戶門檻2 (張)", min_value=100, max_value=1000, value=400, step=100)
@@ -107,33 +93,34 @@ with st.sidebar:
 st.markdown(get_legend_html(), unsafe_allow_html=True)
 
 stock_id = st.session_state.stock_id
-stock_name = get_stock_chinese_name(stock_id)
 
-df = fetch_stock_data(stock_id, period=st.session_state.period)
+fig_top, fig_btm, df, c_name, end_idx, disp_n = build_split_figures(
+    raw_ticker=stock_id,
+    period=st.session_state.period,
+    display_days=st.session_state.disp_days,
+    base_date=target_date_val,
+    major1_thresh=m1_thresh,
+    major2_thresh=m2_thresh,
+    is_mobile=is_mobile
+)
 
-if df is None or df.empty:
+if fig_top is None or fig_btm is None or df is None or df.empty:
     st.error(f"無法取得股票代號 {stock_id} 之歷史行情資料，請檢查代號或網路連線。")
     st.stop()
 
-df = calculate_all_indicators(df, m1_thresh=m1_thresh, m2_thresh=m2_thresh)
+top_height = 540 if is_mobile else 580
+btm_height = 1180 if is_mobile else 1220
 
-initial_end_idx = len(df) - 1
-if target_date_val:
-    date_strs = df['Date'].dt.strftime('%Y-%m-%d').tolist() if 'Date' in df.columns else [str(x)[:10] for x in df.index]
-    if target_date_val in date_strs:
-        initial_end_idx = date_strs.index(target_date_val)
-    else:
-        st.warning(f"指定基準日 {target_date_val} 不在交易資料範圍內，將顯示最新交易日。")
-
-html_content = plot_stock_charts(
+html_content = get_component_html(
+    fig_top=fig_top,
+    fig_btm=fig_btm,
     df=df,
-    stock_id=stock_id,
-    stock_name=stock_name,
-    is_mobile=is_mobile,
     m1_thresh=m1_thresh,
     m2_thresh=m2_thresh,
-    initial_disp_days=st.session_state.disp_days,
-    initial_end_idx=initial_end_idx
+    top_height=top_height,
+    btm_height=btm_height,
+    initial_disp_days=disp_n,
+    initial_end_idx=end_idx
 )
 
 total_h = 2150 if is_mobile else 2250
