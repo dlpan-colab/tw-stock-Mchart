@@ -1,16 +1,15 @@
 """
-frontend.py - 前端 HTML/CSS 渲染與版本彙整模組
-版本: 202610312130
+frontend.py - 前端 HTML/CSS 渲染與手勢/游標跨圖同步模組
+版本: 202610312150
 """
 
 import os
 import re
 
-MODULE_VERSION = "202610312130"
+MODULE_VERSION = "202610312150"
 
 
 def get_system_version() -> str:
-    """自動萃取各模組版本並回傳系統最大版本號"""
     versions = [MODULE_VERSION]
     module_names = ["chart_builder", "indicators", "data_fetcher", "storage", "config", "cloud_sync"]
     try:
@@ -41,7 +40,6 @@ SYSTEM_VERSION = get_system_version()
 
 
 def get_legend_html(version_tag: str = None) -> str:
-    """頂部版本識別標籤"""
     tag = version_tag if version_tag else SYSTEM_VERSION
     return f"""
     <div style="font-size: 14px; margin-bottom: 4px; padding: 2px 8px; display: inline-flex; align-items: center; background: #f8fafc; border-radius: 4px; border: 1px solid #e2e8f0;">
@@ -56,11 +54,11 @@ js_template = """
     position: relative;
     width: 100%;
     box-sizing: border-box;
-    padding-bottom: 25px !important;
+    padding-bottom: 30px !important;
   }
   .touch-plot-box {
     position: relative;
-    touch-action: none !important;
+    touch-action: pan-y !important;
     user-select: none !important;
     -webkit-user-select: none !important;
     width: 100% !important;
@@ -104,16 +102,6 @@ js_template = """
     display: none;
     z-index: 999;
   }
-  .sync-price-line {
-    position: absolute;
-    left: 45px;
-    right: 50px;
-    height: 1px;
-    border-top: 1px dashed rgba(44, 62, 80, 0.75);
-    pointer-events: none;
-    display: none;
-    z-index: 999;
-  }
 </style>
 
 <div class="plot-main-container" id="__CHART_ID___container">
@@ -121,7 +109,6 @@ js_template = """
   
   <div id="__CHART_ID___top" class="touch-plot-box" style="height: __TOP_H__;">
     <div id="__CHART_ID___line_top" class="sync-crosshair-line"></div>
-    <div id="__CHART_ID___line_price" class="sync-price-line"></div>
   </div>
 
   <div class="middle-inserted-bar">
@@ -153,11 +140,11 @@ js_template = """
   var mDiffs = __MARGIN_DIFFS__, sDiffs = __SHORT_DIFFS__, rat = __RATIOS__;
   var m1_pcts = __M1_PCTS__, m2_pcts = __M2_PCTS__, m1_thresh = __M1_THRESH__, m2_thresh = __M2_THRESH__;
 
+  var container = document.getElementById('__CHART_ID___container');
   var elTop = document.getElementById('__CHART_ID___top');
   var elBtm = document.getElementById('__CHART_ID___btm');
   var lineTop = document.getElementById('__CHART_ID___line_top');
   var lineBtm = document.getElementById('__CHART_ID___line_btm');
-  var linePrice = document.getElementById('__CHART_ID___line_price');
   
   var info1 = document.getElementById('__CHART_ID___info1');
   var infoTech = document.getElementById('__CHART_ID___info_tech');
@@ -239,6 +226,7 @@ js_template = """
   }).then(function() {
     updateAllPanes(initEnd);
 
+    // 雙圖縮放平移同步
     function syncXAxis(srcEl, destEl) {
       srcEl.on('plotly_relayout', function(ed) {
         if (isUpdating) return;
@@ -272,44 +260,47 @@ js_template = """
     syncXAxis(elTop, elBtm);
     syncXAxis(elBtm, elTop);
 
-    function handleHover(d) {
-      if (!d || !d.points || !d.points.length) return;
-      var pt = d.points[0];
-      var idx = Math.round(pt.x);
+    // 游標與手機觸控統一分派
+    function processPointer(clientX) {
+      var rect = elTop.getBoundingClientRect();
+      var relX = clientX - rect.left;
+
+      var xaxis = elTop._fullLayout ? elTop._fullLayout.xaxis : null;
+      if (!xaxis || typeof xaxis.p2c !== 'function') return;
+
+      var coord = xaxis.p2c(relX - (xaxis._offset || 0));
+      var idx = Math.round(coord);
+
       if (idx >= 0 && idx < totalPoints) {
         updateAllPanes(idx);
 
-        var xPixel = null;
-        if (pt.xaxis && typeof pt.xaxis.d2p === 'function') {
-          xPixel = pt.xaxis.d2p(pt.x) + (pt.xaxis._offset || 0);
-        }
-
-        if (xPixel !== null && !isNaN(xPixel)) {
-          lineTop.style.left = xPixel + 'px';
-          lineBtm.style.left = xPixel + 'px';
-          lineTop.style.display = 'block';
-          lineBtm.style.display = 'block';
-        }
-
-        if (pt.yaxis && typeof pt.yaxis.d2p === 'function' && pt.y !== undefined) {
-          var yPixel = pt.yaxis.d2p(pt.y) + (pt.yaxis._offset || 0);
-          linePrice.style.top = yPixel + 'px';
-          linePrice.style.display = 'block';
-        }
+        var snapX = xaxis.c2p(idx) + (xaxis._offset || 0);
+        lineTop.style.left = snapX + 'px';
+        lineBtm.style.left = snapX + 'px';
+        lineTop.style.display = 'block';
+        lineBtm.style.display = 'block';
       }
     }
 
-    elTop.on('plotly_hover', handleHover);
-    elBtm.on('plotly_hover', handleHover);
-
-    function hideLines() {
-      lineTop.style.display = 'none';
-      lineBtm.style.display = 'none';
-      linePrice.style.display = 'none';
+    function onPointerMove(e) {
+      var clientX = e.clientX;
+      if (e.touches && e.touches.length > 0) {
+        clientX = e.touches[0].clientX;
+      }
+      if (clientX !== undefined) {
+        processPointer(clientX);
+      }
     }
 
-    elTop.on('plotly_unhover', hideLines);
-    elBtm.on('plotly_unhover', hideLines);
+    function onPointerLeave() {
+      lineTop.style.display = 'none';
+      lineBtm.style.display = 'none';
+    }
+
+    container.addEventListener('mousemove', onPointerMove);
+    container.addEventListener('touchmove', onPointerMove, { passive: true });
+    container.addEventListener('touchstart', onPointerMove, { passive: true });
+    container.addEventListener('mouseleave', onPointerLeave);
   });
 })();
 </script>
@@ -322,12 +313,11 @@ def render_interactive_chart_html(
     df,
     m1_thresh=1000,
     m2_thresh=400,
-    top_height=560,
-    btm_height=1200,
+    top_height=420,
+    btm_height=1180,
     initial_disp_days=20,
     initial_end_idx=None
 ) -> str:
-    """渲染雙圖連動與懸停十字線的互動 HTML 容器"""
     import json
     import uuid
 
@@ -424,7 +414,6 @@ def render_interactive_chart_html(
 
 
 def get_component_html(*args, **kwargs):
-    """轉接相容 app.py 參數呼叫"""
     import inspect
     sig = inspect.signature(render_interactive_chart_html)
     valid_kwargs = {k: v for k, v in kwargs.items() if k in sig.parameters}
