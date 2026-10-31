@@ -192,8 +192,10 @@ def sync_chip_data(pure_code: str, df_dates, status_placeholder=None):
                         sr = float(r.get('ShortSaleCashRepayment', 0) or 0)
                         s_diff = (ss - sb - sr) / 1000.0
 
-                        m_bal = float(r.get('MarginPurchaseTodayBalance', 0) or 0) / 1000.0
-                        s_bal = float(r.get('ShortSaleTodayBalance', 0) or 0) / 1000.0
+                        m_raw_bal = r.get('MarginPurchaseTodayBalance') or r.get('MarginPurchaseBalance') or r.get('margin_purchase') or 0
+                        s_raw_bal = r.get('ShortSaleTodayBalance') or r.get('ShortSaleBalance') or r.get('short_sale') or 0
+                        m_bal = float(m_raw_bal) / 1000.0
+                        s_bal = float(s_raw_bal) / 1000.0
                         records_ms.append((r['date'], m_diff, s_diff, m_bal, s_bal))
                     storage.save_margin_data(records_ms)
         except Exception:
