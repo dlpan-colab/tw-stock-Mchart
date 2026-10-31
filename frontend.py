@@ -11,28 +11,19 @@ MODULE_VERSION = "202610312148"
 
 def get_system_version() -> str:
     versions = [MODULE_VERSION]
-    module_names = ["chart_builder", "indicators", "data_fetcher", "storage", "config", "cloud_sync"]
-    try:
-        base_dir = os.path.dirname(os.path.abspath(__file__))
-        app_file = os.path.join(base_dir, "app.py")
-        if os.path.exists(app_file):
-            with open(app_file, "r", encoding="utf-8") as f:
-                content = f.read(500)
-                m = re.search(r'MODULE_VERSION\s*=\s*["\'](\d{12})["\']', content)
-                if m:
-                    versions.append(m.group(1))
-    except Exception:
-        pass
-
+    module_names = ["app", "chart_builder", "indicators", "data_fetcher", "storage", "config", "cloud_sync"]
+    base_dir = os.path.dirname(os.path.abspath(__file__))
     for mod_name in module_names:
         try:
-            mod = __import__(mod_name)
-            v = getattr(mod, "MODULE_VERSION", getattr(mod, "VERSION_TAG", None))
-            if v:
-                versions.append(str(v).strip())
+            mod_file = os.path.join(base_dir, f"{mod_name}.py")
+            if os.path.exists(mod_file):
+                with open(mod_file, "r", encoding="utf-8") as f:
+                    content = f.read(500)
+                    m = re.search(r'MODULE_VERSION\s*=\s*["\'](\d{12})["\']', content)
+                    if m:
+                        versions.append(m.group(1))
         except Exception:
             pass
-
     return max(versions)
 
 
