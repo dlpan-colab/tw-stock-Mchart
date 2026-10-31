@@ -24,7 +24,7 @@ st.set_page_config(
 )
 
 # 讀取各模組版本識別字串
-ver_app = getattr(cha, "MODULE_VERSION", "cha_311115")
+ver_cha = getattr(cha, "MODULE_VERSION", "cha_311115")
 ver_dat = getattr(dat, "MODULE_VERSION", "dat_311100")
 ver_fro = getattr(fro, "MODULE_VERSION", "fro_311100")
 ver_ind = getattr(ind, "MODULE_VERSION", "ind_311100")
