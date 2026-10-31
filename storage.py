@@ -1,17 +1,17 @@
 """
 storage.py - 本地 SQLite 資料庫與股票歷史紀錄管理器
-版本: sto_311110
+版本: sto_311112
 """
 
 import os
-import io
+import glob
 import json
 import sqlite3
 import requests
 from bs4 import BeautifulSoup
 import pandas as pd
 
-MODULE_VERSION = "sto_311110"
+MODULE_VERSION = "sto_311112"
 
 STORAGE_DIR = "."
 HISTORY_FILE = os.path.join(STORAGE_DIR, "stock_history.json")
@@ -32,6 +32,7 @@ COMMON_STOCK_NAMES = {
 }
 
 def get_stock_chinese_name(pure_code: str) -> str:
+    """查詢中文名稱：依序由內建字典、本地快取、TWSE、TPEx 取得"""
     pure_code = str(pure_code).strip()
     if pure_code in COMMON_STOCK_NAMES:
         return COMMON_STOCK_NAMES[pure_code]
@@ -90,7 +91,24 @@ def _save_name_cache(code: str, name: str):
     except Exception:
         pass
 
-def load_stock_history():
+def get_existing_db_stocks() -> list:
+    """自動掃描儲存區中所有 data_{code}.db 檔案，提取現有個股代碼清單"""
+    db_files = glob.glob(os.path.join(STORAGE_DIR, "data_*.db"))
+    found_codes = []
+    for f in db_files:
+        base = os.path.basename(f)
+        code = base.replace("data_", "").replace(".db", "").strip()
+        if code and code not in found_codes:
+            found_codes.append(code)
+    return found_codes
+
+def load_stock_history() -> list:
+    """
+    讀取歷史清單：
+    1. 載入 stock_history.json
+    2. 自動整合已存在之個股資料庫檔案 (data_{code}.db)，確保清單以現有檔案為基礎
+    3. 自動補齊中文股名並持久化儲存
+    """
     data = []
     if os.path.exists(HISTORY_FILE):
         try:
@@ -99,24 +117,40 @@ def load_stock_history():
         except Exception:
             data = []
 
-    if not isinstance(data, list) or not data:
+    if not isinstance(data, list):
+        data = []
+
+    # 取得現存資料庫檔案之個股
+    db_codes = get_existing_db_stocks()
+    recorded_codes = [str(item.get("code", "")).strip() for item in data]
+
+    # 將現存 DB 中尚未記錄進 JSON 的個股補入
+    for c in db_codes:
+        if c not in recorded_codes:
+            data.append({"code": c, "name": get_stock_chinese_name(c)})
+
+    # 若完全為空，保留預設標的作為初始選項
+    if not data:
         data = [
             {"code": "4526", "name": "東台"},
             {"code": "1504", "name": "東元"},
             {"code": "2382", "name": "廣達"},
             {"code": "6456", "name": "GIS-KY"},
-            {"code": "2330", "name": "台積電"}
+            {"code": "2330", "name": "台積電"},
+            {"code": "8111", "name": "立碁"}
         ]
 
+    # 確保所有項目皆具備正確中文名稱
     for item in data:
         code = str(item.get("code", "")).strip()
         curr_name = str(item.get("name", "")).strip()
         if not curr_name or curr_name == code:
             item["name"] = get_stock_chinese_name(code)
+
     return data
 
-def save_stock_history(code: str, name: str = None):
-    """輸入查詢或選單選取時調用：將該股票提升到清單第 1 筆 (Index 0)"""
+def save_stock_history(code: str, name: str = None) -> list:
+    """查詢或選取時調用：將該股票移至歷史清單首位並寫入實體檔案"""
     code = str(code).strip()
     if not code:
         return load_stock_history()
@@ -124,7 +158,7 @@ def save_stock_history(code: str, name: str = None):
     history = load_stock_history()
     new_hist = [h for h in history if str(h.get("code")).strip() != code]
     new_hist.insert(0, {"code": code, "name": c_name})
-    new_hist = new_hist[:30]
+    new_hist = new_hist[:50]
     try:
         with open(HISTORY_FILE, "w", encoding="utf-8") as f:
             json.dump(new_hist, f, ensure_ascii=False, indent=2)
@@ -133,7 +167,7 @@ def save_stock_history(code: str, name: str = None):
     return new_hist
 
 def update_stock_name_only(code: str, name: str):
-    """上一檔/下一檔巡覽時調用：僅修正名稱缺漏，絕不變動歷史清單的排列順序"""
+    """巡覽時調用：僅更新缺漏名稱，不變更清單先後排序"""
     code = str(code).strip()
     if not code or not name or name.strip() == code:
         return
@@ -152,8 +186,9 @@ def update_stock_name_only(code: str, name: str):
         except Exception:
             pass
 
-def remove_history_items(codes_to_remove: list):
-    """僅移除被勾選項"""
+def remove_history_items(codes_to_remove: list) -> list:
+    """僅移除被勾選項（支援傳入代碼字串列表）"""
+    codes_to_remove = [str(c).strip() for c in codes_to_remove]
     history = load_stock_history()
     new_hist = [h for h in history if str(h.get("code")).strip() not in codes_to_remove]
     try:
@@ -163,8 +198,8 @@ def remove_history_items(codes_to_remove: list):
         pass
     return new_hist
 
-def clear_stock_history():
-    """清除全部歷史清單"""
+def clear_stock_history() -> list:
+    """清除全部歷史清單檔案"""
     try:
         if os.path.exists(HISTORY_FILE):
             os.remove(HISTORY_FILE)
