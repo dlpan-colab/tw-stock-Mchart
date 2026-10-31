@@ -1,6 +1,6 @@
 """
 app.py - 主應用程式進入點
-版本: app_202610311148
+版本: app_202610311200
 """
 
 import streamlit as st
@@ -14,7 +14,7 @@ import frontend as fro
 import indicators as ind
 import storage as sto
 
-MODULE_VERSION = "app_202610311148"
+MODULE_VERSION = "app_202610311200"
 
 # 頁面基本配置
 st.set_page_config(
@@ -25,7 +25,7 @@ st.set_page_config(
 
 # 讀取各模組完整版本識別字串
 ver_app_full = MODULE_VERSION
-ver_cha_full = getattr(cha, "MODULE_VERSION", "cha_202610311145")
+ver_cha_full = getattr(cha, "MODULE_VERSION", "cha_202610311200")
 ver_dat_full = getattr(dat, "MODULE_VERSION", "dat_202610302000")
 ver_fro_full = getattr(fro, "MODULE_VERSION", "fro_202610302000")
 ver_ind_full = getattr(ind, "MODULE_VERSION", "ind_202610302000")
@@ -81,8 +81,14 @@ def handle_next():
     elif len(history_codes) > 0:
         st.session_state.stock_id = history_codes[0]
 
-# 3. 第三行：[上一檔][下一檔]功能鍵（比例調整避免文字截斷）
-c1, c2, _ = st.columns([1, 1, 3])
+def on_history_select():
+    selected = st.session_state.get("hist_dropdown_select")
+    if selected:
+        code_part = selected.split("(")[-1].replace(")", "").strip()
+        st.session_state.stock_id = code_part
+
+# 3. 第三行：[上一檔][下一檔]功能鍵（均分兩欄，文字完整不截斷）
+c1, c2 = st.columns(2)
 with c1:
     st.button("◀ 上一檔", key="top_prev", on_click=handle_prev, use_container_width=True)
 with c2:
@@ -92,40 +98,60 @@ with c2:
 with st.sidebar:
     st.subheader("參數設定")
     
-    # 查詢歷史紀錄清單與勾選管理
+    # 歷史紀錄下拉式選單
     st.markdown("### 查詢歷史紀錄")
-    selected_to_remove = []
     if history_data:
-        for item in history_data:
+        options = []
+        default_idx = 0
+        current_curr = str(st.session_state.stock_id).strip()
+        for idx, item in enumerate(history_data):
             c = item.get("code", "")
             n = item.get("name", "")
             label = f"{n}({c})" if n and n != c else c
-            if st.checkbox(label, key=f"hist_chk_{c}"):
-                selected_to_remove.append(c)
+            options.append(label)
+            if c == current_curr:
+                default_idx = idx
+
+        st.selectbox(
+            "選擇歷史標的 (下拉選單)",
+            options=options,
+            index=default_idx,
+            key="hist_dropdown_select",
+            on_change=on_history_select
+        )
+
+        with st.expander("管理歷史紀錄 (勾選刪除)", expanded=False):
+            selected_to_remove = []
+            for item in history_data:
+                c = item.get("code", "")
+                n = item.get("name", "")
+                label = f"{n}({c})" if n and n != c else c
+                if st.checkbox(label, key=f"hist_chk_{c}"):
+                    selected_to_remove.append(c)
+
+            if st.button("清除歷史記錄", key="btn_remove_history"):
+                if selected_to_remove:
+                    sto.remove_history_items(selected_to_remove)
+                    st.rerun()
+                else:
+                    st.session_state.confirm_clear_all = True
+
+            if st.session_state.confirm_clear_all:
+                st.warning("未勾選任何項目，是否確認清除所有歷史清單？")
+                ca1, ca2 = st.columns(2)
+                with ca1:
+                    if st.button("確定全部清除", key="btn_confirm_all"):
+                        sto.clear_stock_history()
+                        st.session_state.confirm_clear_all = False
+                        st.rerun()
+                with ca2:
+                    if st.button("取消", key="btn_cancel_all"):
+                        st.session_state.confirm_clear_all = False
+                        st.rerun()
     else:
         st.caption("尚無歷史紀錄")
 
-    if st.button("清除歷史記錄"):
-        if selected_to_remove:
-            sto.remove_history_items(selected_to_remove)
-            st.rerun()
-        else:
-            st.session_state.confirm_clear_all = True
-
-    if st.session_state.confirm_clear_all:
-        st.warning("未勾選任何項目，是否確認清除所有歷史清單？")
-        ca1, ca2 = st.columns(2)
-        with ca1:
-            if st.button("確定全部清除", key="btn_confirm_all"):
-                sto.clear_stock_history()
-                st.session_state.confirm_clear_all = False
-                st.rerun()
-        with ca2:
-            if st.button("取消", key="btn_cancel_all"):
-                st.session_state.confirm_clear_all = False
-                st.rerun()
-
-    # 股票代號輸入（已移除上一檔/下一檔按鈕）
+    # 股票代號輸入
     input_stock = st.text_input("股票代號 (直接鍵入)", value=st.session_state.stock_id)
     if input_stock != st.session_state.stock_id:
         st.session_state.stock_id = input_stock
@@ -205,7 +231,7 @@ if df is not None and not df.empty:
     st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
 
     # 第三塊資訊區下方：[◀ 上一檔] [下一檔 ▶] 功能鍵
-    b1, b2, _ = st.columns([1, 1, 3])
+    b1, b2 = st.columns(2)
     with b1:
         st.button("◀ 上一檔", key="bottom_prev", on_click=handle_prev, use_container_width=True)
     with b2:
