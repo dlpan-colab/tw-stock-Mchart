@@ -1,22 +1,30 @@
 """
 app.py - 主應用程式介面與生命週期控制
-版本: 202610312041
+版本: 202610312042
 """
 import streamlit as st
 import streamlit.components.v1 as components
-from datetime import datetime
 
-MODULE_VERSION = "202610312041"
+MODULE_VERSION = "202610312042"
 
-import config
-DEFAULT_STOCK_ID = getattr(config, "DEFAULT_STOCK_ID", "2330")
-DEFAULT_PERIOD = getattr(config, "DEFAULT_PERIOD", "1y")
-
-from storage import get_stock_history, add_stock_history, clear_stock_history
-from data_fetcher import fetch_stock_data, get_stock_name
+from storage import load_stock_history, save_stock_history, clear_stock_history, get_stock_chinese_name
 from indicators import calculate_all_indicators
 from chart_builder import build_top_chart, build_bottom_chart
 from frontend import get_legend_html, get_component_html
+
+try:
+    from data_fetcher import fetch_stock_data
+except ImportError:
+    import yfinance as yf
+    def fetch_stock_data(stock_id: str, period: str = "1y"):
+        code = f"{stock_id}.TW" if not (stock_id.endswith(".TW") or stock_id.endswith(".TWO")) else stock_id
+        df = yf.download(code, period=period, progress=False)
+        if df.empty and not stock_id.endswith(".TWO"):
+            df = yf.download(f"{stock_id}.TWO", period=period, progress=False)
+        if hasattr(df.columns, 'levels') and len(df.columns.levels) > 1:
+            df.columns = df.columns.get_level_values(0)
+        df = df.reset_index()
+        return df
 
 st.set_page_config(
     page_title="台股多指標+籌碼技術分析",
@@ -24,7 +32,6 @@ st.set_page_config(
     initial_sidebar_state="collapsed"
 )
 
-# 隱藏 Streamlit 預設多餘空白
 st.markdown("""
 <style>
     .block-container {
@@ -38,37 +45,34 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# 狀態初始化
 if "stock_id" not in st.session_state:
-    st.session_state.stock_id = DEFAULT_STOCK_ID
+    st.session_state.stock_id = "2330"
 if "period" not in st.session_state:
-    st.session_state.period = DEFAULT_PERIOD
+    st.session_state.period = "1y"
 if "disp_days" not in st.session_state:
     st.session_state.disp_days = 20
-if "target_date" not in st.session_state:
-    st.session_state.target_date = ""
 
-# 側邊欄控制項
 with st.sidebar:
     st.header("參數設定")
+    history_records = load_stock_history()
+    history_codes = [str(item.get("code")).strip() for item in history_records if item.get("code")]
     
-    # 歷史紀錄選擇
-    history_list = get_stock_history()
     with st.expander("查詢歷史紀錄", expanded=False):
-        if history_list:
+        if history_codes:
+            history_display = [f"{h.get('code')} {h.get('name', '')}" for h in history_records]
             selected_history = st.selectbox(
                 "點擊展開並勾選標的...",
-                [""] + history_list,
+                [""] + history_display,
                 key="history_select"
             )
             if selected_history:
-                st.session_state.stock_id = selected_history
+                st.session_state.stock_id = selected_history.split()[0]
         if st.button("清除歷史記錄"):
             clear_stock_history()
             st.rerun()
 
     input_stock = st.text_input("股票代號 (直接鍵入)", value=st.session_state.stock_id)
-    if input_stock != st.session_state.stock_id:
+    if input_stock.strip() != st.session_state.stock_id:
         st.session_state.stock_id = input_stock.strip()
 
     st.session_state.period = st.selectbox(
@@ -85,8 +89,7 @@ with st.sidebar:
     is_mobile = "手機版" in mode_switch
 
     default_days = 20 if is_mobile else 60
-    disp_days = st.number_input("顯示日數", min_value=10, max_value=240, value=default_days, step=5)
-    st.session_state.disp_days = disp_days
+    st.session_state.disp_days = st.number_input("顯示日數", min_value=10, max_value=240, value=default_days, step=5)
 
     use_target_date = st.checkbox("指定基準日 (復盤模式)")
     target_date_val = ""
@@ -98,15 +101,13 @@ with st.sidebar:
     m2_thresh = st.number_input("大戶門檻2 (張)", min_value=100, max_value=1000, value=400, step=100)
 
     if st.button("查詢", use_container_width=True):
-        add_stock_history(st.session_state.stock_id)
+        save_stock_history(st.session_state.stock_id)
         st.rerun()
 
-# 主畫面標頭與版本顯示
 st.markdown(get_legend_html(), unsafe_allow_html=True)
 
-# 資料獲取與處理
 stock_id = st.session_state.stock_id
-stock_name = get_stock_name(stock_id)
+stock_name = get_stock_chinese_name(stock_id)
 
 df = fetch_stock_data(stock_id, period=st.session_state.period)
 
@@ -116,7 +117,6 @@ if df is None or df.empty:
 
 df = calculate_all_indicators(df, m1_thresh=m1_thresh, m2_thresh=m2_thresh)
 
-# 基準日定位
 initial_end_idx = len(df) - 1
 if target_date_val:
     date_strs = df['Date'].dt.strftime('%Y-%m-%d').tolist() if 'Date' in df.columns else [str(x)[:10] for x in df.index]
@@ -125,14 +125,15 @@ if target_date_val:
     else:
         st.warning(f"指定基準日 {target_date_val} 不在交易資料範圍內，將顯示最新交易日。")
 
-# 圖表尺寸規劃
 top_height = 540 if is_mobile else 580
 btm_height = 1180 if is_mobile else 1220
 
 fig_top = build_top_chart(df, stock_id, stock_name, is_mobile=is_mobile)
 fig_btm = build_bottom_chart(df, is_mobile=is_mobile, m1_thresh=m1_thresh, m2_thresh=m2_thresh)
 
-# 輸出圖表 HTML 容器
+fig_top.update_layout(hovermode='x unified')
+fig_btm.update_layout(hovermode='x unified')
+
 html_content = get_component_html(
     fig_top=fig_top,
     fig_btm=fig_btm,
@@ -145,25 +146,25 @@ html_content = get_component_html(
     initial_end_idx=initial_end_idx
 )
 
-total_h = 2150 if is_mobile else 2250
+total_h = 2200 if is_mobile else 2300
 components.html(
     html_content,
     height=total_h,
     scrolling=False
 )
 
-# 底部導航功能列（上一檔 / 下一檔）
-hist = get_stock_history()
-if hist and stock_id in hist:
-    curr_idx = hist.index(stock_id)
+hist_records = load_stock_history()
+hist_codes = [str(item.get("code")).strip() for item in hist_records if item.get("code")]
+if hist_codes and stock_id in hist_codes:
+    curr_idx = hist_codes.index(stock_id)
     c1, c2 = st.columns(2)
     with c1:
         if st.button("◀ 上一檔", use_container_width=True):
-            prev_idx = (curr_idx - 1) % len(hist)
-            st.session_state.stock_id = hist[prev_idx]
+            prev_idx = (curr_idx - 1) % len(hist_codes)
+            st.session_state.stock_id = hist_codes[prev_idx]
             st.rerun()
     with c2:
         if st.button("下一檔 ▶", use_container_width=True):
-            next_idx = (curr_idx + 1) % len(hist)
-            st.session_state.stock_id = hist[next_idx]
+            next_idx = (curr_idx + 1) % len(hist_codes)
+            st.session_state.stock_id = hist_codes[next_idx]
             st.rerun()
