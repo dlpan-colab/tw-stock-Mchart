@@ -1,16 +1,16 @@
 """
 app.py - 主應用程式介面與生命週期控制
-版本: 202610312042
+版本: 202610312052
 """
 import streamlit as st
 import streamlit.components.v1 as components
 
-MODULE_VERSION = "202610312042"
+MODULE_VERSION = "202610312052"
 
 from storage import load_stock_history, save_stock_history, clear_stock_history, get_stock_chinese_name
 from indicators import calculate_all_indicators
-from chart_builder import build_top_chart, build_bottom_chart
-from frontend import get_legend_html, get_component_html
+from chart_builder import plot_stock_charts
+from frontend import get_legend_html
 
 try:
     from data_fetcher import fetch_stock_data
@@ -125,28 +125,18 @@ if target_date_val:
     else:
         st.warning(f"指定基準日 {target_date_val} 不在交易資料範圍內，將顯示最新交易日。")
 
-top_height = 540 if is_mobile else 580
-btm_height = 1180 if is_mobile else 1220
-
-fig_top = build_top_chart(df, stock_id, stock_name, is_mobile=is_mobile)
-fig_btm = build_bottom_chart(df, is_mobile=is_mobile, m1_thresh=m1_thresh, m2_thresh=m2_thresh)
-
-fig_top.update_layout(hovermode='x unified')
-fig_btm.update_layout(hovermode='x unified')
-
-html_content = get_component_html(
-    fig_top=fig_top,
-    fig_btm=fig_btm,
+html_content = plot_stock_charts(
     df=df,
+    stock_id=stock_id,
+    stock_name=stock_name,
+    is_mobile=is_mobile,
     m1_thresh=m1_thresh,
     m2_thresh=m2_thresh,
-    top_height=top_height,
-    btm_height=btm_height,
     initial_disp_days=st.session_state.disp_days,
     initial_end_idx=initial_end_idx
 )
 
-total_h = 2200 if is_mobile else 2300
+total_h = 2150 if is_mobile else 2250
 components.html(
     html_content,
     height=total_h,
