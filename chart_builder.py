@@ -1,6 +1,6 @@
 """
 chart_builder.py - Plotly 圖表繪製與資訊區跨圖同步對齊模組
-版本: cha_202610311245
+版本: cha_202610311250
 """
 
 import plotly.graph_objects as go
@@ -8,7 +8,7 @@ from plotly.subplots import make_subplots
 import pandas as pd
 import numpy as np
 
-MODULE_VERSION = "cha_202610311245"
+MODULE_VERSION = "cha_202610311250"
 
 def render_master_chart(df: pd.DataFrame, stock_info: dict, m1: int = 1000, m2: int = 400) -> go.Figure:
     if df is None or df.empty:
@@ -99,7 +99,7 @@ def render_master_chart(df: pd.DataFrame, stock_info: dict, m1: int = 1000, m2: 
         name="K線",
         increasing_line_color='#e12f2f',
         decreasing_line_color='#2ca02c',
-        hoverinfo='skip'
+        hoverinfo='none'
     ), row=1, col=1)
 
     for ma_name, color in [('MA5', '#f39c12'), ('MA20', '#2980b9'), ('MA60', '#8e44ad')]:
@@ -108,7 +108,7 @@ def render_master_chart(df: pd.DataFrame, stock_info: dict, m1: int = 1000, m2: 
                 x=df.index, y=df[ma_name],
                 name=ma_name,
                 line=dict(color=color, width=1.2),
-                hoverinfo='skip'
+                hoverinfo='none'
             ), row=1, col=1)
 
     # ================== Row 2: 成交量副圖 ==================
@@ -119,30 +119,30 @@ def render_master_chart(df: pd.DataFrame, stock_info: dict, m1: int = 1000, m2: 
             name="成交量",
             marker_color=vol_colors,
             opacity=0.7,
-            hoverinfo='skip'
+            hoverinfo='none'
         ), row=2, col=1)
 
     # ================== Row 3: 法人買賣超副圖 ==================
     if c_for:
-        fig.add_trace(go.Bar(x=df.index, y=df[c_for], name="外資(張)", marker_color='#d63031', hoverinfo='skip'), row=3, col=1)
+        fig.add_trace(go.Bar(x=df.index, y=df[c_for], name="外資(張)", marker_color='#d63031', hoverinfo='none'), row=3, col=1)
     if c_tru:
-        fig.add_trace(go.Bar(x=df.index, y=df[c_tru], name="投信(張)", marker_color='#0984e3', hoverinfo='skip'), row=3, col=1)
+        fig.add_trace(go.Bar(x=df.index, y=df[c_tru], name="投信(張)", marker_color='#0984e3', hoverinfo='none'), row=3, col=1)
     if c_dea:
-        fig.add_trace(go.Bar(x=df.index, y=df[c_dea], name="自營(張)", marker_color='#fdcb6e', hoverinfo='skip'), row=3, col=1)
+        fig.add_trace(go.Bar(x=df.index, y=df[c_dea], name="自營(張)", marker_color='#fdcb6e', hoverinfo='none'), row=3, col=1)
 
     # ================== Row 4: 資券增減副圖 ==================
     if c_mdiff:
-        fig.add_trace(go.Bar(x=df.index, y=df[c_mdiff], name="融資增減", marker_color='#e17055', hoverinfo='skip'), row=4, col=1)
+        fig.add_trace(go.Bar(x=df.index, y=df[c_mdiff], name="融資增減", marker_color='#e17055', hoverinfo='none'), row=4, col=1)
     if c_sdiff:
-        fig.add_trace(go.Bar(x=df.index, y=df[c_sdiff], name="融券增減", marker_color='#00cec9', hoverinfo='skip'), row=4, col=1)
+        fig.add_trace(go.Bar(x=df.index, y=df[c_sdiff], name="融券增減", marker_color='#00cec9', hoverinfo='none'), row=4, col=1)
 
     # ================== Row 5: 大戶持股比例副圖 ==================
     if c_m1:
-        fig.add_trace(go.Scatter(x=df.index, y=df[c_m1], name=f"≥{m1}張%", line=dict(color='#d63031', width=1.5), hoverinfo='skip'), row=5, col=1)
+        fig.add_trace(go.Scatter(x=df.index, y=df[c_m1], name=f"≥{m1}張%", line=dict(color='#d63031', width=1.5), hoverinfo='none'), row=5, col=1)
     if c_m2:
-        fig.add_trace(go.Scatter(x=df.index, y=df[c_m2], name=f"≥{m2}張%", line=dict(color='#0984e3', width=1.5), hoverinfo='skip'), row=5, col=1)
+        fig.add_trace(go.Scatter(x=df.index, y=df[c_m2], name=f"≥{m2}張%", line=dict(color='#0984e3', width=1.5), hoverinfo='none'), row=5, col=1)
 
-    # 頂部固定資訊文字 (無懸停遮蔽框)
+    # 頂部固定資訊文字
     last_idx = len(df) - 1
     annotations = [
         dict(
@@ -155,6 +155,9 @@ def render_master_chart(df: pd.DataFrame, stock_info: dict, m1: int = 1000, m2: 
         )
     ]
 
+    # 強制所有 trace 不顯示 hover 內容（無白框）
+    fig.update_traces(hoverinfo='none')
+
     fig.update_layout(
         height=940,
         annotations=annotations,
@@ -162,7 +165,8 @@ def render_master_chart(df: pd.DataFrame, stock_info: dict, m1: int = 1000, m2: 
         showlegend=False,
         margin=dict(l=45, r=20, t=45, b=25),
         barmode="group",
-        hovermode=False  # 徹底關閉懸停產生的白框浮動條
+        hovermode="x",           # 保持 x 模式以觸發十字虛線
+        hoverdistance=100
     )
 
     # 全子圖垂直十字準線同步貫穿
