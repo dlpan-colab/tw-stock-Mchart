@@ -1,6 +1,6 @@
 """
 storage.py - 本地 SQLite 資料庫與股票歷史紀錄管理器
-版本: 202610302000
+版本: 202610312204
 """
 
 import os
@@ -11,11 +11,12 @@ import requests
 from bs4 import BeautifulSoup
 import pandas as pd
 
+MODULE_VERSION = "202610312204"
+
 STORAGE_DIR = "."
 HISTORY_FILE = os.path.join(STORAGE_DIR, "stock_history.json")
 NAMES_CACHE_FILE = os.path.join(STORAGE_DIR, "tw_stock_names.json")
 
-# 內建常用名稱對照表 (6234 正確對應「高僑」，5439 對應「高技」)
 COMMON_STOCK_NAMES = {
     "1101": "台泥", "1102": "亞泥", "1104": "環泥", "1216": "統一",
     "1301": "台塑", "1303": "南亞", "1312": "國喬", "1326": "台化",
@@ -26,11 +27,15 @@ COMMON_STOCK_NAMES = {
     "2615": "萬海", "3008": "大立光", "3022": "威強電", "3088": "艾訊",
     "3231": "緯創", "3481": "群創", "3653": "健策", "3661": "世芯-KY",
     "4526": "東台", "5439": "高技", "6191": "精成科", "6217": "中探針",
-    "6234": "高僑", "6456": "GIS-KY", "6505": "台塑化", "8111": "立碁"
+    "6234": "高僑", "6425": "易發", "6456": "GIS-KY", "6505": "台塑化",
+    "8111": "立碁"
 }
+
 
 def get_stock_chinese_name(pure_code: str) -> str:
     pure_code = str(pure_code).strip()
+    if not pure_code:
+        return ""
     if pure_code in COMMON_STOCK_NAMES:
         return COMMON_STOCK_NAMES[pure_code]
 
@@ -43,7 +48,7 @@ def get_stock_chinese_name(pure_code: str) -> str:
         except Exception:
             pass
 
-    # 1. 查 TWSE (上市)
+    # 1. 查詢 TWSE (上市)
     try:
         url_twse = f"https://isin.twse.com.tw/isin/single_main.jsp?owncode={pure_code}&stockname="
         res = requests.get(url_twse, timeout=4)
@@ -59,7 +64,7 @@ def get_stock_chinese_name(pure_code: str) -> str:
     except Exception:
         pass
 
-    # 2. 查 TPEx (上櫃)
+    # 2. 查詢 TPEx (上櫃)
     try:
         url_tpex = f"https://www.tpex.org.tw/web/stock/aftertrading/otc_quotes_no1430/stk_wn1430_result.php?l=zh-tw&stkno={pure_code}"
         res_t = requests.get(url_tpex, timeout=4)
@@ -67,13 +72,31 @@ def get_stock_chinese_name(pure_code: str) -> str:
             data = res_t.json()
             if 'aaData' in data and len(data['aaData']) > 0:
                 c_name = str(data['aaData'][0][1]).strip()
-                if c_name:
+                if c_name and c_name != pure_code:
                     _save_name_cache(pure_code, c_name)
                     return c_name
     except Exception:
         pass
 
+    # 3. 備援查詢 Yahoo Finance
+    try:
+        for suffix in [".TWO", ".TW"]:
+            y_url = f"https://query2.finance.yahoo.com/v1/finance/search?q={pure_code}{suffix}"
+            headers = {'User-Agent': 'Mozilla/5.0'}
+            y_res = requests.get(y_url, headers=headers, timeout=4)
+            if y_res.status_code == 200:
+                quotes = y_res.json().get('quotes', [])
+                if quotes:
+                    shortname = quotes[0].get('shortname') or quotes[0].get('longname')
+                    if shortname:
+                        c_name = shortname.split()[0].strip()
+                        _save_name_cache(pure_code, c_name)
+                        return c_name
+    except Exception:
+        pass
+
     return pure_code
+
 
 def _save_name_cache(code: str, name: str):
     COMMON_STOCK_NAMES[code] = name
@@ -87,6 +110,7 @@ def _save_name_cache(code: str, name: str):
             json.dump(cached, f, ensure_ascii=False)
     except Exception:
         pass
+
 
 def load_stock_history():
     data = []
@@ -106,19 +130,15 @@ def load_stock_history():
             {"code": "2330", "name": "台積電"}
         ]
 
-    # 清洗：確保 name 不為空且不等於 code
     for item in data:
         code = str(item.get("code", "")).strip()
         curr_name = str(item.get("name", "")).strip()
         if not curr_name or curr_name == code:
             item["name"] = get_stock_chinese_name(code)
-
     return data
 
+
 def save_stock_history(code: str, name: str = None):
-    """
-    輸入查詢或選單選取時調用：將該股票提升到清單第 1 筆 (Index 0)
-    """
     code = str(code).strip()
     if not code:
         return load_stock_history()
@@ -126,9 +146,7 @@ def save_stock_history(code: str, name: str = None):
     c_name = name.strip() if name and name.strip() != code else get_stock_chinese_name(code)
     history = load_stock_history()
 
-    # 移除舊有同代碼項
     new_hist = [h for h in history if str(h.get("code")).strip() != code]
-    # 置頂
     new_hist.insert(0, {"code": code, "name": c_name})
     new_hist = new_hist[:30]
 
@@ -137,13 +155,10 @@ def save_stock_history(code: str, name: str = None):
             json.dump(new_hist, f, ensure_ascii=False, indent=2)
     except Exception:
         pass
-
     return new_hist
 
+
 def update_stock_name_only(code: str, name: str):
-    """
-    上一檔/下一檔巡覽時調用：僅修正名稱缺漏，絕不變動歷史清單的排列順序
-    """
     code = str(code).strip()
     if not code or not name or name.strip() == code:
         return
@@ -162,6 +177,7 @@ def update_stock_name_only(code: str, name: str):
         except Exception:
             pass
 
+
 def clear_stock_history():
     try:
         if os.path.exists(HISTORY_FILE):
@@ -170,8 +186,8 @@ def clear_stock_history():
         pass
     return []
 
+
 def remove_stocks_from_history(target_codes: list) -> list:
-    """從歷史清單中刪除指定代號，並寫回 JSON 檔案"""
     history = load_stock_history()
     target_set = set(str(c).strip() for c in target_codes)
     new_history = [h for h in history if str(h.get('code')).strip() not in target_set]
@@ -181,6 +197,7 @@ def remove_stocks_from_history(target_codes: list) -> list:
     except Exception:
         pass
     return new_history
+
 
 class StockChipStorage:
     def __init__(self, pure_code: str):
@@ -193,29 +210,29 @@ class StockChipStorage:
         with sqlite3.connect(self.db_path) as conn:
             cur = conn.cursor()
             cur.execute("""
-                CREATE TABLE IF NOT EXISTS institutional_investors (
-                    date TEXT PRIMARY KEY,
-                    foreign_net REAL,
-                    trust_net REAL,
-                    dealer_net REAL
-                )
+            CREATE TABLE IF NOT EXISTS institutional_investors (
+                date TEXT PRIMARY KEY,
+                foreign_net REAL,
+                trust_net REAL,
+                dealer_net REAL
+            )
             """)
             cur.execute("""
-                CREATE TABLE IF NOT EXISTS shareholding_distribution (
-                    date TEXT,
-                    level INTEGER,
-                    percent REAL,
-                    PRIMARY KEY (date, level)
-                )
+            CREATE TABLE IF NOT EXISTS shareholding_distribution (
+                date TEXT,
+                level INTEGER,
+                percent REAL,
+                PRIMARY KEY (date, level)
+            )
             """)
             cur.execute("""
-                CREATE TABLE IF NOT EXISTS margin_short (
-                    date TEXT PRIMARY KEY,
-                    margin_diff REAL,
-                    short_diff REAL,
-                    margin_bal REAL,
-                    short_bal REAL
-                )
+            CREATE TABLE IF NOT EXISTS margin_short (
+                date TEXT PRIMARY KEY,
+                margin_diff REAL,
+                short_diff REAL,
+                margin_bal REAL,
+                short_bal REAL
+            )
             """)
             conn.commit()
 
