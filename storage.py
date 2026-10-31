@@ -43,9 +43,9 @@ def get_stock_chinese_name(pure_code: str) -> str:
     if os.path.exists(NAMES_CACHE_FILE):
         try:
             with open(NAMES_CACHE_FILE, "r", encoding="utf-8") as f:
-                cached = json.load(f)
-                if pure_code in cached and cached[pure_code]:
-                    return cached[pure_code]
+                cache = _load_name_cache()
+                if pure_code in cache and cache[pure_code] and cache[pure_code] != pure_code:
+                    return cache[pure_code]
         except Exception:
             pass
 
