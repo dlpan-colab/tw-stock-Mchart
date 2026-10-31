@@ -170,6 +170,18 @@ def clear_stock_history():
         pass
     return []
 
+def remove_stocks_from_history(target_codes: list) -> list:
+    """從歷史清單中刪除指定代號，並寫回 JSON 檔案"""
+    history = load_stock_history()
+    target_set = set(str(c).strip() for c in target_codes)
+    new_history = [h for h in history if str(h.get('code')).strip() not in target_set]
+    try:
+        with open(HISTORY_FILE, "w", encoding="utf-8") as f:
+            json.dump(new_history, f, ensure_ascii=False, indent=2)
+    except Exception:
+        pass
+    return new_history
+
 class StockChipStorage:
     def __init__(self, pure_code: str):
         self.pure_code = str(pure_code).strip()
