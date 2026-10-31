@@ -1,6 +1,6 @@
 """
 app.py - 主應用程式進入點
-版本: app_202610311135
+版本: app_202610311140
 """
 
 import streamlit as st
@@ -14,7 +14,7 @@ import frontend as fro
 import indicators as ind
 import storage as sto
 
-MODULE_VERSION = "app_202610311135"
+MODULE_VERSION = "app_202610311140"
 
 # 頁面基本配置
 st.set_page_config(
@@ -47,8 +47,8 @@ MODULE_VERSIONS = (
     f"{to_summary(ver_sto_full)}/"
 )
 
-# 1. 第一行：標題
-st.markdown("## 台股技術指標與籌碼分析(模組)")
+# 1. 第一行：標題（字體大小同側邊欄「參數設定」之 subheader）
+st.subheader("台股技術指標與籌碼分析(模組)")
 
 # 2. 第二行：模組前三英文字簡稱_模組版本識別日期摘要
 st.caption(MODULE_VERSIONS)
@@ -188,11 +188,11 @@ if df is not None and not df.empty:
         if cols_m2:
             df[f'Big_{m2}_Ratio'] = holding_pivot[cols_m2].sum(axis=1).reindex(df.index).ffill()
 
-    # 指標運算 (自動相容 indicators 模組實際匯出的計算函式)
-    if hasattr(ind, "calculate_all"):
-        df = ind.calculate_all(df)
-    elif hasattr(ind, "calc_all_indicators"):
+    # 指標運算
+    if hasattr(ind, "calc_all_indicators"):
         df = ind.calc_all_indicators(df, m1, m2)
+    elif hasattr(ind, "calculate_all"):
+        df = ind.calculate_all(df)
     elif hasattr(ind, "compute_indicators"):
         df = ind.compute_indicators(df)
     elif hasattr(ind, "calculate_indicators"):
