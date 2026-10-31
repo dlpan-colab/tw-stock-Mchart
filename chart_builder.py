@@ -1,8 +1,8 @@
 """
 chart_builder.py - Plotly 圖表建置模組
-版本: 202610311935
+版本: 202610311940
 """
-MODULE_VERSION = "202610311935"
+MODULE_VERSION = "202610311940"
 
 from typing import Tuple, Optional
 import numpy as np
@@ -128,7 +128,7 @@ def build_split_figures(
     ratio_range = [max(0, r_min - r_pad), r_max + r_pad]
 
     top_height = 340 if is_mobile else 380
-    btm_height = 1050 if is_mobile else 1150
+    btm_height = 1200 if is_mobile else 1300
 
     # ===== 上半部主圖 (單成交量軸) =====
     fig_top = make_subplots(
