@@ -1,6 +1,6 @@
 """
 app.py - 主應用程式進入點
-版本: app_202610311128
+版本: app_202610311132
 """
 
 import streamlit as st
@@ -14,7 +14,7 @@ import frontend as fro
 import indicators as ind
 import storage as sto
 
-MODULE_VERSION = "app_202610311128"
+MODULE_VERSION = "app_202610311132"
 
 # 頁面基本配置
 st.set_page_config(
@@ -35,7 +35,6 @@ ver_sto_full = getattr(sto, "MODULE_VERSION", "sto_202610311112")
 def to_summary(ver_str: str) -> str:
     parts = ver_str.split("_")
     if len(parts) == 2 and len(parts[1]) >= 6:
-        # 取前綴簡稱與末 6 碼 (DDhhmm)
         return f"{parts[0]}_{parts[1][-6:]}"
     return ver_str
 
@@ -126,7 +125,7 @@ with st.sidebar:
                 st.session_state.confirm_clear_all = False
                 st.rerun()
 
-    # 股票代號輸入（已移除上一檔/下一檔功能鍵）
+    # 股票代號輸入（已移除上一檔/下一檔按鈕）
     input_stock = st.text_input("股票代號 (直接鍵入)", value=st.session_state.stock_id)
     if input_stock != st.session_state.stock_id:
         st.session_state.stock_id = input_stock
@@ -140,9 +139,8 @@ with st.sidebar:
     
     query_btn = st.button("查詢")
 
-# 資料載入與運算 (對齊 data_fetcher.py 實際介面)
+# 資料載入與運算
 current_code = str(st.session_state.stock_id).strip()
-
 df, ticker_full, shares = dat.fetch_stock_daily_k(current_code, period=period)
 
 if df is not None and not df.empty:
@@ -181,15 +179,16 @@ if df is not None and not df.empty:
         if 'Margin_Balance' in df.columns and 'Short_Balance' in df.columns:
             df['Margin_Short_Ratio'] = (df['Short_Balance'] / df['Margin_Balance'].replace(0, float('nan'))) * 100
 
-    # 合併大戶持股
+    # 合併大戶持股（轉為 Series 後以 reindex/ffill 對齊交易日）
     if not holding_df.empty:
         holding_pivot = holding_df.pivot(index='date', columns='level', values='percent')
-        # level 15: 1000張以上; level 11~15: 400張以上
         if 15 in holding_pivot.columns:
-            df[f'Big_{m1}_Ratio'] = df.index.map(holding_pivot[15]).ffill()
+            s_m1 = holding_pivot[15].reindex(df.index).ffill()
+            df[f'Big_{m1}_Ratio'] = s_m1
         cols_m2 = [c for c in holding_pivot.columns if c >= 11]
         if cols_m2:
-            df[f'Big_{m2}_Ratio'] = df.index.map(holding_pivot[cols_m2].sum(axis=1)).ffill()
+            s_m2 = holding_pivot[cols_m2].sum(axis=1).reindex(df.index).ffill()
+            df[f'Big_{m2}_Ratio'] = s_m2
 
     # 指標運算
     df = ind.calculate_indicators(df, m1, m2)
