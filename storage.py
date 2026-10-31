@@ -26,7 +26,7 @@ COMMON_STOCK_NAMES = {
     "2327": "國巨", "2330": "台積電", "2374": "佳能", "2382": "廣達",
     "2454": "聯發科", "2478": "大毅", "2492": "華新科", "2609": "陽明",
     "2615": "萬海", "3008": "大立光", "3022": "威強電", "3088": "艾訊",
-    "3231": "緯創", "3481": "群創", "3653": "健策", "3661": "世芯-KY",
+    "3231": "緯創", "3481": "群創", "3653": "健策", "3661": "世芯-KY","3718": "中光電投控",
     "4526": "東台", "4991": "環宇-KY", "5439": "高技", "6191": "精成科",
     "6217": "中探針", "6234": "高僑", "6425": "易發", "6456": "GIS-KY",
     "6505": "台塑化", "8111": "立碁"
@@ -94,8 +94,10 @@ def get_stock_chinese_name(pure_code: str) -> str:
                     shortname = quotes[0].get("shortname") or quotes[0].get("longname")
                     if shortname:
                         c_name = shortname.split()[0].strip()
-                        _save_name_cache(pure_code, c_name)
-                        return c_name
+                        # 超過 10 字元或純英數字母視為無效英文名，不予採納
+                        if len(c_name) <= 10 and not c_name.replace(" ", "").isalnum():
+                            _save_name_cache(pure_code, c_name)
+                            return c_name
     except Exception:
         pass
 
