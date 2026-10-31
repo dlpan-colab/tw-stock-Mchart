@@ -1,6 +1,6 @@
 """
 app.py - 主應用程式進入點
-版本: app_311120
+版本: app_202610311128
 """
 
 import streamlit as st
@@ -14,7 +14,7 @@ import frontend as fro
 import indicators as ind
 import storage as sto
 
-MODULE_VERSION = "app_311120"
+MODULE_VERSION = "app_202610311128"
 
 # 頁面基本配置
 st.set_page_config(
@@ -23,14 +23,30 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# 讀取各模組版本識別字串
-ver_cha = getattr(cha, "MODULE_VERSION", "cha_311115")
-ver_dat = getattr(dat, "MODULE_VERSION", "dat_311100")
-ver_fro = getattr(fro, "MODULE_VERSION", "fro_311100")
-ver_ind = getattr(ind, "MODULE_VERSION", "ind_311100")
-ver_sto = getattr(sto, "MODULE_VERSION", "sto_311112")
+# 讀取各模組完整版本識別字串
+ver_app_full = MODULE_VERSION
+ver_cha_full = getattr(cha, "MODULE_VERSION", "cha_202610311115")
+ver_dat_full = getattr(dat, "MODULE_VERSION", "dat_202610302000")
+ver_fro_full = getattr(fro, "MODULE_VERSION", "fro_202610302000")
+ver_ind_full = getattr(ind, "MODULE_VERSION", "ind_202610302000")
+ver_sto_full = getattr(sto, "MODULE_VERSION", "sto_202610311112")
 
-MODULE_VERSIONS = f"{MODULE_VERSION}/{ver_cha}/{ver_dat}/{ver_fro}/{ver_ind}/{ver_sto}/"
+# 格式化為版本識別摘要：忽略年份月份，僅保留 DDhhmm
+def to_summary(ver_str: str) -> str:
+    parts = ver_str.split("_")
+    if len(parts) == 2 and len(parts[1]) >= 6:
+        # 取前綴簡稱與末 6 碼 (DDhhmm)
+        return f"{parts[0]}_{parts[1][-6:]}"
+    return ver_str
+
+MODULE_VERSIONS = (
+    f"{to_summary(ver_app_full)}/"
+    f"{to_summary(ver_cha_full)}/"
+    f"{to_summary(ver_dat_full)}/"
+    f"{to_summary(ver_fro_full)}/"
+    f"{to_summary(ver_ind_full)}/"
+    f"{to_summary(ver_sto_full)}/"
+)
 
 # 1. 第一行：標題
 st.markdown("## 台股技術指標與籌碼分析(模組)")
@@ -124,12 +140,58 @@ with st.sidebar:
     
     query_btn = st.button("查詢")
 
-# 資料載入與運算
+# 資料載入與運算 (對齊 data_fetcher.py 實際介面)
 current_code = str(st.session_state.stock_id).strip()
-stock_info, df = dat.load_stock_data(current_code, period)
+
+df, ticker_full, shares = dat.fetch_stock_daily_k(current_code, period=period)
 
 if df is not None and not df.empty:
-    sto.save_stock_history(current_code, stock_info.get("name"))
+    stock_name = dat.fetch_stock_name(current_code)
+    market_type = "櫃" if ".TWO" in ticker_full else "市"
+    stock_info = {
+        "code": current_code,
+        "name": stock_name,
+        "market": market_type
+    }
+
+    # 寫入歷史紀錄
+    sto.save_stock_history(current_code, stock_name)
+
+    # 同步籌碼 (法人、資券、大戶持股)
+    inst_df, margin_df, holding_df = dat.sync_chip_data(current_code, df.index)
+
+    # 合併法人籌碼
+    if not inst_df.empty:
+        inst_df = inst_df.rename(columns={
+            "foreign_net": "Foreign_Buy",
+            "trust_net": "Trust_Buy",
+            "dealer_net": "Dealer_Buy"
+        }).set_index("date")
+        df = df.join(inst_df, how="left")
+
+    # 合併資券
+    if not margin_df.empty:
+        margin_df = margin_df.rename(columns={
+            "margin_diff": "Margin_Diff",
+            "short_diff": "Short_Diff",
+            "margin_bal": "Margin_Balance",
+            "short_bal": "Short_Balance"
+        }).set_index("date")
+        df = df.join(margin_df, how="left")
+        if 'Margin_Balance' in df.columns and 'Short_Balance' in df.columns:
+            df['Margin_Short_Ratio'] = (df['Short_Balance'] / df['Margin_Balance'].replace(0, float('nan'))) * 100
+
+    # 合併大戶持股
+    if not holding_df.empty:
+        holding_pivot = holding_df.pivot(index='date', columns='level', values='percent')
+        # level 15: 1000張以上; level 11~15: 400張以上
+        if 15 in holding_pivot.columns:
+            df[f'Big_{m1}_Ratio'] = df.index.map(holding_pivot[15]).ffill()
+        cols_m2 = [c for c in holding_pivot.columns if c >= 11]
+        if cols_m2:
+            df[f'Big_{m2}_Ratio'] = df.index.map(holding_pivot[cols_m2].sum(axis=1)).ffill()
+
+    # 指標運算
     df = ind.calculate_indicators(df, m1, m2)
     display_df = df.tail(display_days).copy()
     
