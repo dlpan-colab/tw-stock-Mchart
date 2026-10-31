@@ -1,14 +1,17 @@
 """
 app.py - 主應用程式介面與生命週期控制
-版本: 202610312037
+版本: 202610312041
 """
 import streamlit as st
 import streamlit.components.v1 as components
 from datetime import datetime
 
-MODULE_VERSION = "202610312037"
+MODULE_VERSION = "202610312041"
 
-from config import DEFAULT_STOCK_ID, DEFAULT_PERIOD
+import config
+DEFAULT_STOCK_ID = getattr(config, "DEFAULT_STOCK_ID", "2330")
+DEFAULT_PERIOD = getattr(config, "DEFAULT_PERIOD", "1y")
+
 from storage import get_stock_history, add_stock_history, clear_stock_history
 from data_fetcher import fetch_stock_data, get_stock_name
 from indicators import calculate_all_indicators
