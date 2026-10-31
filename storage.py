@@ -59,8 +59,8 @@ def get_stock_chinese_name(pure_code: str) -> str:
                 soup = BeautifulSoup(res.text, "html.parser")
                 for r in soup.find_all("tr"):
                     cols = [td.text.strip() for td in r.find_all("td")]
-                if len(cols) >= 3 and cols[0] == pure_code:
-                    c_name = cols[1]
+                if len(cols) >= 3 and cols[0].startswith(pure_code):
+                    c_name = cols[0].replace(pure_code, "").strip() or cols[1]
                     if c_name:
                         _save_name_cache(pure_code, c_name)
                         return c_name
