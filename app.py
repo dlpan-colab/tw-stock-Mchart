@@ -10,7 +10,7 @@ import datetime
 import streamlit as st
 import streamlit.components.v1 as components
 
-from storage import load_stock_history, save_stock_history, update_stock_name_only, clear_stock_history
+from storage import load_stock_history, save_stock_history, update_stock_name_only, clear_stock_history, remove_stocks_from_history
 from chart_builder import build_split_figures
 from frontend import get_legend_html, get_component_html
 
@@ -56,29 +56,54 @@ def navigate_history(direction: int):
     st.session_state.ticker_input_field = target_code
     st.session_state.active_ticker = target_code
     # 絕不調用 save_stock_history，維持原有清單排列
-
+#############################################################################
 # 側邊欄參數設定
 with st.sidebar:
     st.header("參數設定")
     hist = st.session_state.history_list
-    hist_options = ["(選擇歷史標的)"] + [f"{h.get('code')} ({h.get('name')})" for h in hist]
+    hist_dict = {f"{h.get('code')} ({h.get('name')})": h.get('code') for h in hist}
+    hist_display_options = list(hist_dict.keys())
 
-    st.selectbox(
-        "歷史紀錄快速選取",
-        options=hist_options,
-        index=0,
-        key="hist_select",
-        on_change=on_hist_change
+    # 下拉複選框 (支援打勾多選)
+    selected_items = st.multiselect(
+        "查詢歷史紀錄",
+        options=hist_display_options,
+        default=[],
+        placeholder="點擊展開並勾選標的...",
+        key="hist_multiselect"
     )
 
     s_ticker = st.text_input("股票代號 (直接鍵入)", key="ticker_input_field").strip()
 
+    # 清除歷史記錄邏輯控制
     if st.button("清除歷史記錄", type="secondary"):
-        clear_stock_history()
-        st.session_state.history_list = []
-        st.success("已清除歷史紀錄！")
-        st.rerun()
+        if selected_items:
+            # 僅清除勾選的選項
+            codes_to_del = [hist_dict[item] for item in selected_items if item in hist_dict]
+            st.session_state.history_list = remove_stocks_from_history(codes_to_del)
+            st.session_state.show_clear_all_confirm = False
+            st.success(f"已清除已勾選的 {len(codes_to_del)} 筆紀錄！")
+            st.rerun()
+        else:
+            # 未勾選任何選項：啟動全數清除確認
+            st.session_state.show_clear_all_confirm = True
 
+    # 未勾選時之全數清除二次確認防線
+    if st.session_state.get("show_clear_all_confirm", False):
+        st.warning("⚠️ 尚未勾選任何項目，是否確認要清空『全部』歷史紀錄？")
+        col_c1, col_c2 = st.columns(2)
+        with col_c1:
+            if st.button("確認全清", type="primary", use_container_width=True):
+                clear_stock_history()
+                st.session_state.history_list = []
+                st.session_state.show_clear_all_confirm = False
+                st.success("已清空全部歷史紀錄！")
+                st.rerun()
+        with col_c2:
+            if st.button("取消", use_container_width=True):
+                st.session_state.show_clear_all_confirm = False
+                st.rerun()
+#############################################################################
     s_period = st.selectbox("下載區間", options=['6mo', '1y', '2y', '5y', 'max'], index=1)
     s_mode = st.selectbox("模式切換", options=['手機版 (Mobile) - 預設20日', '筆電版 (Desktop) - 預設60日'], index=0)
     s_days = st.number_input("顯示日數", min_value=5, max_value=2000, value=20 if '手機版' in s_mode else 60, step=5)
