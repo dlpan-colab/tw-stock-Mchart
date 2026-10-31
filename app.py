@@ -82,7 +82,7 @@ def handle_next():
         st.session_state.stock_id = history_codes[0]
 
 # 3. 第三行：[上一檔][下一檔]功能鍵
-c1, c2, _ = st.columns([1, 1, 8])
+c1, c2, _ = st.columns([2, 2, 8])
 with c1:
     st.button("◀ 上一檔", key="top_prev", on_click=handle_prev)
 with c2:
@@ -205,7 +205,7 @@ if df is not None and not df.empty:
     st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
 
     # 第三塊資訊區下方：[◀ 上一檔] [下一檔 ▶] 功能鍵
-    b1, b2, _ = st.columns([1, 1, 8])
+    b1, b2, _ = st.columns([2, 2, 8])
     with b1:
         st.button("◀ 上一檔", key="bottom_prev", on_click=handle_prev)
     with b2:
