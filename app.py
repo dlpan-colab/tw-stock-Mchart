@@ -1,9 +1,9 @@
 """
 app.py - 主應用程式介面與生命週期控制
-版本: 202610302000
+版本: 202610311740
 """
 
-VERSION_TAG = "202610302000"
+MODULE_VERSION = "202610311740"
 
 import re
 import datetime
@@ -73,17 +73,6 @@ with st.sidebar:
 
     s_ticker = st.text_input("股票代號 (直接鍵入)", key="ticker_input_field").strip()
 
-    # 上一個 / 下一個巡覽功能鍵
-    col_nav1, col_nav2 = st.columns(2)
-    with col_nav1:
-        if st.button("◀ 上一檔", use_container_width=True):
-            navigate_history(-1)
-            st.rerun()
-    with col_nav2:
-        if st.button("下一檔 ▶", use_container_width=True):
-            navigate_history(1)
-            st.rerun()
-
     if st.button("清除歷史記錄", type="secondary"):
         clear_stock_history()
         st.session_state.history_list = []
@@ -114,8 +103,19 @@ with st.sidebar:
 is_mobile = ('手機版' in s_mode)
 status_box = st.empty()
 
-# 頂部僅保留簡潔版本識別標籤
-st.markdown(get_legend_html(VERSION_TAG), unsafe_allow_html=True)
+# 頂部版本識別標籤（全系統最大版本號）
+st.markdown(get_legend_html(), unsafe_allow_html=True)
+
+# 巡覽功能鍵（移至主畫面：版本識別下方、第一個資訊區塊上方）
+col_nav1, col_nav2 = st.columns(2)
+with col_nav1:
+    if st.button("◀ 上一檔", use_container_width=True):
+        navigate_history(-1)
+        st.rerun()
+with col_nav2:
+    if st.button("下一檔 ▶", use_container_width=True):
+        navigate_history(1)
+        st.rerun()
 
 target_code = parse_pure_code(st.session_state.active_ticker)
 fig_top, fig_btm, df, c_name, end_idx, disp_n = build_split_figures(
