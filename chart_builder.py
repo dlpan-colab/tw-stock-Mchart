@@ -1,6 +1,6 @@
 """
 chart_builder.py - Plotly 圖表繪製與資訊區跨圖同步對齊模組
-版本: cha_202610311250
+版本: cha_202610311310
 """
 
 import plotly.graph_objects as go
@@ -8,7 +8,7 @@ from plotly.subplots import make_subplots
 import pandas as pd
 import numpy as np
 
-MODULE_VERSION = "cha_202610311250"
+MODULE_VERSION = "cha_202610311310"
 
 def render_master_chart(df: pd.DataFrame, stock_info: dict, m1: int = 1000, m2: int = 400) -> go.Figure:
     if df is None or df.empty:
@@ -16,7 +16,7 @@ def render_master_chart(df: pd.DataFrame, stock_info: dict, m1: int = 1000, m2: 
 
     df = df.copy()
 
-    # 1. 股票標題資訊
+    # 1. 股票基本標記
     market_raw = stock_info.get("market", "")
     market_str = "市" if "市" in market_raw else "櫃"
     stock_name = stock_info.get("name", "")
@@ -67,21 +67,42 @@ def render_master_chart(df: pd.DataFrame, stock_info: dict, m1: int = 1000, m2: 
         except Exception:
             return 0.0
 
-    # 3. 預先組合三大資訊區文字列
-    info1_texts = []
+    # 3. 組合資訊區動態文字列 (隨游標日期即時跳動)
+    info_texts = []
     for i in range(len(df)):
         o = to_safe_float(df['Open'].iloc[i])
         h = to_safe_float(df['High'].iloc[i])
         l = to_safe_float(df['Low'].iloc[i])
         c = to_safe_float(df['Close'].iloc[i])
-        txt = f"<b>{dates_str[i]}</b> 開:{o:.2f} 高:{h:.2f} 低:{l:.2f} 收:{c:.2f}"
+        
+        txt = f"<b>{main_title}</b> | <b>{dates_str[i]}</b> 開:{o:.2f} 高:{h:.2f} 低:{l:.2f} 收:{c:.2f}"
         if 'MA5' in df.columns:
             txt += f" | MA5:{to_safe_float(df['MA5'].iloc[i]):.2f}"
         if 'MA20' in df.columns:
             txt += f" MA20:{to_safe_float(df['MA20'].iloc[i]):.2f}"
         if 'MA60' in df.columns:
             txt += f" MA60:{to_safe_float(df['MA60'].iloc[i]):.2f}"
-        info1_texts.append(txt)
+            
+        # 指標與籌碼附加行
+        k_val = to_safe_float(df[c_k].iloc[i]) if c_k else 0.0
+        d_val = to_safe_float(df[c_d].iloc[i]) if c_d else 0.0
+        obv_val = to_safe_int(df[c_obv].iloc[i]) if c_obv else 0
+        dif_val = to_safe_float(df[c_dif].iloc[i]) if c_dif else 0.0
+        macd_val = to_safe_float(df[c_macd].iloc[i]) if c_macd else 0.0
+        osc_val = to_safe_float(df[c_osc].iloc[i]) if c_osc else 0.0
+        
+        md = to_safe_int(df[c_mdiff].iloc[i]) if c_mdiff else 0
+        sd = to_safe_int(df[c_sdiff].iloc[i]) if c_sdiff else 0
+        mr = to_safe_float(df[c_mratio].iloc[i]) if c_mratio else 0.0
+        fb = to_safe_int(df[c_for].iloc[i]) if c_for else 0
+        tb = to_safe_int(df[c_tru].iloc[i]) if c_tru else 0
+        db = to_safe_int(df[c_dea].iloc[i]) if c_dea else 0
+        m1_r = to_safe_float(df[c_m1].iloc[i]) if c_m1 else 0.0
+        m2_r = to_safe_float(df[c_m2].iloc[i]) if c_m2 else 0.0
+
+        txt += (f"<br>KD(9) K:{k_val:.1f} D:{d_val:.1f} | OBV:{obv_val:,} | MACD DIF:{dif_val:.2f} MACD:{macd_val:.2f} OSC:{osc_val:.2f}"
+                f"<br>資增減:{md:+} 券增減:{sd:+} 券資比:{mr:.1f}% | 外資:{fb:+} 投信:{tb:+} 自營:{db:+} | 大戶 ≥{m1}張:{m1_r:.2f}% ≥{m2}張:{m2_r:.2f}%")
+        info_texts.append(txt)
 
     # 4. 配置 5 層子圖結構
     fig = make_subplots(
@@ -99,7 +120,7 @@ def render_master_chart(df: pd.DataFrame, stock_info: dict, m1: int = 1000, m2: 
         name="K線",
         increasing_line_color='#e12f2f',
         decreasing_line_color='#2ca02c',
-        hoverinfo='none'
+        hoverinfo='skip'
     ), row=1, col=1)
 
     for ma_name, color in [('MA5', '#f39c12'), ('MA20', '#2980b9'), ('MA60', '#8e44ad')]:
@@ -108,8 +129,20 @@ def render_master_chart(df: pd.DataFrame, stock_info: dict, m1: int = 1000, m2: 
                 x=df.index, y=df[ma_name],
                 name=ma_name,
                 line=dict(color=color, width=1.2),
-                hoverinfo='none'
+                hoverinfo='skip'
             ), row=1, col=1)
+
+    # 固定在頂部的動態資訊錨點 (隨滑鼠連動切換資訊，不產生浮動白框)
+    max_y = df['High'].max() * 1.02 if 'High' in df.columns else 100
+    fig.add_trace(go.Scatter(
+        x=df.index, y=[max_y] * len(df),
+        mode='markers',
+        marker=dict(size=0.1, opacity=0),
+        name="",
+        hovertext=info_texts,
+        hoverinfo='text',
+        showlegend=False
+    ), row=1, col=1)
 
     # ================== Row 2: 成交量副圖 ==================
     if c_vol:
@@ -119,60 +152,59 @@ def render_master_chart(df: pd.DataFrame, stock_info: dict, m1: int = 1000, m2: 
             name="成交量",
             marker_color=vol_colors,
             opacity=0.7,
-            hoverinfo='none'
+            hoverinfo='skip'
         ), row=2, col=1)
 
     # ================== Row 3: 法人買賣超副圖 ==================
     if c_for:
-        fig.add_trace(go.Bar(x=df.index, y=df[c_for], name="外資(張)", marker_color='#d63031', hoverinfo='none'), row=3, col=1)
+        fig.add_trace(go.Bar(x=df.index, y=df[c_for], name="外資(張)", marker_color='#d63031', hoverinfo='skip'), row=3, col=1)
     if c_tru:
-        fig.add_trace(go.Bar(x=df.index, y=df[c_tru], name="投信(張)", marker_color='#0984e3', hoverinfo='none'), row=3, col=1)
+        fig.add_trace(go.Bar(x=df.index, y=df[c_tru], name="投信(張)", marker_color='#0984e3', hoverinfo='skip'), row=3, col=1)
     if c_dea:
-        fig.add_trace(go.Bar(x=df.index, y=df[c_dea], name="自營(張)", marker_color='#fdcb6e', hoverinfo='none'), row=3, col=1)
+        fig.add_trace(go.Bar(x=df.index, y=df[c_dea], name="自營(張)", marker_color='#fdcb6e', hoverinfo='skip'), row=3, col=1)
 
     # ================== Row 4: 資券增減副圖 ==================
     if c_mdiff:
-        fig.add_trace(go.Bar(x=df.index, y=df[c_mdiff], name="融資增減", marker_color='#e17055', hoverinfo='none'), row=4, col=1)
+        fig.add_trace(go.Bar(x=df.index, y=df[c_mdiff], name="融資增減", marker_color='#e17055', hoverinfo='skip'), row=4, col=1)
     if c_sdiff:
-        fig.add_trace(go.Bar(x=df.index, y=df[c_sdiff], name="融券增減", marker_color='#00cec9', hoverinfo='none'), row=4, col=1)
+        fig.add_trace(go.Bar(x=df.index, y=df[c_sdiff], name="融券增減", marker_color='#00cec9', hoverinfo='skip'), row=4, col=1)
 
     # ================== Row 5: 大戶持股比例副圖 ==================
     if c_m1:
-        fig.add_trace(go.Scatter(x=df.index, y=df[c_m1], name=f"≥{m1}張%", line=dict(color='#d63031', width=1.5), hoverinfo='none'), row=5, col=1)
+        fig.add_trace(go.Scatter(x=df.index, y=df[c_m1], name=f"≥{m1}張%", line=dict(color='#d63031', width=1.5), hoverinfo='skip'), row=5, col=1)
     if c_m2:
-        fig.add_trace(go.Scatter(x=df.index, y=df[c_m2], name=f"≥{m2}張%", line=dict(color='#0984e3', width=1.5), hoverinfo='none'), row=5, col=1)
-
-    # 頂部固定資訊文字
-    last_idx = len(df) - 1
-    annotations = [
-        dict(
-            text=f"<b>{main_title}</b> | {info1_texts[last_idx]}",
-            xref="paper", yref="paper",
-            x=0.0, y=1.03,
-            showarrow=False,
-            font=dict(size=13, color="#111111"),
-            xanchor="left", yanchor="bottom"
-        )
-    ]
-
-    # 強制所有 trace 不顯示 hover 內容（無白框）
-    fig.update_traces(hoverinfo='none')
+        fig.add_trace(go.Scatter(x=df.index, y=df[c_m2], name=f"≥{m2}張%", line=dict(color='#0984e3', width=1.5), hoverinfo='skip'), row=5, col=1)
 
     fig.update_layout(
         height=940,
-        annotations=annotations,
         xaxis_rangeslider_visible=False,
         showlegend=False,
-        margin=dict(l=45, r=20, t=45, b=25),
+        margin=dict(l=45, r=20, t=55, b=25),
         barmode="group",
-        hovermode="x",           # 保持 x 模式以觸發十字虛線
-        hoverdistance=100
+        hovermode="x",
+        hoverlabel=dict(
+            bgcolor="rgba(255, 255, 255, 0.9)",
+            bordercolor="#cccccc",
+            font_size=11,
+            font_family="monospace",
+            align="left"
+        )
     )
 
-    # 全子圖垂直十字準線同步貫穿
+    # X 軸垂直貫穿虛線
     fig.update_xaxes(
         type='date',
         tickformat="%Y-%m-%d",
+        showspikes=True,
+        spikemode='across',
+        spikesnap='cursor',
+        spikethickness=1,
+        spikedash='dash',
+        spikecolor='#333333'
+    )
+
+    # Y 軸水平十字虛線 (形成完整十字)
+    fig.update_yaxes(
         showspikes=True,
         spikemode='across',
         spikesnap='cursor',
