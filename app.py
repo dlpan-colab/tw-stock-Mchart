@@ -89,7 +89,7 @@ with st.sidebar:
         save_stock_history(st.session_state.stock_id)
         st.rerun()
 
-st.markdown(get_legend_html(), unsafe_allow_html=True)
+st.subheader(f"台股技術與籌碼分析 v{MODULE_VERSION}")
 
 stock_id = st.session_state.stock_id
 
