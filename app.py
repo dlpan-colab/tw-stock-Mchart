@@ -1,9 +1,8 @@
 """
 app.py - 主應用程式介面與生命週期控制
-版本: 202610311740
+版本: 202610311915
 """
-
-MODULE_VERSION = "202610311740"
+MODULE_VERSION = "202610311915"
 
 import re
 import datetime
@@ -73,6 +72,14 @@ with st.sidebar:
         key="hist_multiselect"
     )
 
+    # 若有勾選歷史標的，自動將最新勾選的一檔代號帶入輸入框與作用中代號
+    if selected_items:
+        latest_code = hist_dict.get(selected_items[-1])
+        if latest_code and st.session_state.get("last_selected_from_multi") != latest_code:
+            st.session_state.last_selected_from_multi = latest_code
+            st.session_state.ticker_input_field = latest_code
+            st.session_state.active_ticker = latest_code
+
     s_ticker = st.text_input("股票代號 (直接鍵入)", key="ticker_input_field").strip()
 
     # 清除歷史記錄邏輯控制
@@ -82,6 +89,7 @@ with st.sidebar:
             codes_to_del = [hist_dict[item] for item in selected_items if item in hist_dict]
             st.session_state.history_list = remove_stocks_from_history(codes_to_del)
             st.session_state.show_clear_all_confirm = False
+            st.session_state.last_selected_from_multi = None
             st.success(f"已清除已勾選的 {len(codes_to_del)} 筆紀錄！")
             st.rerun()
         else:
@@ -97,6 +105,7 @@ with st.sidebar:
                 clear_stock_history()
                 st.session_state.history_list = []
                 st.session_state.show_clear_all_confirm = False
+                st.session_state.last_selected_from_multi = None
                 st.success("已清空全部歷史紀錄！")
                 st.rerun()
         with col_c2:
