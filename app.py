@@ -1,6 +1,6 @@
 """
 app.py - 主應用程式進入點
-版本: app_202610311140
+版本: app_202610311148
 """
 
 import streamlit as st
@@ -14,7 +14,7 @@ import frontend as fro
 import indicators as ind
 import storage as sto
 
-MODULE_VERSION = "app_202610311140"
+MODULE_VERSION = "app_202610311148"
 
 # 頁面基本配置
 st.set_page_config(
@@ -25,7 +25,7 @@ st.set_page_config(
 
 # 讀取各模組完整版本識別字串
 ver_app_full = MODULE_VERSION
-ver_cha_full = getattr(cha, "MODULE_VERSION", "cha_202610311115")
+ver_cha_full = getattr(cha, "MODULE_VERSION", "cha_202610311145")
 ver_dat_full = getattr(dat, "MODULE_VERSION", "dat_202610302000")
 ver_fro_full = getattr(fro, "MODULE_VERSION", "fro_202610302000")
 ver_ind_full = getattr(ind, "MODULE_VERSION", "ind_202610302000")
@@ -81,7 +81,7 @@ def handle_next():
     elif len(history_codes) > 0:
         st.session_state.stock_id = history_codes[0]
 
-# 第三行：[上一檔][下一檔]功能鍵
+# 3. 第三行：[上一檔][下一檔]功能鍵（比例調整避免文字截斷）
 c1, c2, _ = st.columns([1, 1, 3])
 with c1:
     st.button("◀ 上一檔", key="top_prev", on_click=handle_prev, use_container_width=True)
@@ -205,11 +205,10 @@ if df is not None and not df.empty:
     st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
 
     # 第三塊資訊區下方：[◀ 上一檔] [下一檔 ▶] 功能鍵
-b1, b2, _ = st.columns([1, 1, 3])
-with b1:
-    st.button("◀ 上一檔", key="bottom_prev", on_click=handle_prev, use_container_width=True)
-with b2:
-    st.button("下一檔 ▶", key="bottom_next", on_click=handle_next, use_container_width=True)
-    
+    b1, b2, _ = st.columns([1, 1, 3])
+    with b1:
+        st.button("◀ 上一檔", key="bottom_prev", on_click=handle_prev, use_container_width=True)
+    with b2:
+        st.button("下一檔 ▶", key="bottom_next", on_click=handle_next, use_container_width=True)
 else:
     st.error(f"查無標的代碼 {current_code} 之相關資料。")
