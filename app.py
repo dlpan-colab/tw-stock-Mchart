@@ -1,13 +1,20 @@
+"""
+app.py - 主應用程式進入點
+版本: app_311120
+"""
+
 import streamlit as st
 import pandas as pd
 from datetime import datetime
 
-# 導入自訂模組
-import charts as cha
-import data_loader as dat
-import frontend_ui as fro
+# 導入既有模組
+import chart_builder as cha
+import data_fetcher as dat
+import frontend as fro
 import indicators as ind
-import stock_history as sto
+import storage as sto
+
+MODULE_VERSION = "app_311120"
 
 # 頁面基本配置
 st.set_page_config(
@@ -16,15 +23,14 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# 版本識別日期摘要 (DDhhmm)
-VER_APP = "app_311056"
-VER_CHA = "cha_311056"
-VER_DAT = "dat_311056"
-VER_FRO = "fro_311056"
-VER_IND = "ind_311056"
-VER_STO = "sto_311056"
+# 讀取各模組版本識別字串
+ver_app = getattr(cha, "MODULE_VERSION", "cha_311115")
+ver_dat = getattr(dat, "MODULE_VERSION", "dat_311100")
+ver_fro = getattr(fro, "MODULE_VERSION", "fro_311100")
+ver_ind = getattr(ind, "MODULE_VERSION", "ind_311100")
+ver_sto = getattr(sto, "MODULE_VERSION", "sto_311112")
 
-MODULE_VERSIONS = f"{VER_APP}/{VER_CHA}/{VER_DAT}/{VER_FRO}/{VER_IND}/{VER_STO}/"
+MODULE_VERSIONS = f"{MODULE_VERSION}/{ver_cha}/{ver_dat}/{ver_fro}/{ver_ind}/{ver_sto}/"
 
 # 1. 第一行：標題
 st.markdown("## 台股技術指標與籌碼分析(模組)")
@@ -35,27 +41,30 @@ st.caption(MODULE_VERSIONS)
 # 初始化 Session State
 if "stock_id" not in st.session_state:
     st.session_state.stock_id = "8111"
+if "confirm_clear_all" not in st.session_state:
+    st.session_state.confirm_clear_all = False
 
-# 載入歷史紀錄清單
-history_list = sto.get_history_list()
+# 讀取持久化歷史清單
+history_data = sto.load_stock_history()
+history_codes = [str(item.get("code")).strip() for item in history_data]
 
 def handle_prev():
-    curr = st.session_state.stock_id
-    if curr in history_list:
-        idx = history_list.index(curr)
+    curr = str(st.session_state.stock_id).strip()
+    if curr in history_codes:
+        idx = history_codes.index(curr)
         if idx > 0:
-            st.session_state.stock_id = history_list[idx - 1]
-    elif len(history_list) > 0:
-        st.session_state.stock_id = history_list[0]
+            st.session_state.stock_id = history_codes[idx - 1]
+    elif len(history_codes) > 0:
+        st.session_state.stock_id = history_codes[0]
 
 def handle_next():
-    curr = st.session_state.stock_id
-    if curr in history_list:
-        idx = history_list.index(curr)
-        if idx < len(history_list) - 1:
-            st.session_state.stock_id = history_list[idx + 1]
-    elif len(history_list) > 0:
-        st.session_state.stock_id = history_list[0]
+    curr = str(st.session_state.stock_id).strip()
+    if curr in history_codes:
+        idx = history_codes.index(curr)
+        if idx < len(history_codes) - 1:
+            st.session_state.stock_id = history_codes[idx + 1]
+    elif len(history_codes) > 0:
+        st.session_state.stock_id = history_codes[0]
 
 # 3. 第三行：[上一檔][下一檔]功能鍵
 c1, c2, _ = st.columns([1, 1, 8])
@@ -68,15 +77,16 @@ with c2:
 with st.sidebar:
     st.subheader("參數設定")
     
-    # 查詢歷史紀錄管理
+    # 查詢歷史紀錄清單與勾選管理
     st.markdown("### 查詢歷史紀錄")
-    
     selected_to_remove = []
-    if history_list:
-        for code in history_list:
-            chk = st.checkbox(code, key=f"hist_chk_{code}")
-            if chk:
-                selected_to_remove.append(code)
+    if history_data:
+        for item in history_data:
+            c = item.get("code", "")
+            n = item.get("name", "")
+            label = f"{n}({c})" if n and n != c else c
+            if st.checkbox(label, key=f"hist_chk_{c}"):
+                selected_to_remove.append(c)
     else:
         st.caption("尚無歷史紀錄")
 
@@ -87,12 +97,12 @@ with st.sidebar:
         else:
             st.session_state.confirm_clear_all = True
 
-    if st.session_state.get("confirm_clear_all", False):
+    if st.session_state.confirm_clear_all:
         st.warning("未勾選任何項目，是否確認清除所有歷史清單？")
         ca1, ca2 = st.columns(2)
         with ca1:
             if st.button("確定全部清除", key="btn_confirm_all"):
-                sto.clear_all_history()
+                sto.clear_stock_history()
                 st.session_state.confirm_clear_all = False
                 st.rerun()
         with ca2:
@@ -100,7 +110,7 @@ with st.sidebar:
                 st.session_state.confirm_clear_all = False
                 st.rerun()
 
-    # 股票代號輸入
+    # 股票代號輸入（已移除上一檔/下一檔功能鍵）
     input_stock = st.text_input("股票代號 (直接鍵入)", value=st.session_state.stock_id)
     if input_stock != st.session_state.stock_id:
         st.session_state.stock_id = input_stock
@@ -114,16 +124,16 @@ with st.sidebar:
     
     query_btn = st.button("查詢")
 
-# 資料讀取與指標計算
-current_code = st.session_state.stock_id
+# 資料載入與運算
+current_code = str(st.session_state.stock_id).strip()
 stock_info, df = dat.load_stock_data(current_code, period)
 
 if df is not None and not df.empty:
-    sto.add_to_history(current_code)
+    sto.save_stock_history(current_code, stock_info.get("name"))
     df = ind.calculate_indicators(df, m1, m2)
     display_df = df.tail(display_days).copy()
     
-    # 繪製圖表 (包含三大資訊區及格式修訂)
+    # 繪製主圖表
     fig = cha.render_master_chart(display_df, stock_info, m1, m2)
     st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
 
