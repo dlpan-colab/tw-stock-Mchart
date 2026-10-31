@@ -58,12 +58,12 @@ def get_stock_chinese_name(pure_code: str) -> str:
             if res.status_code == 200:
                 soup = BeautifulSoup(res.text, "html.parser")
                 for r in soup.find_all("tr"):
-                    cols = r.find_all("td")
-                    if len(cols) >= 3 and cols[1].text.strip() == pure_code:
-                        c_name = cols[2].text.strip()
-                        if c_name:
-                            _save_name_cache(pure_code, c_name)
-                            return c_name
+                    cols = [td.text.strip() for td in r.find_all("td")]
+                if len(cols) >= 3 and cols[0] == pure_code:
+                    c_name = cols[1]
+                    if c_name:
+                        _save_name_cache(pure_code, c_name)
+                        return c_name
         except Exception:
             pass
         if attempt == 0:
