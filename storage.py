@@ -1,6 +1,6 @@
 """
 storage.py - 本地 SQLite 資料庫與股票歷史紀錄管理器
-版本: 202610302000
+版本: sto_311110
 """
 
 import os
@@ -11,11 +11,13 @@ import requests
 from bs4 import BeautifulSoup
 import pandas as pd
 
+MODULE_VERSION = "sto_311110"
+
 STORAGE_DIR = "."
 HISTORY_FILE = os.path.join(STORAGE_DIR, "stock_history.json")
 NAMES_CACHE_FILE = os.path.join(STORAGE_DIR, "tw_stock_names.json")
 
-# 內建常用名稱對照表 (6234 正確對應「高僑」，5439 對應「高技」)
+# 內建常用名稱對照表
 COMMON_STOCK_NAMES = {
     "1101": "台泥", "1102": "亞泥", "1104": "環泥", "1216": "統一",
     "1301": "台塑", "1303": "南亞", "1312": "國喬", "1326": "台化",
@@ -106,44 +108,32 @@ def load_stock_history():
             {"code": "2330", "name": "台積電"}
         ]
 
-    # 清洗：確保 name 不為空且不等於 code
     for item in data:
         code = str(item.get("code", "")).strip()
         curr_name = str(item.get("name", "")).strip()
         if not curr_name or curr_name == code:
             item["name"] = get_stock_chinese_name(code)
-
     return data
 
 def save_stock_history(code: str, name: str = None):
-    """
-    輸入查詢或選單選取時調用：將該股票提升到清單第 1 筆 (Index 0)
-    """
+    """輸入查詢或選單選取時調用：將該股票提升到清單第 1 筆 (Index 0)"""
     code = str(code).strip()
     if not code:
         return load_stock_history()
-
     c_name = name.strip() if name and name.strip() != code else get_stock_chinese_name(code)
     history = load_stock_history()
-
-    # 移除舊有同代碼項
     new_hist = [h for h in history if str(h.get("code")).strip() != code]
-    # 置頂
     new_hist.insert(0, {"code": code, "name": c_name})
     new_hist = new_hist[:30]
-
     try:
         with open(HISTORY_FILE, "w", encoding="utf-8") as f:
             json.dump(new_hist, f, ensure_ascii=False, indent=2)
     except Exception:
         pass
-
     return new_hist
 
 def update_stock_name_only(code: str, name: str):
-    """
-    上一檔/下一檔巡覽時調用：僅修正名稱缺漏，絕不變動歷史清單的排列順序
-    """
+    """上一檔/下一檔巡覽時調用：僅修正名稱缺漏，絕不變動歷史清單的排列順序"""
     code = str(code).strip()
     if not code or not name or name.strip() == code:
         return
@@ -162,7 +152,19 @@ def update_stock_name_only(code: str, name: str):
         except Exception:
             pass
 
+def remove_history_items(codes_to_remove: list):
+    """僅移除被勾選項"""
+    history = load_stock_history()
+    new_hist = [h for h in history if str(h.get("code")).strip() not in codes_to_remove]
+    try:
+        with open(HISTORY_FILE, "w", encoding="utf-8") as f:
+            json.dump(new_hist, f, ensure_ascii=False, indent=2)
+    except Exception:
+        pass
+    return new_hist
+
 def clear_stock_history():
+    """清除全部歷史清單"""
     try:
         if os.path.exists(HISTORY_FILE):
             os.remove(HISTORY_FILE)
