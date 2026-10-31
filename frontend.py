@@ -1,24 +1,41 @@
 """
 frontend.py - 前端互動視圖模組
-版本: 202610302000
+版本: 202610311740
 """
 
 import json
 import pandas as pd
 
-VERSION_TAG = "202610302000"
+MODULE_VERSION = "202610311740"
 
-def get_legend_html(version_tag: str = VERSION_TAG) -> str:
+def get_system_version() -> str:
+    versions = [MODULE_VERSION]
+    module_names = ["app", "chart_builder", "indicators", "data_fetcher", "storage", "config", "cloud_sync"]
+    for mod_name in module_names:
+        try:
+            mod = __import__(mod_name)
+            v = getattr(mod, "MODULE_VERSION", getattr(mod, "VERSION_TAG", None))
+            if v:
+                versions.append(str(v).strip())
+        except Exception:
+            pass
+    return max(versions)
+
+SYSTEM_VERSION = get_system_version()
+VERSION_TAG = SYSTEM_VERSION
+
+def get_legend_html(version_tag: str = None) -> str:
     """
     僅保留簡潔的版本識別標籤與運作指示燈，刪除冗長文字圖例
     """
+    tag = version_tag if version_tag else SYSTEM_VERSION
     return f"""
 <style>
   @keyframes app-spin {{ 0% {{ transform: rotate(0deg); }} 100% {{ transform: rotate(360deg); }} }}
   .app-loading-ring {{ display: inline-block; width: 13px; height: 13px; border: 2px solid rgba(41, 128, 185, 0.25); border-top: 2px solid #2980b9; border-radius: 50%; animation: app-spin 0.8s linear infinite; vertical-align: middle; margin-left: 6px; }}
 </style>
 <div style="font-size: 14px; margin-bottom: 4px; padding: 2px 8px; display: inline-flex; align-items: center; background: #f8fafc; border-radius: 4px; border: 1px solid #e2e8f0;">
-  <span style="background:#2c3e50; color:#ffffff; padding: 1px 6px; border-radius: 4px; font-weight:bold; font-size:12px;">v{version_tag}</span>
+  <span style="background:#2c3e50; color:#ffffff; padding: 1px 6px; border-radius: 4px; font-weight:bold; font-size:12px;">v{tag}</span>
   <span id="app_loading_spinner" class="app-loading-ring" style="display:none;" title="運作中..."></span>
 </div>
 """
