@@ -1,18 +1,16 @@
 """
 frontend.py - 前端 HTML/CSS 渲染與版本彙整模組
-版本: 202610312035
+版本: 202610312036
 """
 import os
 import re
 
-MODULE_VERSION = "202610312035"
+MODULE_VERSION = "202610312036"
 
 def get_system_version() -> str:
     """自動萃取各模組版本並回傳系統最大版本號"""
     versions = [MODULE_VERSION]
     module_names = ["chart_builder", "indicators", "data_fetcher", "storage", "config", "cloud_sync"]
-    
-    # app.py 以讀檔方式取得，避免循環匯入問題
     try:
         base_dir = os.path.dirname(os.path.abspath(__file__))
         app_file = os.path.join(base_dir, "app.py")
@@ -38,42 +36,22 @@ def get_system_version() -> str:
 SYSTEM_VERSION = get_system_version()
 
 def get_legend_html(version_tag: str = None) -> str:
-    """
-    台股技術與籌碼分析[頂部版本識別]標籤與運作指示燈
-    """
+    """頂部版本識別標籤"""
     tag = version_tag if version_tag else SYSTEM_VERSION
     return f"""
-    <style>
-    @keyframes app-spin {{
-        0% {{ transform: rotate(0deg); }}
-        100% {{ transform: rotate(360deg); }}
-    }}
-    .app-loading-ring {{
-        display: inline-block;
-        width: 13px;
-        height: 13px;
-        border: 2px solid rgba(41, 128, 185, 0.25);
-        border-top: 2px solid #2980b9;
-        border-radius: 50%;
-        animation: app-spin 0.8s linear infinite;
-        vertical-align: middle;
-        margin-left: 6px;
-    }}
-    </style>
     <div style="font-size: 14px; margin-bottom: 4px; padding: 2px 8px; display: inline-flex; align-items: center; background: #f8fafc; border-radius: 4px; border: 1px solid #e2e8f0;">
         <span style="background:#2c3e50; color:#ffffff; padding: 2px 8px; border-radius: 4px; font-weight:bold; font-size:12px;">台股技術與籌碼分析 v{tag}</span>
-        <span id="app_loading_spinner" class="app-loading-ring" style="display:none;" title="運作中..."></span>
     </div>
     """
 
 js_template = """
 <style>
-   .plot-main-container {
+  .plot-main-container {
     position: relative;
     width: 100%;
     box-sizing: border-box;
     overflow: hidden !important;
-    padding-bottom: 20px !important;
+    padding-bottom: 10px !important;
   }
   .touch-plot-box {
     position: relative;
@@ -102,25 +80,14 @@ js_template = """
     width: 100%;
     box-sizing: border-box;
     margin: 4px 0;
-    display: flex;
-    flex-direction: column;
-    gap: 4px;
-  }
-  .middle-inserted-bar .pane-info-bar {
-    width: 100%;
-    box-sizing: border-box;
   }
   .bottom-chip-deck {
     width: 100%;
     box-sizing: border-box;
-    margin-top: 6px;
+    margin-top: 4px;
     display: flex;
     flex-direction: column;
     gap: 4px;
-  }
-  .bottom-chip-deck .pane-info-bar {
-    width: 100%;
-    box-sizing: border-box;
   }
   .sync-crosshair-line {
     position: absolute;
@@ -134,7 +101,7 @@ js_template = """
   }
   .sync-price-line {
     position: absolute;
-    left: 80px;
+    left: 60px;
     right: 15px;
     height: 1px;
     border-top: 1px dotted rgba(44, 62, 80, 0.75);
@@ -192,14 +159,13 @@ js_template = """
 
   var totalPoints = dates.length;
   var isUpdating = false;
-  var debounceTimer = null;
 
   var targetDays = Number(__INITIAL_DISP_DAYS__) || 20;
   var initEnd = __INITIAL_END_IDX__;
   var initStart = Math.max(0, initEnd - targetDays + 1);
 
   pTop.layout.xaxis.range = [initStart - 0.5, initEnd + 0.5];
-  pTop.layout.xaxis2.range = [initStart - 0.5, initEnd + 0.5];
+  if (pTop.layout.xaxis2) pTop.layout.xaxis2.range = [initStart - 0.5, initEnd + 0.5];
 
   for (var r = 1; r <= 9; r++) {
     var k = (r === 1) ? 'xaxis' : 'xaxis' + r;
@@ -231,7 +197,6 @@ js_template = """
     var pct = prevC ? (diff / prevC * 100) : 0;
     var cClass = diff > 0 ? 'val-up' : (diff < 0 ? 'val-dn' : '');
 
-    // 主圖資訊
     info1.innerHTML = '<span class="tag-lbl"><b>' + d + '</b></span>' +
       '開:<span class="' + (o > prevC ? 'val-up' : (o < prevC ? 'val-dn' : '')) + '">' + fmtNum(o, 2) + '</span> ' +
       '高:<span class="' + (h > prevC ? 'val-up' : (h < prevC ? 'val-dn' : '')) + '">' + fmtNum(h, 2) + '</span> ' +
@@ -241,28 +206,21 @@ js_template = """
       '<span class="tag-lbl"><b>換手:' + fmtNum(turnovers[idx], 2) + '%</b></span> ' +
       'MA5:' + fmtNum(ma5s[idx], 2) + ' MA20:' + fmtNum(ma20s[idx], 2) + ' MA60:' + fmtNum(ma60s[idx], 2);
 
-    // 中段技術指標資訊區 (第一行: 日期 KD OBV; 第二行: MACD)
     var oscClass = oscs[idx] > 0 ? 'val-up' : (oscs[idx] < 0 ? 'val-dn' : '');
     infoTech.innerHTML = '<div><span class="tag-lbl"><b>' + d + '</b></span> <span class="tag-lbl"><b>KD(9)</b></span><span style="color:#e74c3c;">K:' + fmtNum(ks[idx], 1) + '</span> <span style="color:#3498db;">D:' + fmtNum(ds[idx], 1) + '</span> | <span class="tag-lbl"><b>OBV</b></span><span style="color:#16a085;">OBV:' + fmtNum(obvs[idx], 0) + '</span> <span style="color:#8e44ad;">MA20:' + fmtNum(obvMas[idx], 0) + '</span></div>' +
                          '<div><span class="tag-lbl"><b>MACD(' + d + ')</b></span><span style="color:#f39c12;">DIF:' + fmtNum(difs[idx], 2) + '</span> <span style="color:#2980b9;">MACD:' + fmtNum(macds[idx], 2) + '</span> OSC:<span class="' + oscClass + '">' + fmtNum(oscs[idx], 2) + '</span></div>';
 
-    // 底部資券資訊
     infoMs.innerHTML = '<span class="tag-lbl"><b>資券[千張](' + d + ')</b></span>' +
       '融資:' + fmtDiff(mDiffs[idx], 3) + ' 融券:' + fmtDiff(sDiffs[idx], 3) + ' ' +
       '<span class="tag-lbl"><b>券資比:' + fmtNum(rat[idx], 2) + '%</b></span>';
 
-    // 底部法人與集保資訊
     infoChip.innerHTML = '<span class="tag-lbl"><b>法人集保(' + d + ')</b></span>' +
       '外資:' + fmtDiff(foreigns[idx], 0) + ' 投信:' + fmtDiff(trusts[idx], 0) + ' 自營:' + fmtDiff(dealers[idx], 0) + ' | ' +
       '≥' + m1_thresh + '張: ' + fmtNum(m1_pcts[idx], 2) + '% ' +
       '≥' + m2_thresh + '張: ' + fmtNum(m2_pcts[idx], 2) + '%';
   }
 
-  var cfg = {
-    responsive: true,
-    displayModeBar: false,
-    scrollZoom: false
-  };
+  var cfg = { responsive: true, displayModeBar: false, scrollZoom: false };
 
   Plotly.newPlot(elTop, pTop.data, pTop.layout, cfg).then(function() {
     return Plotly.newPlot(elBtm, pBtm.data, pBtm.layout, cfg);
@@ -286,21 +244,15 @@ js_template = """
               upd[ax + '.autorange'] = false;
             }
           }
-          Plotly.relayout(destEl, upd).then(function() {
-            isUpdating = false;
-          }).catch(function() { isUpdating = false; });
+          Plotly.relayout(destEl, upd).then(function() { isUpdating = false; }).catch(function() { isUpdating = false; });
         } else if (auto) {
           isUpdating = true;
           var updAuto = {};
           for (var j = 1; j <= 9; j++) {
             var axAuto = (j === 1) ? 'xaxis' : 'xaxis' + j;
-            if (destEl.layout[axAuto]) {
-              updAuto[axAuto + '.autorange'] = true;
-            }
+            if (destEl.layout[axAuto]) updAuto[axAuto + '.autorange'] = true;
           }
-          Plotly.relayout(destEl, updAuto).then(function() {
-            isUpdating = false;
-          }).catch(function() { isUpdating = false; });
+          Plotly.relayout(destEl, updAuto).then(function() { isUpdating = false; }).catch(function() { isUpdating = false; });
         }
       });
     }
@@ -315,13 +267,15 @@ js_template = """
       if (idx >= 0 && idx < totalPoints) {
         updateAllPanes(idx);
 
-        var xPixel = pt.xaxis.d2p(pt.x) + pt.xaxis._offset;
-        lineTop.style.left = xPixel + 'px';
-        lineBtm.style.left = xPixel + 'px';
-        lineTop.style.display = 'block';
-        lineBtm.style.display = 'block';
+        var xPixel = (pt.xaxis && pt.xaxis.d2p) ? (pt.xaxis.d2p(pt.x) + pt.xaxis._offset) : null;
+        if (xPixel !== null) {
+          lineTop.style.left = xPixel + 'px';
+          lineBtm.style.left = xPixel + 'px';
+          lineTop.style.display = 'block';
+          lineBtm.style.display = 'block';
+        }
 
-        if (pt.yaxis && pt.y !== undefined) {
+        if (pt.yaxis && pt.yaxis.d2p && pt.y !== undefined) {
           var yPixel = pt.yaxis.d2p(pt.y) + pt.yaxis._offset;
           linePrice.style.top = yPixel + 'px';
           linePrice.style.display = 'block';
@@ -352,7 +306,7 @@ def render_interactive_chart_html(
     initial_disp_days=20,
     initial_end_idx=None
 ) -> str:
-    """渲染雙圖連動及懸停十字線的互動 HTML 容器"""
+    """渲染雙圖連動與懸停十字線的互動 HTML 容器"""
     import json
     import uuid
 
@@ -363,14 +317,12 @@ def render_interactive_chart_html(
     p_top_json = fig_top.to_json()
     p_btm_json = fig_btm.to_json()
 
-    # 序列化各指標陣列以供 JavaScript 懸浮即時讀取
-    
     if 'Date' in df.columns:
         date_series = df['Date']
     else:
         date_series = df.index
     dates_list = date_series.strftime('%Y-%m-%d').tolist() if hasattr(date_series, 'strftime') else [str(x)[:10] for x in date_series]
-    
+
     opens_list = df['Open'].tolist()
     highs_list = df['High'].tolist()
     lows_list = df['Low'].tolist()
@@ -440,10 +392,8 @@ def render_interactive_chart_html(
 
     return html
 
-# 相容 app.py 的函式名稱呼叫
-## get_component_html = render_interactive_chart_html
 def get_component_html(*args, **kwargs):
-    """轉接 app.py 呼叫，過濾非必要參數以相容 render_interactive_chart_html"""
+    """轉接相容 app.py 參數呼叫"""
     import inspect
     sig = inspect.signature(render_interactive_chart_html)
     valid_kwargs = {k: v for k, v in kwargs.items() if k in sig.parameters}
