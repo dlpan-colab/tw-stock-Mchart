@@ -135,5 +135,15 @@ if fig_top is not None:
         fig_top, fig_btm, df, target_code, s_m1, s_m2, end_idx, disp_n, is_mobile=is_mobile
     )
     components.html(html_content, height=total_h, scrolling=False)
+    # 底部巡覽功能鍵（最下方圖區之後）
+    col_btm_nav1, col_btm_nav2 = st.columns(2)
+    with col_btm_nav1:
+        if st.button("◀ 上一檔", key="btn_prev_bottom", use_container_width=True):
+            navigate_history(-1)
+            st.rerun()
+    with col_btm_nav2:
+        if st.button("下一檔 ▶", key="btn_next_bottom", use_container_width=True):
+            navigate_history(1)
+            st.rerun()
 else:
     st.error(f"查無資料: {target_code}")
