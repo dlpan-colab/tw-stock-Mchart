@@ -1,11 +1,13 @@
 """
 frontend.py - 前端 HTML/CSS 渲染與版本彙整模組
-版本: 202610312036
+版本: 202610312130
 """
+
 import os
 import re
 
-MODULE_VERSION = "202610312036"
+MODULE_VERSION = "202610312130"
+
 
 def get_system_version() -> str:
     """自動萃取各模組版本並回傳系統最大版本號"""
@@ -31,9 +33,12 @@ def get_system_version() -> str:
                 versions.append(str(v).strip())
         except Exception:
             pass
+
     return max(versions)
 
+
 SYSTEM_VERSION = get_system_version()
+
 
 def get_legend_html(version_tag: str = None) -> str:
     """頂部版本識別標籤"""
@@ -44,14 +49,14 @@ def get_legend_html(version_tag: str = None) -> str:
     </div>
     """
 
+
 js_template = """
 <style>
   .plot-main-container {
     position: relative;
     width: 100%;
     box-sizing: border-box;
-    overflow: hidden !important;
-    padding-bottom: 10px !important;
+    padding-bottom: 25px !important;
   }
   .touch-plot-box {
     position: relative;
@@ -94,34 +99,35 @@ js_template = """
     top: 0;
     bottom: 0;
     width: 1px;
-    border-left: 1px dotted #2c3e50;
+    border-left: 1px dashed rgba(44, 62, 80, 0.85);
     pointer-events: none;
     display: none;
-    z-index: 100;
+    z-index: 999;
   }
   .sync-price-line {
     position: absolute;
-    left: 60px;
-    right: 15px;
+    left: 45px;
+    right: 50px;
     height: 1px;
-    border-top: 1px dotted rgba(44, 62, 80, 0.75);
+    border-top: 1px dashed rgba(44, 62, 80, 0.75);
     pointer-events: none;
     display: none;
-    z-index: 100;
+    z-index: 999;
   }
 </style>
 
-<div class="plot-main-container">
+<div class="plot-main-container" id="__CHART_ID___container">
   <div id="__CHART_ID___info1" class="pane-info-bar" style="margin-bottom: 2px;">正在載入...</div>
+  
   <div id="__CHART_ID___top" class="touch-plot-box" style="height: __TOP_H__;">
     <div id="__CHART_ID___line_top" class="sync-crosshair-line"></div>
     <div id="__CHART_ID___line_price" class="sync-price-line"></div>
   </div>
-  
+
   <div class="middle-inserted-bar">
     <div id="__CHART_ID___info_tech" class="pane-info-bar"></div>
   </div>
-  
+
   <div id="__CHART_ID___btm" class="touch-plot-box" style="height: __BTM_H__;">
     <div id="__CHART_ID___line_btm" class="sync-crosshair-line"></div>
   </div>
@@ -147,19 +153,19 @@ js_template = """
   var mDiffs = __MARGIN_DIFFS__, sDiffs = __SHORT_DIFFS__, rat = __RATIOS__;
   var m1_pcts = __M1_PCTS__, m2_pcts = __M2_PCTS__, m1_thresh = __M1_THRESH__, m2_thresh = __M2_THRESH__;
 
-  var elTop = document.getElementById('__CHART_ID___top'),
-      elBtm = document.getElementById('__CHART_ID___btm');
-  var lineTop = document.getElementById('__CHART_ID___line_top'),
-      lineBtm = document.getElementById('__CHART_ID___line_btm'),
-      linePrice = document.getElementById('__CHART_ID___line_price');
-  var info1 = document.getElementById('__CHART_ID___info1'),
-      infoTech = document.getElementById('__CHART_ID___info_tech');
-  var infoMs = document.getElementById('__CHART_ID___info_ms'),
-      infoChip = document.getElementById('__CHART_ID___info_chip');
+  var elTop = document.getElementById('__CHART_ID___top');
+  var elBtm = document.getElementById('__CHART_ID___btm');
+  var lineTop = document.getElementById('__CHART_ID___line_top');
+  var lineBtm = document.getElementById('__CHART_ID___line_btm');
+  var linePrice = document.getElementById('__CHART_ID___line_price');
+  
+  var info1 = document.getElementById('__CHART_ID___info1');
+  var infoTech = document.getElementById('__CHART_ID___info_tech');
+  var infoMs = document.getElementById('__CHART_ID___info_ms');
+  var infoChip = document.getElementById('__CHART_ID___info_chip');
 
   var totalPoints = dates.length;
   var isUpdating = false;
-
   var targetDays = Number(__INITIAL_DISP_DAYS__) || 20;
   var initEnd = __INITIAL_END_IDX__;
   var initStart = Math.max(0, initEnd - targetDays + 1);
@@ -207,8 +213,10 @@ js_template = """
       'MA5:' + fmtNum(ma5s[idx], 2) + ' MA20:' + fmtNum(ma20s[idx], 2) + ' MA60:' + fmtNum(ma60s[idx], 2);
 
     var oscClass = oscs[idx] > 0 ? 'val-up' : (oscs[idx] < 0 ? 'val-dn' : '');
-    infoTech.innerHTML = '<div><span class="tag-lbl"><b>' + d + '</b></span> <span class="tag-lbl"><b>KD(9)</b></span><span style="color:#e74c3c;">K:' + fmtNum(ks[idx], 1) + '</span> <span style="color:#3498db;">D:' + fmtNum(ds[idx], 1) + '</span> | <span class="tag-lbl"><b>OBV</b></span><span style="color:#16a085;">OBV:' + fmtNum(obvs[idx], 0) + '</span> <span style="color:#8e44ad;">MA20:' + fmtNum(obvMas[idx], 0) + '</span></div>' +
-                         '<div><span class="tag-lbl"><b>MACD(' + d + ')</b></span><span style="color:#f39c12;">DIF:' + fmtNum(difs[idx], 2) + '</span> <span style="color:#2980b9;">MACD:' + fmtNum(macds[idx], 2) + '</span> OSC:<span class="' + oscClass + '">' + fmtNum(oscs[idx], 2) + '</span></div>';
+    infoTech.innerHTML = '<div><span class="tag-lbl"><b>' + d + '</b></span> ' +
+      '<span class="tag-lbl"><b>KD(9)</b></span><span style="color:#e74c3c;">K:' + fmtNum(ks[idx], 1) + '</span> <span style="color:#3498db;">D:' + fmtNum(ds[idx], 1) + '</span> | ' +
+      '<span class="tag-lbl"><b>OBV</b></span><span style="color:#16a085;">OBV:' + fmtNum(obvs[idx], 0) + '</span> <span style="color:#8e44ad;">MA20:' + fmtNum(obvMas[idx], 0) + '</span></div>' +
+      '<div><span class="tag-lbl"><b>MACD(' + d + ')</b></span><span style="color:#f39c12;">DIF:' + fmtNum(difs[idx], 2) + '</span> <span style="color:#2980b9;">MACD:' + fmtNum(macds[idx], 2) + '</span> OSC:<span class="' + oscClass + '">' + fmtNum(oscs[idx], 2) + '</span></div>';
 
     infoMs.innerHTML = '<span class="tag-lbl"><b>資券[千張](' + d + ')</b></span>' +
       '融資:' + fmtDiff(mDiffs[idx], 3) + ' 融券:' + fmtDiff(sDiffs[idx], 3) + ' ' +
@@ -220,7 +228,11 @@ js_template = """
       '≥' + m2_thresh + '張: ' + fmtNum(m2_pcts[idx], 2) + '%';
   }
 
-  var cfg = { responsive: true, displayModeBar: false, scrollZoom: false };
+  var cfg = {
+    responsive: true,
+    displayModeBar: false,
+    scrollZoom: false
+  };
 
   Plotly.newPlot(elTop, pTop.data, pTop.layout, cfg).then(function() {
     return Plotly.newPlot(elBtm, pBtm.data, pBtm.layout, cfg);
@@ -267,16 +279,20 @@ js_template = """
       if (idx >= 0 && idx < totalPoints) {
         updateAllPanes(idx);
 
-        var xPixel = (pt.xaxis && pt.xaxis.d2p) ? (pt.xaxis.d2p(pt.x) + pt.xaxis._offset) : null;
-        if (xPixel !== null) {
+        var xPixel = null;
+        if (pt.xaxis && typeof pt.xaxis.d2p === 'function') {
+          xPixel = pt.xaxis.d2p(pt.x) + (pt.xaxis._offset || 0);
+        }
+
+        if (xPixel !== null && !isNaN(xPixel)) {
           lineTop.style.left = xPixel + 'px';
           lineBtm.style.left = xPixel + 'px';
           lineTop.style.display = 'block';
           lineBtm.style.display = 'block';
         }
 
-        if (pt.yaxis && pt.yaxis.d2p && pt.y !== undefined) {
-          var yPixel = pt.yaxis.d2p(pt.y) + pt.yaxis._offset;
+        if (pt.yaxis && typeof pt.yaxis.d2p === 'function' && pt.y !== undefined) {
+          var yPixel = pt.yaxis.d2p(pt.y) + (pt.yaxis._offset || 0);
           linePrice.style.top = yPixel + 'px';
           linePrice.style.display = 'block';
         }
@@ -299,10 +315,15 @@ js_template = """
 </script>
 """
 
+
 def render_interactive_chart_html(
-    fig_top, fig_btm, df,
-    m1_thresh=1000, m2_thresh=400,
-    top_height=560, btm_height=1200,
+    fig_top,
+    fig_btm,
+    df,
+    m1_thresh=1000,
+    m2_thresh=400,
+    top_height=560,
+    btm_height=1200,
     initial_disp_days=20,
     initial_end_idx=None
 ) -> str:
@@ -321,8 +342,8 @@ def render_interactive_chart_html(
         date_series = df['Date']
     else:
         date_series = df.index
-    dates_list = date_series.strftime('%Y-%m-%d').tolist() if hasattr(date_series, 'strftime') else [str(x)[:10] for x in date_series]
 
+    dates_list = date_series.strftime('%Y-%m-%d').tolist() if hasattr(date_series, 'strftime') else [str(x)[:10] for x in date_series]
     opens_list = df['Open'].tolist()
     highs_list = df['High'].tolist()
     lows_list = df['Low'].tolist()
@@ -360,37 +381,47 @@ def render_interactive_chart_html(
     html = html.replace("__BTM_H__", f"{btm_height}px")
     html = html.replace("__PLOT_JSON_TOP__", p_top_json)
     html = html.replace("__PLOT_JSON_BTM__", p_btm_json)
+
     html = html.replace("__DATES__", json.dumps(dates_list))
     html = html.replace("__OPENS__", json.dumps(opens_list))
     html = html.replace("__HIGHS__", json.dumps(highs_list))
     html = html.replace("__LOWS__", json.dumps(lows_list))
     html = html.replace("__CLOSES__", json.dumps(closes_list))
     html = html.replace("__VOLS__", json.dumps(vols_list))
+
     html = html.replace("__MA5S__", json.dumps(ma5_list))
     html = html.replace("__MA20S__", json.dumps(ma20_list))
     html = html.replace("__MA60S__", json.dumps(ma60_list))
     html = html.replace("__TURNOVERS__", json.dumps(turnover_list))
+
     html = html.replace("__KS__", json.dumps(k_list))
     html = html.replace("__DS__", json.dumps(d_list))
     html = html.replace("__DIFS__", json.dumps(dif_list))
     html = html.replace("__MACDS__", json.dumps(macd_list))
     html = html.replace("__OSCS__", json.dumps(osc_list))
+
     html = html.replace("__OBVS__", json.dumps(obv_list))
     html = html.replace("__OBVMAS__", json.dumps(obv_ma_list))
+
     html = html.replace("__FOREIGNS__", json.dumps(foreign_list))
     html = html.replace("__TRUSTS__", json.dumps(trust_list))
     html = html.replace("__DEALERS__", json.dumps(dealer_list))
+
     html = html.replace("__MARGIN_DIFFS__", json.dumps(m_diff_list))
     html = html.replace("__SHORT_DIFFS__", json.dumps(s_diff_list))
     html = html.replace("__RATIOS__", json.dumps(ratio_list))
+
     html = html.replace("__M1_PCTS__", json.dumps(m1_pct_list))
     html = html.replace("__M2_PCTS__", json.dumps(m2_pct_list))
+
     html = html.replace("__M1_THRESH__", str(m1_thresh))
     html = html.replace("__M2_THRESH__", str(m2_thresh))
+
     html = html.replace("__INITIAL_DISP_DAYS__", str(initial_disp_days))
     html = html.replace("__INITIAL_END_IDX__", str(end_idx))
 
     return html
+
 
 def get_component_html(*args, **kwargs):
     """轉接相容 app.py 參數呼叫"""
