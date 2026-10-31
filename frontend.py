@@ -1,11 +1,11 @@
 """
 frontend.py - 前端 HTML/CSS 渲染與版本彙整模組
-版本: 202610312030
+版本: 202610312035
 """
 import os
 import re
 
-MODULE_VERSION = "202610312030"
+MODULE_VERSION = "202610312035"
 
 def get_system_version() -> str:
     """自動萃取各模組版本並回傳系統最大版本號"""
@@ -68,12 +68,12 @@ def get_legend_html(version_tag: str = None) -> str:
 
 js_template = """
 <style>
-  .plot-main-container {
+   .plot-main-container {
     position: relative;
     width: 100%;
     box-sizing: border-box;
-    overflow-x: auto;
-    padding-bottom: 90px !important;
+    overflow: hidden !important;
+    padding-bottom: 20px !important;
   }
   .touch-plot-box {
     position: relative;
