@@ -1,8 +1,8 @@
 """
 frontend.py - 前端 HTML/CSS 渲染與版本彙整模組
-版本: 202610311930
+版本: 202610311945
 """
-MODULE_VERSION = "202610311930"
+MODULE_VERSION = "202610311945"
 
 import json
 import pandas as pd
