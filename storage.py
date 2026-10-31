@@ -58,9 +58,10 @@ def get_stock_chinese_name(pure_code: str) -> str:
             if res.status_code == 200:
                 soup = BeautifulSoup(res.text, "html.parser")
                 for r in soup.find_all("tr"):
-                    cols = [td.text.strip() for td in r.find_all("td")]
+                    cols = [td.text.replace("\u3000", " ").strip() for td in r.find_all("td")]
                 if len(cols) >= 3 and cols[0].startswith(pure_code):
-                    c_name = cols[0].replace(pure_code, "").strip() or cols[1]
+                    parts = cols[0].split()
+                    c_name = parts[1] if len(parts) > 1 else cols[1]
                     if c_name:
                         _save_name_cache(pure_code, c_name)
                         return c_name
