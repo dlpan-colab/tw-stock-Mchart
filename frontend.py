@@ -1,15 +1,31 @@
 """
 frontend.py - 前端 HTML/CSS 渲染與版本彙整模組
-版本: 202610311945
+版本: 202610311950
 """
-MODULE_VERSION = "202610311945"
+MODULE_VERSION = "202610311950"
 
 import json
 import pandas as pd
-
+###############################################################
 def get_system_version() -> str:
     versions = [MODULE_VERSION]
-    module_names = ["app", "chart_builder", "indicators", "data_fetcher", "storage", "config", "cloud_sync"]
+    module_names = ["chart_builder", "indicators", "data_fetcher", "storage", "config", "cloud_sync"]
+    
+    # 針對 app.py 直接讀取檔案內容萃取版本，避免循環匯入失敗
+    try:
+        import os, re
+        base_dir = os.path.dirname(os.path.abspath(__file__))
+        app_file = os.path.join(base_dir, "app.py")
+        if os.path.exists(app_file):
+            with open(app_file, "r", encoding="utf-8") as f:
+                content = f.read(500)
+                m = re.search(r'MODULE_VERSION\s*=\s*["\'](\d{12})["\']', content)
+                if m:
+                    versions.append(m.group(1))
+    except Exception:
+        pass
+
+    # 其餘模組正常比對
     for mod_name in module_names:
         try:
             mod = __import__(mod_name)
@@ -19,7 +35,7 @@ def get_system_version() -> str:
         except Exception:
             pass
     return max(versions)
-
+############################################################################
 SYSTEM_VERSION = get_system_version()
 VERSION_TAG = SYSTEM_VERSION
 ########################################################################
