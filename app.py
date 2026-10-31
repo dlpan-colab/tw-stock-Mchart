@@ -1,240 +1,139 @@
 """
-app.py - 主應用程式進入點
-版本: app_202610311200
+app.py - 主應用程式介面與生命週期控制
+版本: 202610302000
 """
 
+VERSION_TAG = "202610302000"
+
+import re
+import datetime
 import streamlit as st
-import pandas as pd
-from datetime import datetime
+import streamlit.components.v1 as components
 
-# 導入既有模組
-import chart_builder as cha
-import data_fetcher as dat
-import frontend as fro
-import indicators as ind
-import storage as sto
+from storage import load_stock_history, save_stock_history, update_stock_name_only, clear_stock_history
+from chart_builder import build_split_figures
+from frontend import get_legend_html, get_component_html
 
-MODULE_VERSION = "app_202610311200"
+def parse_pure_code(input_str: str) -> str:
+    if not input_str:
+        return ""
+    m = re.search(r'\b(\d{4,6})\b', str(input_str))
+    return m.group(1) if m else str(input_str).strip()
 
-# 頁面基本配置
-st.set_page_config(
-    page_title="台股多指標+籌碼技術分析",
-    layout="wide",
-    initial_sidebar_state="expanded"
-)
+st.set_page_config(page_title="台股多指標+籌碼技術分析", layout="wide")
 
-# 讀取各模組完整版本識別字串
-ver_app_full = MODULE_VERSION
-ver_cha_full = getattr(cha, "MODULE_VERSION", "cha_202610311200")
-ver_dat_full = getattr(dat, "MODULE_VERSION", "dat_202610302000")
-ver_fro_full = getattr(fro, "MODULE_VERSION", "fro_202610302000")
-ver_ind_full = getattr(ind, "MODULE_VERSION", "ind_202610302000")
-ver_sto_full = getattr(sto, "MODULE_VERSION", "sto_202610311112")
+# 初始化 session_state
+if 'history_list' not in st.session_state:
+    st.session_state.history_list = load_stock_history()
+if 'ticker_input_field' not in st.session_state:
+    init_code = st.session_state.history_list[0]['code'] if st.session_state.history_list else "2330"
+    st.session_state.ticker_input_field = init_code
+if 'active_ticker' not in st.session_state:
+    st.session_state.active_ticker = st.session_state.ticker_input_field
 
-# 格式化為版本識別摘要：忽略年份月份，僅保留 DDhhmm
-def to_summary(ver_str: str) -> str:
-    parts = ver_str.split("_")
-    if len(parts) == 2 and len(parts[1]) >= 6:
-        return f"{parts[0]}_{parts[1][-6:]}"
-    return ver_str
+# 下拉選取事件：將標的順序往前推
+def on_hist_change():
+    selected = st.session_state.get('hist_select')
+    if selected and selected != "(選擇歷史標的)":
+        chosen_code = parse_pure_code(selected)
+        if chosen_code:
+            st.session_state.ticker_input_field = chosen_code
+            st.session_state.active_ticker = chosen_code
+            # 下拉選擇提升順序
+            st.session_state.history_list = save_stock_history(chosen_code)
 
-MODULE_VERSIONS = (
-    f"{to_summary(ver_app_full)}/"
-    f"{to_summary(ver_cha_full)}/"
-    f"{to_summary(ver_dat_full)}/"
-    f"{to_summary(ver_fro_full)}/"
-    f"{to_summary(ver_ind_full)}/"
-    f"{to_summary(ver_sto_full)}/"
-)
+# 巡覽按鈕事件：上一檔 / 下一檔，不改動歷史順序
+def navigate_history(direction: int):
+    hist = st.session_state.history_list
+    if not hist:
+        return
+    codes = [h['code'] for h in hist]
+    curr = st.session_state.active_ticker
+    curr_idx = codes.index(curr) if curr in codes else 0
+    next_idx = (curr_idx + direction) % len(codes)
+    target_code = codes[next_idx]
+    
+    st.session_state.ticker_input_field = target_code
+    st.session_state.active_ticker = target_code
+    # 絕不調用 save_stock_history，維持原有清單排列
 
-# 1. 第一行：標題（字體大小同側邊欄「參數設定」之 subheader）
-st.subheader("台股技術指標與籌碼分析(模組)")
-
-# 2. 第二行：模組前三英文字簡稱_模組版本識別日期摘要
-st.caption(MODULE_VERSIONS)
-
-# 初始化 Session State
-if "stock_id" not in st.session_state:
-    st.session_state.stock_id = "8111"
-if "confirm_clear_all" not in st.session_state:
-    st.session_state.confirm_clear_all = False
-
-# 讀取持久化歷史清單
-history_data = sto.load_stock_history()
-history_codes = [str(item.get("code")).strip() for item in history_data]
-
-def handle_prev():
-    curr = str(st.session_state.stock_id).strip()
-    if curr in history_codes:
-        idx = history_codes.index(curr)
-        if idx > 0:
-            st.session_state.stock_id = history_codes[idx - 1]
-    elif len(history_codes) > 0:
-        st.session_state.stock_id = history_codes[0]
-
-def handle_next():
-    curr = str(st.session_state.stock_id).strip()
-    if curr in history_codes:
-        idx = history_codes.index(curr)
-        if idx < len(history_codes) - 1:
-            st.session_state.stock_id = history_codes[idx + 1]
-    elif len(history_codes) > 0:
-        st.session_state.stock_id = history_codes[0]
-
-def on_history_select():
-    selected = st.session_state.get("hist_dropdown_select")
-    if selected:
-        code_part = selected.split("(")[-1].replace(")", "").strip()
-        st.session_state.stock_id = code_part
-
-# 3. 第三行：[上一檔][下一檔]功能鍵（均分兩欄，文字完整不截斷）
-c1, c2 = st.columns(2)
-with c1:
-    st.button("◀ 上一檔", key="top_prev", on_click=handle_prev, use_container_width=True)
-with c2:
-    st.button("下一檔 ▶", key="top_next", on_click=handle_next, use_container_width=True)
-
-# 側邊欄設定
+# 側邊欄參數設定
 with st.sidebar:
-    st.subheader("參數設定")
+    st.header("參數設定")
+    hist = st.session_state.history_list
+    hist_options = ["(選擇歷史標的)"] + [f"{h.get('code')} ({h.get('name')})" for h in hist]
+
+    st.selectbox(
+        "歷史紀錄快速選取",
+        options=hist_options,
+        index=0,
+        key="hist_select",
+        on_change=on_hist_change
+    )
+
+    s_ticker = st.text_input("股票代號 (直接鍵入)", key="ticker_input_field").strip()
+
+    # 上一個 / 下一個巡覽功能鍵
+    col_nav1, col_nav2 = st.columns(2)
+    with col_nav1:
+        if st.button("◀ 上一檔", use_container_width=True):
+            navigate_history(-1)
+            st.rerun()
+    with col_nav2:
+        if st.button("下一檔 ▶", use_container_width=True):
+            navigate_history(1)
+            st.rerun()
+
+    if st.button("清除歷史記錄", type="secondary"):
+        clear_stock_history()
+        st.session_state.history_list = []
+        st.success("已清除歷史紀錄！")
+        st.rerun()
+
+    s_period = st.selectbox("下載區間", options=['6mo', '1y', '2y', '5y', 'max'], index=1)
+    s_mode = st.selectbox("模式切換", options=['手機版 (Mobile) - 預設20日', '筆電版 (Desktop) - 預設60日'], index=0)
+    s_days = st.number_input("顯示日數", min_value=5, max_value=2000, value=20 if '手機版' in s_mode else 60, step=5)
     
-    # 歷史紀錄下拉式選單
-    st.markdown("### 查詢歷史紀錄")
-    if history_data:
-        options = []
-        default_idx = 0
-        current_curr = str(st.session_state.stock_id).strip()
-        for idx, item in enumerate(history_data):
-            c = item.get("code", "")
-            n = item.get("name", "")
-            label = f"{n}({c})" if n and n != c else c
-            options.append(label)
-            if c == current_curr:
-                default_idx = idx
+    use_base_date = st.checkbox("指定基準日 (復盤模式)", value=False)
+    s_base_date = st.date_input("基準日", value=datetime.date.today()) if use_base_date else None
 
-        st.selectbox(
-            "選擇歷史標的 (下拉選單)",
-            options=options,
-            index=default_idx,
-            key="hist_dropdown_select",
-            on_change=on_history_select
-        )
+    col_m1, col_m2 = st.columns(2)
+    with col_m1:
+        s_m1 = st.selectbox("大戶門檻1 (張)", options=[100, 200, 400, 600, 800, 1000], index=5)
+    with col_m2:
+        s_m2 = st.selectbox("大戶門檻2 (張)", options=[100, 200, 400, 600, 800, 1000], index=2)
 
-        with st.expander("管理歷史紀錄 (勾選刪除)", expanded=False):
-            selected_to_remove = []
-            for item in history_data:
-                c = item.get("code", "")
-                n = item.get("name", "")
-                label = f"{n}({c})" if n and n != c else c
-                if st.checkbox(label, key=f"hist_chk_{c}"):
-                    selected_to_remove.append(c)
+    s_btn = st.button("查詢", type="primary")
+    if s_btn:
+        pure_input = parse_pure_code(s_ticker)
+        if pure_input:
+            st.session_state.active_ticker = pure_input
+            # 手動點擊查詢時，將標的提升順序置頂
+            st.session_state.history_list = save_stock_history(pure_input)
 
-            if st.button("清除歷史記錄", key="btn_remove_history"):
-                if selected_to_remove:
-                    sto.remove_history_items(selected_to_remove)
-                    st.rerun()
-                else:
-                    st.session_state.confirm_clear_all = True
+is_mobile = ('手機版' in s_mode)
+status_box = st.empty()
 
-            if st.session_state.confirm_clear_all:
-                st.warning("未勾選任何項目，是否確認清除所有歷史清單？")
-                ca1, ca2 = st.columns(2)
-                with ca1:
-                    if st.button("確定全部清除", key="btn_confirm_all"):
-                        sto.clear_stock_history()
-                        st.session_state.confirm_clear_all = False
-                        st.rerun()
-                with ca2:
-                    if st.button("取消", key="btn_cancel_all"):
-                        st.session_state.confirm_clear_all = False
-                        st.rerun()
-    else:
-        st.caption("尚無歷史紀錄")
+# 頂部僅保留簡潔版本識別標籤
+st.markdown(get_legend_html(VERSION_TAG), unsafe_allow_html=True)
 
-    # 股票代號輸入
-    input_stock = st.text_input("股票代號 (直接鍵入)", value=st.session_state.stock_id)
-    if input_stock != st.session_state.stock_id:
-        st.session_state.stock_id = input_stock
+target_code = parse_pure_code(st.session_state.active_ticker)
+fig_top, fig_btm, df, c_name, end_idx, disp_n = build_split_figures(
+    target_code, s_period, s_days, s_base_date, s_m1, s_m2, is_mobile=is_mobile, status_placeholder=status_box
+)
 
-    period = st.selectbox("下載區間", ["6mo", "1y", "2y", "5y"], index=1)
-    mode = st.selectbox("模式切換", ["手機版 (Mobile) - 預設20日", "完整版 (Full)"], index=0)
-    display_days = st.number_input("顯示日數", min_value=10, max_value=240, value=20 if "手機版" in mode else 60)
-    
-    m1 = st.number_input("大戶門檻1 (張)", min_value=100, max_value=5000, value=1000, step=100)
-    m2 = st.number_input("大戶門檻2 (張)", min_value=100, max_value=5000, value=400, step=100)
-    
-    query_btn = st.button("查詢")
+if status_box:
+    status_box.empty()
 
-# 資料載入與運算
-current_code = str(st.session_state.stock_id).strip()
-df, ticker_full, shares = dat.fetch_stock_daily_k(current_code, period=period)
+if fig_top is not None:
+    # 確保歷史紀錄中的中文名稱保持最新
+    if c_name and c_name != target_code:
+        update_stock_name_only(target_code, c_name)
 
-if df is not None and not df.empty:
-    stock_name = dat.fetch_stock_name(current_code)
-    market_type = "櫃" if ".TWO" in ticker_full else "市"
-    stock_info = {
-        "code": current_code,
-        "name": stock_name,
-        "market": market_type
-    }
-
-    # 寫入歷史紀錄
-    sto.save_stock_history(current_code, stock_name)
-
-    # 同步籌碼 (法人、資券、大戶持股)
-    inst_df, margin_df, holding_df = dat.sync_chip_data(current_code, df.index)
-
-    # 合併法人籌碼
-    if not inst_df.empty:
-        inst_df = inst_df.rename(columns={
-            "foreign_net": "Foreign_Buy",
-            "trust_net": "Trust_Buy",
-            "dealer_net": "Dealer_Buy"
-        }).set_index("date")
-        df = df.join(inst_df, how="left")
-
-    # 合併資券
-    if not margin_df.empty:
-        margin_df = margin_df.rename(columns={
-            "margin_diff": "Margin_Diff",
-            "short_diff": "Short_Diff",
-            "margin_bal": "Margin_Balance",
-            "short_bal": "Short_Balance"
-        }).set_index("date")
-        df = df.join(margin_df, how="left")
-        if 'Margin_Balance' in df.columns and 'Short_Balance' in df.columns:
-            df['Margin_Short_Ratio'] = (df['Short_Balance'] / df['Margin_Balance'].replace(0, float('nan'))) * 100
-
-    # 合併大戶持股
-    if not holding_df.empty:
-        holding_pivot = holding_df.pivot(index='date', columns='level', values='percent')
-        if 15 in holding_pivot.columns:
-            df[f'Big_{m1}_Ratio'] = holding_pivot[15].reindex(df.index).ffill()
-        cols_m2 = [c for c in holding_pivot.columns if c >= 11]
-        if cols_m2:
-            df[f'Big_{m2}_Ratio'] = holding_pivot[cols_m2].sum(axis=1).reindex(df.index).ffill()
-
-    # 指標運算
-    if hasattr(ind, "calc_all_indicators"):
-        df = ind.calc_all_indicators(df, m1, m2)
-    elif hasattr(ind, "calculate_all"):
-        df = ind.calculate_all(df)
-    elif hasattr(ind, "compute_indicators"):
-        df = ind.compute_indicators(df)
-    elif hasattr(ind, "calculate_indicators"):
-        df = ind.calculate_indicators(df, m1, m2)
-
-    display_df = df.tail(display_days).copy()
-    
-    # 繪製主圖表
-    fig = cha.render_master_chart(display_df, stock_info, m1, m2)
-    st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
-
-    # 第三塊資訊區下方：[◀ 上一檔] [下一檔 ▶] 功能鍵
-    b1, b2 = st.columns(2)
-    with b1:
-        st.button("◀ 上一檔", key="bottom_prev", on_click=handle_prev, use_container_width=True)
-    with b2:
-        st.button("下一檔 ▶", key="bottom_next", on_click=handle_next, use_container_width=True)
+    total_h = 1650 if is_mobile else 1750
+    html_content = get_component_html(
+        fig_top, fig_btm, df, target_code, s_m1, s_m2, end_idx, disp_n, is_mobile=is_mobile
+    )
+    components.html(html_content, height=total_h, scrolling=False)
 else:
-    st.error(f"查無標的代碼 {current_code} 之相關資料。")
+    st.error(f"查無資料: {target_code}")
