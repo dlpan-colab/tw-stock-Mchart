@@ -1,8 +1,8 @@
 """
 app.py - 主應用程式介面與生命週期控制
-版本: 202610311950
+版本: 202610312035
 """
-MODULE_VERSION = "202610311950"
+MODULE_VERSION = "202610312035"
 
 import re
 import datetime
@@ -164,10 +164,11 @@ if fig_top is not None:
     if c_name and c_name != target_code:
         update_stock_name_only(target_code, c_name)
 
-    total_h = 1850 if is_mobile else 1950
+    total_h = 2100 if is_mobile else 2200
     html_content = get_component_html(
         fig_top, fig_btm, df, target_code, s_m1, s_m2, end_idx, disp_n, is_mobile=is_mobile
     )
+    
     components.html(html_content, height=total_h, scrolling=False)
     # 底部巡覽功能鍵（最下方圖區之後）
     col_btm_nav1, col_btm_nav2 = st.columns(2)
