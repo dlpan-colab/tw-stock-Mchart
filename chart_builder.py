@@ -1,9 +1,9 @@
 """
-chart_builder.py - Plotly 圖表建置模組
-版本: 202610312140
+chart_builder.py - Plotly 圖表建置模組 (純淨無原生 hover/spikes)
+版本: 202610312150
 """
 
-MODULE_VERSION = "202610312140"
+MODULE_VERSION = "202610312150"
 
 from typing import Tuple, Optional
 import numpy as np
@@ -35,7 +35,6 @@ def build_split_figures(
     c_name = fetch_stock_name(raw_ticker)
     market = "上市" if full_ticker.endswith(".TW") else "上櫃"
 
-    # 指標與籌碼計算
     df = calculate_all_indicators(
         df=df_raw,
         pure_code=raw_ticker,
@@ -49,7 +48,6 @@ def build_split_figures(
     total_len = len(df)
     disp_n = min(int(display_days), total_len)
 
-    # 基準日定位
     end_idx = total_len - 1
     if base_date is not None:
         try:
@@ -65,7 +63,6 @@ def build_split_figures(
     start_idx = max(0, end_idx - disp_n + 1)
     sub_df = df.iloc[start_idx:end_idx + 1]
 
-    # 各子圖極值計算
     p_max, p_min = float(sub_df['High'].max()), float(sub_df['Low'].min())
     p_pad = (p_max - p_min) * 0.12 if p_max > p_min else 2.0
     vol_upper = float(sub_df['Volume_Sheets'].max()) * 1.25 if not sub_df['Volume_Sheets'].empty else 1000.0
@@ -130,7 +127,7 @@ def build_split_figures(
     top_height = 420 if is_mobile else 460
     btm_height = 1180 if is_mobile else 1220
 
-    # ===== 上半部主圖 (單成交量軸) =====
+    # ===== 上半部主圖 =====
     fig_top = make_subplots(
         rows=2, cols=1,
         shared_xaxes=True,
@@ -143,12 +140,13 @@ def build_split_figures(
         open=df['Open'], high=df['High'], low=df['Low'], close=df['Close'],
         increasing_line_color='#eb4d4b', increasing_fillcolor='#eb4d4b',
         decreasing_line_color='#2ecc71', decreasing_fillcolor='#2ecc71',
+        hoverinfo='none',
         name='K線'
     ), row=1, col=1)
 
-    fig_top.add_trace(go.Scatter(x=date_str_list, y=df['MA5'], line=dict(color='#f1c40f', width=1.2), name='MA5'), row=1, col=1)
-    fig_top.add_trace(go.Scatter(x=date_str_list, y=df['MA20'], line=dict(color='#e67e22', width=1.2), name='MA20'), row=1, col=1)
-    fig_top.add_trace(go.Scatter(x=date_str_list, y=df['MA60'], line=dict(color='#9b59b6', width=1.2), name='MA60'), row=1, col=1)
+    fig_top.add_trace(go.Scatter(x=date_str_list, y=df['MA5'], line=dict(color='#f1c40f', width=1.2), hoverinfo='none', name='MA5'), row=1, col=1)
+    fig_top.add_trace(go.Scatter(x=date_str_list, y=df['MA20'], line=dict(color='#e67e22', width=1.2), hoverinfo='none', name='MA20'), row=1, col=1)
+    fig_top.add_trace(go.Scatter(x=date_str_list, y=df['MA60'], line=dict(color='#9b59b6', width=1.2), hoverinfo='none', name='MA60'), row=1, col=1)
 
     head_df = df[df['Is_Head']]
     if not head_df.empty:
@@ -174,10 +172,9 @@ def build_split_figures(
             hoverinfo='none'
         ), row=1, col=1)
 
-    # 成交量
     fig_top.add_trace(go.Bar(
         x=date_str_list, y=df['Volume_Sheets'],
-        marker_color=vol_colors, name='成交量'
+        marker_color=vol_colors, hoverinfo='none', name='成交量'
     ), row=2, col=1)
 
     to_series = df['Turnover_Rate']
@@ -211,7 +208,7 @@ def build_split_figures(
         title=dict(text=f'{c_name or raw_ticker} ({raw_ticker}) ({market})', font=dict(size=16)),
         font=dict(size=16),
         template='plotly_white',
-        hovermode='closest',
+        hovermode=False,
         dragmode='pan',
         showlegend=False,
         height=top_height,
@@ -219,18 +216,7 @@ def build_split_figures(
         xaxis_rangeslider_visible=False
     )
 
-    fig_top.update_xaxes(
-        type='category',
-        range=[start_idx - 0.5, end_idx + 0.5],
-        domain=[0, 1],
-        showspikes=True,
-        spikemode='across',
-        spikesnap='cursor',
-        spikethickness=1,
-        spikedash='dash',
-        spikecolor='#2c3e50',
-        row=1, col=1
-    )
+    fig_top.update_xaxes(type='category', range=[start_idx - 0.5, end_idx + 0.5], domain=[0, 1], showspikes=False, row=1, col=1)
     fig_top.update_xaxes(
         type='category',
         range=[start_idx - 0.5, end_idx + 0.5],
@@ -238,28 +224,12 @@ def build_split_figures(
         showticklabels=True,
         tickvals=month_ticks_vals,
         ticktext=month_ticks_text,
-        showspikes=True,
-        spikemode='across',
-        spikesnap='cursor',
-        spikethickness=1,
-        spikedash='dash',
-        spikecolor='#2c3e50',
+        showspikes=False,
         row=2, col=1
     )
 
-    fig_top.update_yaxes(
-        title_text='',
-        range=[p_min - (p_max - p_min) * 0.08, p_max + p_pad],
-        fixedrange=True,
-        showspikes=True,
-        spikemode='across',
-        spikesnap='cursor',
-        spikethickness=1,
-        spikedash='dash',
-        spikecolor='#2c3e50',
-        row=1, col=1
-    )
-    fig_top.update_yaxes(title_text='', range=[0, vol_upper], fixedrange=True, row=2, col=1)
+    fig_top.update_yaxes(title_text='', range=[p_min - (p_max - p_min) * 0.08, p_max + p_pad], fixedrange=True, showspikes=False, row=1, col=1)
+    fig_top.update_yaxes(title_text='', range=[0, vol_upper], fixedrange=True, showspikes=False, row=2, col=1)
 
     # ===== 下半部副圖 =====
     fig_btm = make_subplots(
@@ -270,52 +240,42 @@ def build_split_figures(
         specs=[[{}], [{}], [{}], [{}], [{}], [{}], [{"secondary_y": True}], [{}], [{}]]
     )
 
-    # Row 1: KD
-    fig_btm.add_trace(go.Scatter(x=date_str_list, y=df['K'], line=dict(color='#e74c3c', width=1.2)), row=1, col=1)
-    fig_btm.add_trace(go.Scatter(x=date_str_list, y=df['D'], line=dict(color='#3498db', width=1.2)), row=1, col=1)
+    fig_btm.add_trace(go.Scatter(x=date_str_list, y=df['K'], line=dict(color='#e74c3c', width=1.2), hoverinfo='none'), row=1, col=1)
+    fig_btm.add_trace(go.Scatter(x=date_str_list, y=df['D'], line=dict(color='#3498db', width=1.2), hoverinfo='none'), row=1, col=1)
     fig_btm.add_hline(y=80, line_dash='dot', line_color='rgba(150,150,150,0.5)', row=1, col=1)
     fig_btm.add_hline(y=20, line_dash='dot', line_color='rgba(150,150,150,0.5)', row=1, col=1)
 
-    # Row 2: MACD
-    fig_btm.add_trace(go.Bar(x=date_str_list, y=df['OSC'], marker_color=osc_colors), row=2, col=1)
-    fig_btm.add_trace(go.Scatter(x=date_str_list, y=df['DIF'], line=dict(color='#f39c12', width=1.2)), row=2, col=1)
-    fig_btm.add_trace(go.Scatter(x=date_str_list, y=df['MACD'], line=dict(color='#2980b9', width=1.2)), row=2, col=1)
+    fig_btm.add_trace(go.Bar(x=date_str_list, y=df['OSC'], marker_color=osc_colors, hoverinfo='none'), row=2, col=1)
+    fig_btm.add_trace(go.Scatter(x=date_str_list, y=df['DIF'], line=dict(color='#f39c12', width=1.2), hoverinfo='none'), row=2, col=1)
+    fig_btm.add_trace(go.Scatter(x=date_str_list, y=df['MACD'], line=dict(color='#2980b9', width=1.2), hoverinfo='none'), row=2, col=1)
 
-    # Row 3: OBV
-    fig_btm.add_trace(go.Scatter(x=date_str_list, y=df['OBV'], line=dict(color='#16a085', width=1.2)), row=3, col=1)
-    fig_btm.add_trace(go.Scatter(x=date_str_list, y=df['OBV_MA20'], line=dict(color='#8e44ad', width=1.1, dash='dash')), row=3, col=1)
+    fig_btm.add_trace(go.Scatter(x=date_str_list, y=df['OBV'], line=dict(color='#16a085', width=1.2), hoverinfo='none'), row=3, col=1)
+    fig_btm.add_trace(go.Scatter(x=date_str_list, y=df['OBV_MA20'], line=dict(color='#8e44ad', width=1.1, dash='dash'), hoverinfo='none'), row=3, col=1)
 
-    # Row 4: 外資
     f_colors = ['#eb4d4b' if x >= 0 else '#2ecc71' for x in df['Foreign_Net'].fillna(0)]
-    fig_btm.add_trace(go.Bar(x=date_str_list, y=df['Foreign_Net'], marker_color=f_colors), row=4, col=1)
+    fig_btm.add_trace(go.Bar(x=date_str_list, y=df['Foreign_Net'], marker_color=f_colors, hoverinfo='none'), row=4, col=1)
     fig_btm.add_hline(y=0, line_color='rgba(150,150,150,0.7)', line_width=1, row=4, col=1)
 
-    # Row 5: 投信
     t_colors = ['#eb4d4b' if x >= 0 else '#2ecc71' for x in df['Trust_Net'].fillna(0)]
-    fig_btm.add_trace(go.Bar(x=date_str_list, y=df['Trust_Net'], marker_color=t_colors), row=5, col=1)
+    fig_btm.add_trace(go.Bar(x=date_str_list, y=df['Trust_Net'], marker_color=t_colors, hoverinfo='none'), row=5, col=1)
     fig_btm.add_hline(y=0, line_color='rgba(150,150,150,0.7)', line_width=1, row=5, col=1)
 
-    # Row 6: 自營
     d_colors = ['#eb4d4b' if x >= 0 else '#2ecc71' for x in df['Dealer_Net'].fillna(0)]
-    fig_btm.add_trace(go.Bar(x=date_str_list, y=df['Dealer_Net'], marker_color=d_colors), row=6, col=1)
+    fig_btm.add_trace(go.Bar(x=date_str_list, y=df['Dealer_Net'], marker_color=d_colors, hoverinfo='none'), row=6, col=1)
     fig_btm.add_hline(y=0, line_color='rgba(150,150,150,0.7)', line_width=1, row=6, col=1)
 
-    # Row 7: 資券
-    fig_btm.add_trace(go.Bar(x=date_str_list, y=df['Margin_Diff'], marker_color=m_colors, name='融資', width=0.4, offset=-0.4), secondary_y=False, row=7, col=1)
-    fig_btm.add_trace(go.Bar(x=date_str_list, y=df['Short_Diff'], marker_color=s_colors, name='融券', width=0.4, offset=0.0), secondary_y=False, row=7, col=1)
+    fig_btm.add_trace(go.Bar(x=date_str_list, y=df['Margin_Diff'], marker_color=m_colors, name='融資', width=0.4, offset=-0.4, hoverinfo='none'), secondary_y=False, row=7, col=1)
+    fig_btm.add_trace(go.Bar(x=date_str_list, y=df['Short_Diff'], marker_color=s_colors, name='融券', width=0.4, offset=0.0, hoverinfo='none'), secondary_y=False, row=7, col=1)
     fig_btm.add_hline(y=0, line_color='rgba(150,150,150,0.7)', line_width=1, secondary_y=False, row=7, col=1)
-    fig_btm.add_trace(go.Scatter(x=date_str_list, y=df['Short_Margin_Ratio'], line=dict(color='#e67e22', width=1.5), connectgaps=True, name='券資比'), secondary_y=True, row=7, col=1)
+    fig_btm.add_trace(go.Scatter(x=date_str_list, y=df['Short_Margin_Ratio'], line=dict(color='#e67e22', width=1.5), connectgaps=True, hoverinfo='none', name='券資比'), secondary_y=True, row=7, col=1)
 
-    # Row 8: 大戶 1
-    fig_btm.add_trace(go.Scatter(x=date_str_list, y=df['Major1_Pct'], line=dict(color='#c0392b', width=1.5, shape='hv'), connectgaps=True), row=8, col=1)
-
-    # Row 9: 大戶 2
-    fig_btm.add_trace(go.Scatter(x=date_str_list, y=df['Major2_Pct'], line=dict(color='#8e44ad', width=1.5, shape='hv'), connectgaps=True), row=9, col=1)
+    fig_btm.add_trace(go.Scatter(x=date_str_list, y=df['Major1_Pct'], line=dict(color='#c0392b', width=1.5, shape='hv'), connectgaps=True, hoverinfo='none'), row=8, col=1)
+    fig_btm.add_trace(go.Scatter(x=date_str_list, y=df['Major2_Pct'], line=dict(color='#8e44ad', width=1.5, shape='hv'), connectgaps=True, hoverinfo='none'), row=9, col=1)
 
     fig_btm.update_layout(
         font=dict(size=16),
         template='plotly_white',
-        hovermode='closest',
+        hovermode=False,
         dragmode='pan',
         showlegend=False,
         height=btm_height,
@@ -324,18 +284,7 @@ def build_split_figures(
     )
 
     for r in range(1, 10):
-        fig_btm.update_xaxes(
-            type='category',
-            range=[start_idx - 0.5, end_idx + 0.5],
-            domain=[0, 1],
-            showspikes=True,
-            spikemode='across',
-            spikesnap='cursor',
-            spikethickness=1,
-            spikedash='dash',
-            spikecolor='#2c3e50',
-            row=r, col=1
-        )
+        fig_btm.update_xaxes(type='category', range=[start_idx - 0.5, end_idx + 0.5], domain=[0, 1], showspikes=False, row=r, col=1)
 
     fig_btm.update_xaxes(
         type='category',
@@ -347,7 +296,6 @@ def build_split_figures(
         row=9, col=1
     )
 
-    # 鎖定所有副圖 Y 軸
     fig_btm.update_yaxes(title_text='KD', range=[0, 100], fixedrange=True, row=1, col=1)
     fig_btm.update_yaxes(title_text='MACD', range=[macd_min - macd_pad, macd_max + macd_pad], fixedrange=True, row=2, col=1)
     fig_btm.update_yaxes(title_text='OBV', range=[obv_min - obv_pad, obv_max + obv_pad], fixedrange=True, row=3, col=1)
