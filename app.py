@@ -1,6 +1,6 @@
 """
 app.py - 主應用程式進入點
-版本: app_202610311132
+版本: app_202610311135
 """
 
 import streamlit as st
@@ -14,7 +14,7 @@ import frontend as fro
 import indicators as ind
 import storage as sto
 
-MODULE_VERSION = "app_202610311132"
+MODULE_VERSION = "app_202610311135"
 
 # 頁面基本配置
 st.set_page_config(
@@ -179,19 +179,25 @@ if df is not None and not df.empty:
         if 'Margin_Balance' in df.columns and 'Short_Balance' in df.columns:
             df['Margin_Short_Ratio'] = (df['Short_Balance'] / df['Margin_Balance'].replace(0, float('nan'))) * 100
 
-    # 合併大戶持股（轉為 Series 後以 reindex/ffill 對齊交易日）
+    # 合併大戶持股
     if not holding_df.empty:
         holding_pivot = holding_df.pivot(index='date', columns='level', values='percent')
         if 15 in holding_pivot.columns:
-            s_m1 = holding_pivot[15].reindex(df.index).ffill()
-            df[f'Big_{m1}_Ratio'] = s_m1
+            df[f'Big_{m1}_Ratio'] = holding_pivot[15].reindex(df.index).ffill()
         cols_m2 = [c for c in holding_pivot.columns if c >= 11]
         if cols_m2:
-            s_m2 = holding_pivot[cols_m2].sum(axis=1).reindex(df.index).ffill()
-            df[f'Big_{m2}_Ratio'] = s_m2
+            df[f'Big_{m2}_Ratio'] = holding_pivot[cols_m2].sum(axis=1).reindex(df.index).ffill()
 
-    # 指標運算
-    df = ind.calculate_indicators(df, m1, m2)
+    # 指標運算 (自動相容 indicators 模組實際匯出的計算函式)
+    if hasattr(ind, "calculate_all"):
+        df = ind.calculate_all(df)
+    elif hasattr(ind, "calc_all_indicators"):
+        df = ind.calc_all_indicators(df, m1, m2)
+    elif hasattr(ind, "compute_indicators"):
+        df = ind.compute_indicators(df)
+    elif hasattr(ind, "calculate_indicators"):
+        df = ind.calculate_indicators(df, m1, m2)
+
     display_df = df.tail(display_days).copy()
     
     # 繪製主圖表
