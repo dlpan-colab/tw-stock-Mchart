@@ -1,14 +1,14 @@
 """
 app.py - 主應用程式介面與生命週期控制
-版本: 202610312155
+版本: 202610312204
 """
 
 import streamlit as st
 import streamlit.components.v1 as components
 
-MODULE_VERSION = "202610312155"
+MODULE_VERSION = "202610312204"
 
-from storage import load_stock_history, save_stock_history, clear_stock_history
+from storage import load_stock_history, save_stock_history, clear_stock_history, get_stock_chinese_name
 from chart_builder import build_split_figures
 from frontend import get_legend_html, get_component_html
 
@@ -37,6 +37,12 @@ if "period" not in st.session_state:
 if "disp_days" not in st.session_state:
     st.session_state.disp_days = 20
 
+def on_stock_input_change():
+    val = st.session_state.stock_input_box.strip()
+    if val:
+        st.session_state.stock_id = val
+        save_stock_history(val)
+
 with st.sidebar:
     st.header("參數設定")
     history_records = load_stock_history()
@@ -51,14 +57,22 @@ with st.sidebar:
                 key="history_select"
             )
             if selected_history:
-                st.session_state.stock_id = selected_history.split()[0]
+                sel_code = selected_history.split()[0]
+                if sel_code != st.session_state.stock_id:
+                    st.session_state.stock_id = sel_code
+                    save_stock_history(sel_code)
+                    st.rerun()
+
         if st.button("清除歷史記錄"):
             clear_stock_history()
             st.rerun()
 
-    input_stock = st.text_input("股票代號 (直接鍵入)", value=st.session_state.stock_id)
-    if input_stock.strip() != st.session_state.stock_id:
-        st.session_state.stock_id = input_stock.strip()
+    st.text_input(
+        "股票代號 (直接鍵入)",
+        value=st.session_state.stock_id,
+        key="stock_input_box",
+        on_change=on_stock_input_change
+    )
 
     st.session_state.period = st.selectbox(
         "下載區間",
@@ -99,22 +113,24 @@ with st.sidebar:
 st.subheader(f"台股技術與籌碼分析 v{MODULE_VERSION}")
 
 # 頂部：上一檔 / 下一檔 功能列
-stock_id = st.session_state.stock_id
+stock_id = str(st.session_state.stock_id).strip()
 hist_records = load_stock_history()
 hist_codes = [str(item.get("code")).strip() for item in hist_records if item.get("code")]
 
-if hist_codes and stock_id in hist_codes:
-    curr_idx = hist_codes.index(stock_id)
+if hist_codes:
+    curr_idx = hist_codes.index(stock_id) if stock_id in hist_codes else 0
     top_c1, top_c2 = st.columns(2)
     with top_c1:
         if st.button("◀ 上一檔", key="btn_top_prev", use_container_width=True):
             prev_idx = (curr_idx - 1) % len(hist_codes)
             st.session_state.stock_id = hist_codes[prev_idx]
+            save_stock_history(hist_codes[prev_idx])
             st.rerun()
     with top_c2:
         if st.button("下一檔 ▶", key="btn_top_next", use_container_width=True):
             next_idx = (curr_idx + 1) % len(hist_codes)
             st.session_state.stock_id = hist_codes[next_idx]
+            save_stock_history(hist_codes[next_idx])
             st.rerun()
 
 fig_top, fig_btm, df, c_name, end_idx, disp_n = build_split_figures(
@@ -130,6 +146,9 @@ fig_top, fig_btm, df, c_name, end_idx, disp_n = build_split_figures(
 if fig_top is None or fig_btm is None or df is None or df.empty:
     st.error(f"無法取得股票代號 {stock_id} 之歷史行情資料，請確認網路連線或稍後點擊查詢重試。")
     st.stop()
+
+# 繪圖成功後，若該代號不在清單內或缺少中文名，即刻入榜
+save_stock_history(stock_id, c_name)
 
 top_height = 420 if is_mobile else 460
 btm_height = 1180 if is_mobile else 1220
@@ -154,16 +173,18 @@ components.html(
 )
 
 # 底部：上一檔 / 下一檔 功能列
-if hist_codes and stock_id in hist_codes:
-    curr_idx = hist_codes.index(stock_id)
+if hist_codes:
+    curr_idx = hist_codes.index(stock_id) if stock_id in hist_codes else 0
     btm_c1, btm_c2 = st.columns(2)
     with btm_c1:
         if st.button("◀ 上一檔", key="btn_btm_prev", use_container_width=True):
             prev_idx = (curr_idx - 1) % len(hist_codes)
             st.session_state.stock_id = hist_codes[prev_idx]
+            save_stock_history(hist_codes[prev_idx])
             st.rerun()
     with btm_c2:
         if st.button("下一檔 ▶", key="btn_btm_next", use_container_width=True):
             next_idx = (curr_idx + 1) % len(hist_codes)
             st.session_state.stock_id = hist_codes[next_idx]
+            save_stock_history(hist_codes[next_idx])
             st.rerun()
