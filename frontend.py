@@ -1,11 +1,11 @@
 """
 frontend.py - 前端 HTML/CSS 渲染與版本彙整模組
-版本: 202610312025
+版本: 202610312030
 """
 import os
 import re
 
-MODULE_VERSION = "202610312025"
+MODULE_VERSION = "202610312030"
 
 def get_system_version() -> str:
     """自動萃取各模組版本並回傳系統最大版本號"""
@@ -364,7 +364,13 @@ def render_interactive_chart_html(
     p_btm_json = fig_btm.to_json()
 
     # 序列化各指標陣列以供 JavaScript 懸浮即時讀取
-    dates_list = df['Date'].dt.strftime('%Y-%m-%d').tolist() if hasattr(df['Date'], 'dt') else df['Date'].astype(str).tolist()
+    
+    if 'Date' in df.columns:
+        date_series = df['Date']
+    else:
+        date_series = df.index
+    dates_list = date_series.strftime('%Y-%m-%d').tolist() if hasattr(date_series, 'strftime') else [str(x)[:10] for x in date_series]
+    
     opens_list = df['Open'].tolist()
     highs_list = df['High'].tolist()
     lows_list = df['Low'].tolist()
