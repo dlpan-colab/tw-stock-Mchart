@@ -1,11 +1,11 @@
 """
 app.py - 主應用程式介面與生命週期控制
-版本: 202610312054
+版本: 202610312059
 """
 import streamlit as st
 import streamlit.components.v1 as components
 
-MODULE_VERSION = "202610312054"
+MODULE_VERSION = "202610312059"
 
 from storage import load_stock_history, save_stock_history, clear_stock_history
 from chart_builder import build_split_figures
@@ -14,7 +14,7 @@ from frontend import get_legend_html, get_component_html
 st.set_page_config(
     page_title="台股多指標+籌碼技術分析",
     layout="wide",
-    initial_sidebar_state="collapsed"
+    initial_sidebar_state="expanded"
 )
 
 st.markdown("""
@@ -25,7 +25,6 @@ st.markdown("""
         padding-left: 1rem;
         padding-right: 1rem;
     }
-    header {visibility: hidden;}
     footer {visibility: hidden;}
 </style>
 """, unsafe_allow_html=True)
@@ -105,7 +104,7 @@ fig_top, fig_btm, df, c_name, end_idx, disp_n = build_split_figures(
 )
 
 if fig_top is None or fig_btm is None or df is None or df.empty:
-    st.error(f"無法取得股票代號 {stock_id} 之歷史行情資料，請檢查代號或網路連線。")
+    st.error(f"無法取得股票代號 {stock_id} 之歷史行情資料，請確認網路連線或稍後點擊查詢重試。")
     st.stop()
 
 top_height = 540 if is_mobile else 580
