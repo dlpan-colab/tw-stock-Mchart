@@ -1,9 +1,8 @@
 """
-chart_builder.py - Plotly 圖表建構模組
-版本: 202610302000
+chart_builder.py - Plotly 圖表建置模組
+版本: 202610311935
 """
-
-VERSION_TAG = "202610302000"
+MODULE_VERSION = "202610311935"
 
 from typing import Tuple, Optional
 import numpy as np
@@ -192,7 +191,7 @@ def build_split_figures(
         ), row=2, col=1)
 
     fig_top.update_layout(
-        title=dict(text=f'{c_name or raw_ticker} ({market}) 多指標+籌碼技術分析圖({VERSION_TAG})', font=dict(size=16)),
+        title=dict(text=f'{c_name or raw_ticker} ({raw_ticker}) ({market})', font=dict(size=16)),
         font=dict(size=16),
         template='plotly_white', hovermode=False, dragmode='pan', showlegend=False,
         height=top_height,
