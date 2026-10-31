@@ -1,17 +1,18 @@
 """
 storage.py - 本地 SQLite 資料庫與股票歷史紀錄管理器
-版本: 202610312204
+版本: 202610312218
 """
 
 import os
 import io
 import json
 import sqlite3
+import time
 import requests
 from bs4 import BeautifulSoup
 import pandas as pd
 
-MODULE_VERSION = "202610312204"
+MODULE_VERSION = "202610312218"
 
 STORAGE_DIR = "."
 HISTORY_FILE = os.path.join(STORAGE_DIR, "stock_history.json")
@@ -26,9 +27,9 @@ COMMON_STOCK_NAMES = {
     "2454": "聯發科", "2478": "大毅", "2492": "華新科", "2609": "陽明",
     "2615": "萬海", "3008": "大立光", "3022": "威強電", "3088": "艾訊",
     "3231": "緯創", "3481": "群創", "3653": "健策", "3661": "世芯-KY",
-    "4526": "東台", "5439": "高技", "6191": "精成科", "6217": "中探針",
-    "6234": "高僑", "6425": "易發", "6456": "GIS-KY", "6505": "台塑化",
-    "8111": "立碁"
+    "4526": "東台", "4991": "環宇-KY", "5439": "高技", "6191": "精成科",
+    "6217": "中探針", "6234": "高僑", "6425": "易發", "6456": "GIS-KY",
+    "6505": "台塑化", "8111": "立碁"
 }
 
 
@@ -48,30 +49,34 @@ def get_stock_chinese_name(pure_code: str) -> str:
         except Exception:
             pass
 
-    # 1. 查詢 TWSE (上市)
-    try:
-        url_twse = f"https://isin.twse.com.tw/isin/single_main.jsp?owncode={pure_code}&stockname="
-        res = requests.get(url_twse, timeout=4)
-        if res.status_code == 200:
-            soup = BeautifulSoup(res.text, 'html.parser')
-            for r in soup.find_all('tr'):
-                cols = r.find_all('td')
-                if len(cols) >= 3 and cols[1].text.strip() == pure_code:
-                    c_name = cols[2].text.strip()
-                    if c_name:
-                        _save_name_cache(pure_code, c_name)
-                        return c_name
-    except Exception:
-        pass
+    # 1. 查詢 TWSE ISIN (官方總表) - 連續查詢 2 次失敗才跳轉
+    url_twse = f"https://isin.twse.com.tw/isin/single_main.jsp?owncode={pure_code}&stockname="
+    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
+    for attempt in range(2):
+        try:
+            res = requests.get(url_twse, headers=headers, timeout=5)
+            if res.status_code == 200:
+                soup = BeautifulSoup(res.text, "html.parser")
+                for r in soup.find_all("tr"):
+                    cols = r.find_all("td")
+                    if len(cols) >= 3 and cols[1].text.strip() == pure_code:
+                        c_name = cols[2].text.strip()
+                        if c_name:
+                            _save_name_cache(pure_code, c_name)
+                            return c_name
+        except Exception:
+            pass
+        if attempt == 0:
+            time.sleep(0.5)
 
     # 2. 查詢 TPEx (上櫃)
     try:
         url_tpex = f"https://www.tpex.org.tw/web/stock/aftertrading/otc_quotes_no1430/stk_wn1430_result.php?l=zh-tw&stkno={pure_code}"
-        res_t = requests.get(url_tpex, timeout=4)
+        res_t = requests.get(url_tpex, headers=headers, timeout=5)
         if res_t.status_code == 200:
             data = res_t.json()
-            if 'aaData' in data and len(data['aaData']) > 0:
-                c_name = str(data['aaData'][0][1]).strip()
+            if "aaData" in data and len(data["aaData"]) > 0:
+                c_name = str(data["aaData"][0][1]).strip()
                 if c_name and c_name != pure_code:
                     _save_name_cache(pure_code, c_name)
                     return c_name
@@ -82,12 +87,11 @@ def get_stock_chinese_name(pure_code: str) -> str:
     try:
         for suffix in [".TWO", ".TW"]:
             y_url = f"https://query2.finance.yahoo.com/v1/finance/search?q={pure_code}{suffix}"
-            headers = {'User-Agent': 'Mozilla/5.0'}
             y_res = requests.get(y_url, headers=headers, timeout=4)
             if y_res.status_code == 200:
-                quotes = y_res.json().get('quotes', [])
+                quotes = y_res.json().get("quotes", [])
                 if quotes:
-                    shortname = quotes[0].get('shortname') or quotes[0].get('longname')
+                    shortname = quotes[0].get("shortname") or quotes[0].get("longname")
                     if shortname:
                         c_name = shortname.split()[0].strip()
                         _save_name_cache(pure_code, c_name)
@@ -190,7 +194,7 @@ def clear_stock_history():
 def remove_stocks_from_history(target_codes: list) -> list:
     history = load_stock_history()
     target_set = set(str(c).strip() for c in target_codes)
-    new_history = [h for h in history if str(h.get('code')).strip() not in target_set]
+    new_history = [h for h in history if str(h.get("code")).strip() not in target_set]
     try:
         with open(HISTORY_FILE, "w", encoding="utf-8") as f:
             json.dump(new_history, f, ensure_ascii=False, indent=2)
@@ -278,19 +282,19 @@ class StockChipStorage:
         with sqlite3.connect(self.db_path) as conn:
             df = pd.read_sql("SELECT date, foreign_net, trust_net, dealer_net FROM institutional_investors ORDER BY date", conn)
             if not df.empty:
-                df['date'] = pd.to_datetime(df['date']).dt.normalize()
+                df["date"] = pd.to_datetime(df["date"]).dt.normalize()
             return df
 
     def load_margin_df(self):
         with sqlite3.connect(self.db_path) as conn:
             df = pd.read_sql("SELECT * FROM margin_short ORDER BY date", conn)
             if not df.empty:
-                df['date'] = pd.to_datetime(df['date']).dt.normalize()
+                df["date"] = pd.to_datetime(df["date"]).dt.normalize()
             return df
 
     def load_holding_df(self):
         with sqlite3.connect(self.db_path) as conn:
             df = pd.read_sql("SELECT date, level, percent FROM shareholding_distribution ORDER BY date, level", conn)
             if not df.empty:
-                df['date'] = pd.to_datetime(df['date']).dt.normalize()
+                df["date"] = pd.to_datetime(df["date"]).dt.normalize()
             return df
