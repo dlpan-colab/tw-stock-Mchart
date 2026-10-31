@@ -1,11 +1,12 @@
 """
 app.py - 主應用程式介面與生命週期控制
-版本: 202610312059
+版本: 202610312130
 """
+
 import streamlit as st
 import streamlit.components.v1 as components
 
-MODULE_VERSION = "202610312059"
+MODULE_VERSION = "202610312130"
 
 from storage import load_stock_history, save_stock_history, clear_stock_history
 from chart_builder import build_split_figures
@@ -71,9 +72,15 @@ with st.sidebar:
         index=0
     )
     is_mobile = "手機版" in mode_switch
-
     default_days = 20 if is_mobile else 60
-    st.session_state.disp_days = st.number_input("顯示日數", min_value=10, max_value=240, value=default_days, step=5)
+
+    st.session_state.disp_days = st.number_input(
+        "顯示日數",
+        min_value=10,
+        max_value=240,
+        value=default_days,
+        step=5
+    )
 
     use_target_date = st.checkbox("指定基準日 (復盤模式)")
     target_date_val = None
@@ -92,7 +99,6 @@ with st.sidebar:
 st.subheader(f"台股技術與籌碼分析 v{MODULE_VERSION}")
 
 stock_id = st.session_state.stock_id
-
 fig_top, fig_btm, df, c_name, end_idx, disp_n = build_split_figures(
     raw_ticker=stock_id,
     period=st.session_state.period,
@@ -122,7 +128,7 @@ html_content = get_component_html(
     initial_end_idx=end_idx
 )
 
-total_h = 2150 if is_mobile else 2250
+total_h = 2350 if is_mobile else 2450
 components.html(
     html_content,
     height=total_h,
