@@ -1,8 +1,7 @@
 """
 storage.py - 本地 SQLite 資料庫與股票歷史紀錄管理器
-版本: 202610312218
+版本: 202611012227
 """
-
 import os
 import io
 import json
@@ -12,7 +11,7 @@ import requests
 from bs4 import BeautifulSoup
 import pandas as pd
 
-MODULE_VERSION = "202610312218"
+MODULE_VERSION = "202611012227"
 
 STORAGE_DIR = "."
 HISTORY_FILE = os.path.join(STORAGE_DIR, "stock_history.json")
@@ -26,12 +25,25 @@ COMMON_STOCK_NAMES = {
     "2327": "國巨", "2330": "台積電", "2374": "佳能", "2382": "廣達",
     "2454": "聯發科", "2478": "大毅", "2492": "華新科", "2609": "陽明",
     "2615": "萬海", "3008": "大立光", "3022": "威強電", "3088": "艾訊",
-    "3231": "緯創", "3481": "群創", "3653": "健策", "3661": "世芯-KY","3718": "中光電投控",
-    "4526": "東台", "4991": "環宇-KY", "5439": "高技", "6191": "精成科",
-    "6217": "中探針", "6234": "高僑", "6425": "易發", "6456": "GIS-KY",
-    "6505": "台塑化", "8111": "立碁"
+    "3231": "緯創", "3481": "群創", "3653": "健策", "3661": "世芯-KY",
+    "3718": "中光電投控", "4526": "東台", "4991": "環宇-KY", "5439": "高技",
+    "6191": "精成科", "6217": "中探針", "6234": "高僑", "6425": "易發",
+    "6456": "GIS-KY", "6505": "台塑化", "8111": "立碁"
 }
 
+def _sync_cloud_pull():
+    try:
+        from cloud_sync import pull_file
+        pull_file("stock_history.json", HISTORY_FILE)
+    except Exception:
+        pass
+
+def _sync_cloud_push():
+    try:
+        from cloud_sync import push_file
+        push_file(HISTORY_FILE, "stock_history.json")
+    except Exception:
+        pass
 
 def get_stock_chinese_name(pure_code: str) -> str:
     pure_code = str(pure_code).strip()
@@ -49,7 +61,6 @@ def get_stock_chinese_name(pure_code: str) -> str:
         except Exception:
             pass
 
-    # 1. 查詢 TWSE ISIN (官方總表) - 連續查詢 2 次失敗才跳轉
     url_twse = f"https://isin.twse.com.tw/isin/single_main.jsp?owncode={pure_code}&stockname="
     headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
     for attempt in range(2):
@@ -59,18 +70,17 @@ def get_stock_chinese_name(pure_code: str) -> str:
                 soup = BeautifulSoup(res.text, "html.parser")
                 for r in soup.find_all("tr"):
                     cols = [td.text.replace("\u3000", " ").strip() for td in r.find_all("td")]
-                if len(cols) >= 3 and cols[0].startswith(pure_code):
-                    parts = cols[0].split()
-                    c_name = parts[1] if len(parts) > 1 else cols[1]
-                    if c_name:
-                        _save_name_cache(pure_code, c_name)
-                        return c_name
+                    if len(cols) >= 3 and cols[0].startswith(pure_code):
+                        parts = cols[0].split()
+                        c_name = parts[1] if len(parts) > 1 else cols[1]
+                        if c_name:
+                            _save_name_cache(pure_code, c_name)
+                            return c_name
         except Exception:
             pass
         if attempt == 0:
             time.sleep(0.5)
 
-    # 2. 查詢 TPEx (上櫃)
     try:
         url_tpex = f"https://www.tpex.org.tw/web/stock/aftertrading/otc_quotes_no1430/stk_wn1430_result.php?l=zh-tw&stkno={pure_code}"
         res_t = requests.get(url_tpex, headers=headers, timeout=5)
@@ -84,7 +94,6 @@ def get_stock_chinese_name(pure_code: str) -> str:
     except Exception:
         pass
 
-    # 3. 備援查詢 Yahoo Finance
     try:
         for suffix in [".TWO", ".TW"]:
             y_url = f"https://query2.finance.yahoo.com/v1/finance/search?q={pure_code}{suffix}"
@@ -95,7 +104,6 @@ def get_stock_chinese_name(pure_code: str) -> str:
                     shortname = quotes[0].get("shortname") or quotes[0].get("longname")
                     if shortname:
                         c_name = shortname.split()[0].strip()
-                        # 超過 10 字元或純英數字母視為無效英文名，不予採納
                         if len(c_name) <= 10 and not c_name.replace(" ", "").isalnum():
                             _save_name_cache(pure_code, c_name)
                             return c_name
@@ -104,22 +112,27 @@ def get_stock_chinese_name(pure_code: str) -> str:
 
     return pure_code
 
+def _load_name_cache() -> dict:
+    try:
+        if os.path.exists(NAMES_CACHE_FILE):
+            with open(NAMES_CACHE_FILE, "r", encoding="utf-8") as f:
+                return json.load(f)
+    except Exception:
+        pass
+    return {}
 
 def _save_name_cache(code: str, name: str):
     COMMON_STOCK_NAMES[code] = name
     try:
-        cached = {}
-        if os.path.exists(NAMES_CACHE_FILE):
-            with open(NAMES_CACHE_FILE, "r", encoding="utf-8") as f:
-                cached = json.load(f)
+        cached = _load_name_cache()
         cached[code] = name
         with open(NAMES_CACHE_FILE, "w", encoding="utf-8") as f:
             json.dump(cached, f, ensure_ascii=False)
     except Exception:
         pass
 
-
 def load_stock_history():
+    _sync_cloud_pull()
     data = []
     if os.path.exists(HISTORY_FILE):
         try:
@@ -127,7 +140,6 @@ def load_stock_history():
                 data = json.load(f)
         except Exception:
             data = []
-
     if not isinstance(data, list) or not data:
         data = [
             {"code": "4526", "name": "東台"},
@@ -136,7 +148,6 @@ def load_stock_history():
             {"code": "6456", "name": "GIS-KY"},
             {"code": "2330", "name": "台積電"}
         ]
-
     for item in data:
         code = str(item.get("code", "")).strip()
         curr_name = str(item.get("name", "")).strip()
@@ -144,26 +155,22 @@ def load_stock_history():
             item["name"] = get_stock_chinese_name(code)
     return data
 
-
 def save_stock_history(code: str, name: str = None):
     code = str(code).strip()
     if not code:
         return load_stock_history()
-
     c_name = name.strip() if name and name.strip() != code else get_stock_chinese_name(code)
     history = load_stock_history()
-
     new_hist = [h for h in history if str(h.get("code")).strip() != code]
     new_hist.insert(0, {"code": code, "name": c_name})
     new_hist = new_hist[:30]
-
     try:
         with open(HISTORY_FILE, "w", encoding="utf-8") as f:
             json.dump(new_hist, f, ensure_ascii=False, indent=2)
+        _sync_cloud_push()
     except Exception:
         pass
     return new_hist
-
 
 def update_stock_name_only(code: str, name: str):
     code = str(code).strip()
@@ -181,18 +188,18 @@ def update_stock_name_only(code: str, name: str):
         try:
             with open(HISTORY_FILE, "w", encoding="utf-8") as f:
                 json.dump(history, f, ensure_ascii=False, indent=2)
+            _sync_cloud_push()
         except Exception:
             pass
-
 
 def clear_stock_history():
     try:
         if os.path.exists(HISTORY_FILE):
             os.remove(HISTORY_FILE)
+        _sync_cloud_push()
     except Exception:
         pass
     return []
-
 
 def remove_stocks_from_history(target_codes: list) -> list:
     history = load_stock_history()
@@ -201,10 +208,10 @@ def remove_stocks_from_history(target_codes: list) -> list:
     try:
         with open(HISTORY_FILE, "w", encoding="utf-8") as f:
             json.dump(new_history, f, ensure_ascii=False, indent=2)
+        _sync_cloud_push()
     except Exception:
         pass
     return new_history
-
 
 class StockChipStorage:
     def __init__(self, pure_code: str):
@@ -217,29 +224,29 @@ class StockChipStorage:
         with sqlite3.connect(self.db_path) as conn:
             cur = conn.cursor()
             cur.execute("""
-            CREATE TABLE IF NOT EXISTS institutional_investors (
-                date TEXT PRIMARY KEY,
-                foreign_net REAL,
-                trust_net REAL,
-                dealer_net REAL
-            )
+                CREATE TABLE IF NOT EXISTS institutional_investors (
+                    date TEXT PRIMARY KEY,
+                    foreign_net REAL,
+                    trust_net REAL,
+                    dealer_net REAL
+                )
             """)
             cur.execute("""
-            CREATE TABLE IF NOT EXISTS shareholding_distribution (
-                date TEXT,
-                level INTEGER,
-                percent REAL,
-                PRIMARY KEY (date, level)
-            )
+                CREATE TABLE IF NOT EXISTS shareholding_distribution (
+                    date TEXT,
+                    level INTEGER,
+                    percent REAL,
+                    PRIMARY KEY (date, level)
+                )
             """)
             cur.execute("""
-            CREATE TABLE IF NOT EXISTS margin_short (
-                date TEXT PRIMARY KEY,
-                margin_diff REAL,
-                short_diff REAL,
-                margin_bal REAL,
-                short_bal REAL
-            )
+                CREATE TABLE IF NOT EXISTS margin_short (
+                    date TEXT PRIMARY KEY,
+                    margin_diff REAL,
+                    short_diff REAL,
+                    margin_bal REAL,
+                    short_bal REAL
+                )
             """)
             conn.commit()
 
