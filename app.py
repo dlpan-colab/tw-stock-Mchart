@@ -1,13 +1,19 @@
 """
 app.py - 主應用程式介面與生命週期控制
-版本: 202611012253
+版本: 202611012322
 """
 import streamlit as st
 import streamlit.components.v1 as components
 
-MODULE_VERSION = "202611012253"
+MODULE_VERSION = "202611012322"
 
-from storage import load_stock_history, save_stock_history, clear_stock_history, get_stock_chinese_name
+from storage import (
+    load_stock_history,
+    save_stock_history,
+    clear_stock_history,
+    remove_stocks_from_history,
+    get_stock_chinese_name
+)
 from chart_builder import build_split_figures
 from frontend import get_legend_html, get_component_html
 
@@ -35,6 +41,10 @@ if "period" not in st.session_state:
     st.session_state.period = "1y"
 if "disp_days" not in st.session_state:
     st.session_state.disp_days = 20
+if "confirm_clear_all" not in st.session_state:
+    st.session_state.confirm_clear_all = False
+if "prev_selected_history" not in st.session_state:
+    st.session_state.prev_selected_history = []
 
 def on_stock_input_change():
     val = st.session_state.stock_input_box.strip()
@@ -46,23 +56,56 @@ with st.sidebar:
     st.header("參數設定")
     history_records = load_stock_history()
     history_codes = [str(item.get("code")).strip() for item in history_records if item.get("code")]
+    
     with st.expander("查詢歷史紀錄", expanded=False):
         if history_codes:
-            history_display = [f"{h.get('code')} {h.get('name', '')}" for h in history_records]
-            selected_history = st.selectbox(
+            history_display = [f"{h.get('code')} {h.get('name', '')}".strip() for h in history_records]
+            selected_history = st.multiselect(
                 "點擊展開並勾選標的...",
-                [""] + history_display,
-                key="history_select"
+                options=history_display,
+                default=[],
+                key="history_multiselect"
             )
-            if selected_history:
-                sel_code = selected_history.split()[0]
-                if sel_code != st.session_state.stock_id:
-                    st.session_state.stock_id = sel_code
-                    save_stock_history(sel_code)
+            
+            # 偵測最新勾選的項目並更新股票代號
+            newly_added = [item for item in selected_history if item not in st.session_state.prev_selected_history]
+            if newly_added:
+                latest_sel_code = newly_added[-1].split()[0]
+                if latest_sel_code != st.session_state.stock_id:
+                    st.session_state.stock_id = latest_sel_code
+                    save_stock_history(latest_sel_code)
+                    st.session_state.prev_selected_history = selected_history
                     st.rerun()
-        if st.button("清除歷史記錄"):
-            clear_stock_history()
-            st.rerun()
+            st.session_state.prev_selected_history = selected_history
+
+            # 清除按鈕邏輯
+            if st.button("清除歷史記錄", use_container_width=True):
+                if selected_history:
+                    target_codes = [item.split()[0] for item in selected_history]
+                    remove_stocks_from_history(target_codes)
+                    st.session_state.confirm_clear_all = False
+                    st.session_state.prev_selected_history = []
+                    st.rerun()
+                else:
+                    st.session_state.confirm_clear_all = True
+                    st.rerun()
+
+            # 無勾選項目時的二次確認區塊
+            if st.session_state.confirm_clear_all:
+                st.warning("⚠️ 未勾選任何標的，確定要清除全部歷史紀錄嗎？")
+                c_del1, c_del2 = st.columns(2)
+                with c_del1:
+                    if st.button("確認全刪", key="btn_confirm_delete_all", use_container_width=True):
+                        clear_stock_history()
+                        st.session_state.confirm_clear_all = False
+                        st.session_state.prev_selected_history = []
+                        st.rerun()
+                with c_del2:
+                    if st.button("取消", key="btn_cancel_delete_all", use_container_width=True):
+                        st.session_state.confirm_clear_all = False
+                        st.rerun()
+        else:
+            st.caption("目前無歷史紀錄")
 
     st.text_input(
         "股票代號 (直接鍵入)",
@@ -140,7 +183,7 @@ if fig_top is None or fig_btm is None or df is None or df.empty:
     st.error(f"無法取得股票代號 {stock_id} 之歷史行情資料，請確認網路連線或稍後點擊查詢重試。")
     st.stop()
 
-# 繪圖成功後，若該代號不在清單內或缺少中文名，即刻入榜
+# 繪圖成功後，若該代號不在清單內或缺少中文名，即刻入榜並同步雲端
 save_stock_history(stock_id, c_name)
 
 top_height = 420 if is_mobile else 460
