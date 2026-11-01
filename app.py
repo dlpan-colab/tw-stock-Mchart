@@ -1,17 +1,18 @@
 """
 app.py - 主應用程式介面與生命週期控制
-版本: 202611012322
+版本: 202611012356
 """
 import streamlit as st
 import streamlit.components.v1 as components
 
-MODULE_VERSION = "202611012322"
+MODULE_VERSION = "202611012356"
 
 from storage import (
     load_stock_history,
     save_stock_history,
     clear_stock_history,
     remove_stocks_from_history,
+    update_stock_name_only,
     get_stock_chinese_name
 )
 from chart_builder import build_split_figures
@@ -67,7 +68,7 @@ with st.sidebar:
                 key="history_multiselect"
             )
             
-            # 偵測最新勾選的項目並更新股票代號
+            # 偵測最新勾選的項目：更新股票代號並提至歷史清單最前面
             newly_added = [item for item in selected_history if item not in st.session_state.prev_selected_history]
             if newly_added:
                 latest_sel_code = newly_added[-1].split()[0]
@@ -148,7 +149,7 @@ with st.sidebar:
 
 st.subheader(f"台股技術與籌碼分析 v{MODULE_VERSION}")
 
-# 頂部：上一檔 / 下一檔 功能列（寬度縮減 1/2）
+# 頂部：上一檔 / 下一檔 功能列（純切換，不調整歷史順序）
 stock_id = str(st.session_state.stock_id).strip()
 hist_records = load_stock_history()
 hist_codes = [str(item.get("code")).strip() for item in hist_records if item.get("code")]
@@ -160,13 +161,11 @@ if hist_codes:
         if st.button("◀ 上一檔", key="btn_top_prev", use_container_width=True):
             prev_idx = (curr_idx - 1) % len(hist_codes)
             st.session_state.stock_id = hist_codes[prev_idx]
-            save_stock_history(hist_codes[prev_idx])
             st.rerun()
     with top_c2:
         if st.button("下一檔 ▶", key="btn_top_next", use_container_width=True):
             next_idx = (curr_idx + 1) % len(hist_codes)
             st.session_state.stock_id = hist_codes[next_idx]
-            save_stock_history(hist_codes[next_idx])
             st.rerun()
 
 fig_top, fig_btm, df, c_name, end_idx, disp_n = build_split_figures(
@@ -183,8 +182,11 @@ if fig_top is None or fig_btm is None or df is None or df.empty:
     st.error(f"無法取得股票代號 {stock_id} 之歷史行情資料，請確認網路連線或稍後點擊查詢重試。")
     st.stop()
 
-# 繪圖成功後，若該代號不在清單內或缺少中文名，即刻入榜並同步雲端
-save_stock_history(stock_id, c_name)
+# 繪圖成功後：若不在清單內才新增入榜；若已存在僅更新名稱，不打亂原有清單順序
+if stock_id not in hist_codes:
+    save_stock_history(stock_id, c_name)
+else:
+    update_stock_name_only(stock_id, c_name)
 
 top_height = 420 if is_mobile else 460
 btm_height = 1180 if is_mobile else 1220
@@ -208,7 +210,7 @@ components.html(
     scrolling=False
 )
 
-# 底部：上一檔 / 下一檔 功能列（寬度縮減 1/2）
+# 底部：上一檔 / 下一檔 功能列（純切換，不調整歷史順序）
 if hist_codes:
     curr_idx = hist_codes.index(stock_id) if stock_id in hist_codes else 0
     _, btm_c1, btm_c2, _ = st.columns([1, 2, 2, 1])
@@ -216,11 +218,9 @@ if hist_codes:
         if st.button("◀ 上一檔", key="btn_btm_prev", use_container_width=True):
             prev_idx = (curr_idx - 1) % len(hist_codes)
             st.session_state.stock_id = hist_codes[prev_idx]
-            save_stock_history(hist_codes[prev_idx])
             st.rerun()
     with btm_c2:
         if st.button("下一檔 ▶", key="btn_btm_next", use_container_width=True):
             next_idx = (curr_idx + 1) % len(hist_codes)
             st.session_state.stock_id = hist_codes[next_idx]
-            save_stock_history(hist_codes[next_idx])
             st.rerun()
