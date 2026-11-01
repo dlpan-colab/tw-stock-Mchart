@@ -1,12 +1,11 @@
 """
 app.py - 主應用程式介面與生命週期控制
-版本: 202610312204
+版本: 202611012253
 """
-
 import streamlit as st
 import streamlit.components.v1 as components
 
-MODULE_VERSION = "202610312204"
+MODULE_VERSION = "202611012253"
 
 from storage import load_stock_history, save_stock_history, clear_stock_history, get_stock_chinese_name
 from chart_builder import build_split_figures
@@ -20,13 +19,13 @@ st.set_page_config(
 
 st.markdown("""
 <style>
-    .block-container {
-        padding-top: 3.5rem;
-        padding-bottom: 0rem;
-        padding-left: 1rem;
-        padding-right: 1rem;
-    }
-    footer {visibility: hidden;}
+.block-container {
+    padding-top: 3.5rem;
+    padding-bottom: 0rem;
+    padding-left: 1rem;
+    padding-right: 1rem;
+}
+footer {visibility: hidden;}
 </style>
 """, unsafe_allow_html=True)
 
@@ -47,7 +46,6 @@ with st.sidebar:
     st.header("參數設定")
     history_records = load_stock_history()
     history_codes = [str(item.get("code")).strip() for item in history_records if item.get("code")]
-    
     with st.expander("查詢歷史紀錄", expanded=False):
         if history_codes:
             history_display = [f"{h.get('code')} {h.get('name', '')}" for h in history_records]
@@ -62,7 +60,6 @@ with st.sidebar:
                     st.session_state.stock_id = sel_code
                     save_stock_history(sel_code)
                     st.rerun()
-
         if st.button("清除歷史記錄"):
             clear_stock_history()
             st.rerun()
@@ -73,13 +70,11 @@ with st.sidebar:
         key="stock_input_box",
         on_change=on_stock_input_change
     )
-
     st.session_state.period = st.selectbox(
         "下載區間",
         ["6mo", "1y", "2y", "5y", "max"],
         index=1
     )
-
     mode_switch = st.selectbox(
         "模式切換",
         ["手機版 (Mobile) - 預設20日", "電腦版 (Desktop) - 預設60日"],
@@ -87,7 +82,6 @@ with st.sidebar:
     )
     is_mobile = "手機版" in mode_switch
     default_days = 20 if is_mobile else 60
-
     st.session_state.disp_days = st.number_input(
         "顯示日數",
         min_value=10,
@@ -95,7 +89,6 @@ with st.sidebar:
         value=default_days,
         step=5
     )
-
     use_target_date = st.checkbox("指定基準日 (復盤模式)")
     target_date_val = None
     if use_target_date:
@@ -112,14 +105,14 @@ with st.sidebar:
 
 st.subheader(f"台股技術與籌碼分析 v{MODULE_VERSION}")
 
-# 頂部：上一檔 / 下一檔 功能列
+# 頂部：上一檔 / 下一檔 功能列（寬度縮減 1/2）
 stock_id = str(st.session_state.stock_id).strip()
 hist_records = load_stock_history()
 hist_codes = [str(item.get("code")).strip() for item in hist_records if item.get("code")]
 
 if hist_codes:
     curr_idx = hist_codes.index(stock_id) if stock_id in hist_codes else 0
-    top_c1, top_c2 = st.columns(2)
+    _, top_c1, top_c2, _ = st.columns([1, 2, 2, 1])
     with top_c1:
         if st.button("◀ 上一檔", key="btn_top_prev", use_container_width=True):
             prev_idx = (curr_idx - 1) % len(hist_codes)
@@ -165,17 +158,17 @@ html_content = get_component_html(
     initial_end_idx=end_idx
 )
 
-total_h = 1820 if is_mobile else 1880
+total_h = 1920 if is_mobile else 1880
 components.html(
     html_content,
     height=total_h,
     scrolling=False
 )
 
-# 底部：上一檔 / 下一檔 功能列
+# 底部：上一檔 / 下一檔 功能列（寬度縮減 1/2）
 if hist_codes:
     curr_idx = hist_codes.index(stock_id) if stock_id in hist_codes else 0
-    btm_c1, btm_c2 = st.columns(2)
+    _, btm_c1, btm_c2, _ = st.columns([1, 2, 2, 1])
     with btm_c1:
         if st.button("◀ 上一檔", key="btn_btm_prev", use_container_width=True):
             prev_idx = (curr_idx - 1) % len(hist_codes)
