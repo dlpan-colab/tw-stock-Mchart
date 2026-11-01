@@ -1,11 +1,11 @@
 """
 frontend.py - 前端 HTML/CSS 渲染與手勢/游標跨圖同步模組
-版本: 202611012251
+版本: 202611012300
 """
 import os
 import re
 
-MODULE_VERSION = "202611012251"
+MODULE_VERSION = "202611012300"
 
 def get_system_version() -> str:
     versions = [MODULE_VERSION]
@@ -332,7 +332,7 @@ def render_interactive_chart_html(
     ma5_list = df['MA5'].fillna(0).tolist() if 'MA5' in df.columns else [0] * n_pts
     ma20_list = df['MA20'].fillna(0).tolist() if 'MA20' in df.columns else [0] * n_pts
     ma60_list = df['MA60'].fillna(0).tolist() if 'MA60' in df.columns else [0] * n_pts
-    turnover_list = df['TurnoverRate'].fillna(0).tolist() if 'TurnoverRate' in df.columns else [0] * n_pts
+    turnover_list = df['Turnover_Rate'].fillna(0).tolist() if 'Turnover_Rate' in df.columns else (df['TurnoverRate'].fillna(0).tolist() if 'TurnoverRate' in df.columns else [0] * n_pts)
 
     k_list = df['K'].fillna(0).tolist() if 'K' in df.columns else [0] * n_pts
     d_list = df['D'].fillna(0).tolist() if 'D' in df.columns else [0] * n_pts
@@ -343,13 +343,15 @@ def render_interactive_chart_html(
     obv_list = df['OBV'].fillna(0).tolist() if 'OBV' in df.columns else [0] * n_pts
     obv_ma_list = df['OBV_MA20'].fillna(0).tolist() if 'OBV_MA20' in df.columns else [0] * n_pts
 
-    foreign_list = df['Foreign_Diff'].fillna(0).tolist() if 'Foreign_Diff' in df.columns else [0] * n_pts
-    trust_list = df['Trust_Diff'].fillna(0).tolist() if 'Trust_Diff' in df.columns else [0] * n_pts
-    dealer_list = df['Dealer_Diff'].fillna(0).tolist() if 'Dealer_Diff' in df.columns else [0] * n_pts
+    # 對應後端 Foreign_Net, Trust_Net, Dealer_Net 欄位
+    foreign_list = df['Foreign_Net'].fillna(0).tolist() if 'Foreign_Net' in df.columns else [0] * n_pts
+    trust_list = df['Trust_Net'].fillna(0).tolist() if 'Trust_Net' in df.columns else [0] * n_pts
+    dealer_list = df['Dealer_Net'].fillna(0).tolist() if 'Dealer_Net' in df.columns else [0] * n_pts
 
     m_diff_list = df['Margin_Diff'].fillna(0).tolist() if 'Margin_Diff' in df.columns else [0] * n_pts
     s_diff_list = df['Short_Diff'].fillna(0).tolist() if 'Short_Diff' in df.columns else [0] * n_pts
-    ratio_list = df['Margin_Short_Ratio'].fillna(0).tolist() if 'Margin_Short_Ratio' in df.columns else [0] * n_pts
+    # 對應後端 Short_Margin_Ratio 欄位
+    ratio_list = df['Short_Margin_Ratio'].fillna(0).tolist() if 'Short_Margin_Ratio' in df.columns else [0] * n_pts
 
     m1_pct_list = df['Major1_Pct'].fillna(0).tolist() if 'Major1_Pct' in df.columns else [0] * n_pts
     m2_pct_list = df['Major2_Pct'].fillna(0).tolist() if 'Major2_Pct' in df.columns else [0] * n_pts
