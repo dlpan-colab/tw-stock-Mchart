@@ -1,13 +1,11 @@
 """
 frontend.py - 前端 HTML/CSS 渲染與手勢/游標跨圖同步模組
-版本: 202610312148
+版本: 202611012251
 """
-
 import os
 import re
 
-MODULE_VERSION = "202610312148"
-
+MODULE_VERSION = "202611012251"
 
 def get_system_version() -> str:
     versions = [MODULE_VERSION]
@@ -26,9 +24,7 @@ def get_system_version() -> str:
             pass
     return max(versions)
 
-
 SYSTEM_VERSION = get_system_version()
-
 
 def get_legend_html(version_tag: str = None) -> str:
     tag = version_tag if version_tag else SYSTEM_VERSION
@@ -38,23 +34,22 @@ def get_legend_html(version_tag: str = None) -> str:
     </div>
     """
 
-
 js_template = """
 <style>
-  .plot-main-container {
+.plot-main-container {
     position: relative;
     width: 100%;
     box-sizing: border-box;
-    padding-bottom: 30px !important;
-  }
-  .touch-plot-box {
+    padding-bottom: 90px !important;
+}
+.touch-plot-box {
     position: relative;
     touch-action: pan-y !important;
     user-select: none !important;
     -webkit-user-select: none !important;
     width: 100% !important;
-  }
-  .pane-info-bar {
+}
+.pane-info-bar {
     font-size: 14px;
     font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
     color: #2c3e50;
@@ -66,24 +61,24 @@ js_template = """
     line-height: 1.45;
     box-shadow: 0 1px 2px rgba(0,0,0,0.03);
     overflow-x: auto;
-  }
-  .val-up { color: #eb4d4b; font-weight: bold; }
-  .val-dn { color: #2ecc71; font-weight: bold; }
-  .tag-lbl { margin-right: 5px; }
-  .middle-inserted-bar {
+}
+.val-up { color: #eb4d4b; font-weight: bold; }
+.val-dn { color: #2ecc71; font-weight: bold; }
+.tag-lbl { margin-right: 5px; }
+.middle-inserted-bar {
     width: 100%;
     box-sizing: border-box;
     margin: 4px 0;
-  }
-  .bottom-chip-deck {
+}
+.bottom-chip-deck {
     width: 100%;
     box-sizing: border-box;
     margin-top: 4px;
     display: flex;
     flex-direction: column;
     gap: 4px;
-  }
-  .sync-crosshair-line {
+}
+.sync-crosshair-line {
     position: absolute;
     top: 0;
     bottom: 0;
@@ -92,8 +87,8 @@ js_template = """
     pointer-events: none;
     display: none;
     z-index: 999;
-  }
-  .sync-price-line {
+}
+.sync-price-line {
     position: absolute;
     left: 80px;
     right: 15px;
@@ -102,219 +97,203 @@ js_template = """
     pointer-events: none;
     display: none;
     z-index: 999;
-  }
+}
 </style>
 
 <div class="plot-main-container" id="__CHART_ID___container">
-  <div id="__CHART_ID___info1" class="pane-info-bar" style="margin-bottom: 2px;">正在載入...</div>
-  
-  <div id="__CHART_ID___top" class="touch-plot-box" style="height: __TOP_H__;">
-    <div id="__CHART_ID___line_top" class="sync-crosshair-line"></div>
-    <div id="__CHART_ID___line_price" class="sync-price-line"></div>
-  </div>
-
-  <div class="middle-inserted-bar">
-    <div id="__CHART_ID___info_tech" class="pane-info-bar"></div>
-  </div>
-
-  <div id="__CHART_ID___btm" class="touch-plot-box" style="height: __BTM_H__;">
-    <div id="__CHART_ID___line_btm" class="sync-crosshair-line"></div>
-  </div>
-
-  <div class="bottom-chip-deck">
-    <div id="__CHART_ID___info_ms" class="pane-info-bar"></div>
-    <div id="__CHART_ID___info_chip" class="pane-info-bar"></div>
-  </div>
+    <div id="__CHART_ID___info1" class="pane-info-bar" style="margin-bottom: 2px;">正在載入...</div>
+    <div id="__CHART_ID___top" class="touch-plot-box" style="height: __TOP_H__;">
+        <div id="__CHART_ID___line_top" class="sync-crosshair-line"></div>
+        <div id="__CHART_ID___line_price" class="sync-price-line"></div>
+    </div>
+    <div class="middle-inserted-bar">
+        <div id="__CHART_ID___info_tech" class="pane-info-bar"></div>
+    </div>
+    <div id="__CHART_ID___btm" class="touch-plot-box" style="height: __BTM_H__;">
+        <div id="__CHART_ID___line_btm" class="sync-crosshair-line"></div>
+    </div>
+    <div class="bottom-chip-deck">
+        <div id="__CHART_ID___info_ms" class="pane-info-bar"></div>
+        <div id="__CHART_ID___info_chip" class="pane-info-bar"></div>
+    </div>
 </div>
 
 <script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>
 <script>
 (function() {
-  var pTop = __PLOT_JSON_TOP__;
-  var pBtm = __PLOT_JSON_BTM__;
-  var dates = __DATES__;
-  var opens = __OPENS__, highs = __HIGHS__, lows = __LOWS__, closes = __CLOSES__, vols = __VOLS__;
-  var ma5s = __MA5S__, ma20s = __MA20S__, ma60s = __MA60S__;
-  var turnovers = __TURNOVERS__;
-  var ks = __KS__, ds = __DS__, difs = __DIFS__, macds = __MACDS__, oscs = __OSCS__;
-  var obvs = __OBVS__, obvMas = __OBVMAS__;
-  var foreigns = __FOREIGNS__, trusts = __TRUSTS__, dealers = __DEALERS__;
-  var mDiffs = __MARGIN_DIFFS__, sDiffs = __SHORT_DIFFS__, rat = __RATIOS__;
-  var m1_pcts = __M1_PCTS__, m2_pcts = __M2_PCTS__, m1_thresh = __M1_THRESH__, m2_thresh = __M2_THRESH__;
+    var pTop = __PLOT_JSON_TOP__;
+    var pBtm = __PLOT_JSON_BTM__;
+    var dates = __DATES__;
+    var opens = __OPENS__, highs = __HIGHS__, lows = __LOWS__, closes = __CLOSES__, vols = __VOLS__;
+    var ma5s = __MA5S__, ma20s = __MA20S__, ma60s = __MA60S__;
+    var turnovers = __TURNOVERS__;
+    var ks = __KS__, ds = __DS__, difs = __DIFS__, macds = __MACDS__, oscs = __OSCS__;
+    var obvs = __OBVS__, obvMas = __OBVMAS__;
+    var foreigns = __FOREIGNS__, trusts = __TRUSTS__, dealers = __DEALERS__;
+    var mDiffs = __MARGIN_DIFFS__, sDiffs = __SHORT_DIFFS__, rat = __RATIOS__;
+    var m1_pcts = __M1_PCTS__, m2_pcts = __M2_PCTS__, m1_thresh = __M1_THRESH__, m2_thresh = __M2_THRESH__;
+    var container = document.getElementById('__CHART_ID___container');
+    var elTop = document.getElementById('__CHART_ID___top');
+    var elBtm = document.getElementById('__CHART_ID___btm');
+    var lineTop = document.getElementById('__CHART_ID___line_top');
+    var lineBtm = document.getElementById('__CHART_ID___line_btm');
+    var linePrice = document.getElementById('__CHART_ID___line_price');
+    var info1 = document.getElementById('__CHART_ID___info1');
+    var infoTech = document.getElementById('__CHART_ID___info_tech');
+    var infoMs = document.getElementById('__CHART_ID___info_ms');
+    var infoChip = document.getElementById('__CHART_ID___info_chip');
+    var totalPoints = dates.length;
+    var isUpdating = false;
+    var targetDays = Number(__INITIAL_DISP_DAYS__) || 20;
+    var initEnd = __INITIAL_END_IDX__;
+    var initStart = Math.max(0, initEnd - targetDays + 1);
 
-  var container = document.getElementById('__CHART_ID___container');
-  var elTop = document.getElementById('__CHART_ID___top');
-  var elBtm = document.getElementById('__CHART_ID___btm');
-  var lineTop = document.getElementById('__CHART_ID___line_top');
-  var lineBtm = document.getElementById('__CHART_ID___line_btm');
-  var linePrice = document.getElementById('__CHART_ID___line_price');
-  
-  var info1 = document.getElementById('__CHART_ID___info1');
-  var infoTech = document.getElementById('__CHART_ID___info_tech');
-  var infoMs = document.getElementById('__CHART_ID___info_ms');
-  var infoChip = document.getElementById('__CHART_ID___info_chip');
-
-  var totalPoints = dates.length;
-  var isUpdating = false;
-  var targetDays = Number(__INITIAL_DISP_DAYS__) || 20;
-  var initEnd = __INITIAL_END_IDX__;
-  var initStart = Math.max(0, initEnd - targetDays + 1);
-
-  pTop.layout.xaxis.range = [initStart - 0.5, initEnd + 0.5];
-  if (pTop.layout.xaxis2) pTop.layout.xaxis2.range = [initStart - 0.5, initEnd + 0.5];
-
-  for (var r = 1; r <= 9; r++) {
-    var k = (r === 1) ? 'xaxis' : 'xaxis' + r;
-    if (pBtm.layout[k]) {
-      pBtm.layout[k].range = [initStart - 0.5, initEnd + 0.5];
+    pTop.layout.xaxis.range = [initStart - 0.5, initEnd + 0.5];
+    if (pTop.layout.xaxis2) pTop.layout.xaxis2.range = [initStart - 0.5, initEnd + 0.5];
+    for (var r = 1; r <= 9; r++) {
+        var k = (r === 1) ? 'xaxis' : 'xaxis' + r;
+        if (pBtm.layout[k]) {
+            pBtm.layout[k].range = [initStart - 0.5, initEnd + 0.5];
+        }
     }
-  }
 
-  function fmtNum(val, dec) {
-    if (val === null || val === undefined || isNaN(val)) return '-';
-    return Number(val).toFixed(dec !== undefined ? dec : 2);
-  }
+    function fmtNum(val, dec) {
+        if (val === null || val === undefined || isNaN(val)) return '-';
+        return Number(val).toFixed(dec !== undefined ? dec : 2);
+    }
 
-  function fmtDiff(val, dec) {
-    if (val === null || val === undefined || isNaN(val)) return '-';
-    var num = Number(val);
-    var s = num.toFixed(dec !== undefined ? dec : 0);
-    if (num > 0) return '<span class="val-up">+' + s + '</span>';
-    if (num < 0) return '<span class="val-dn">' + s + '</span>';
-    return s;
-  }
+    function fmtDiff(val, dec) {
+        if (val === null || val === undefined || isNaN(val)) return '-';
+        var num = Number(val);
+        var s = num.toFixed(dec !== undefined ? dec : 0);
+        if (num > 0) return '<span class="val-up">+' + s + '</span>';
+        if (num < 0) return '<span class="val-dn">' + s + '</span>';
+        return s;
+    }
 
-  function updateAllPanes(idx) {
-    if (idx < 0 || idx >= totalPoints) return;
-    var d = dates[idx];
-    var c = closes[idx], o = opens[idx], h = highs[idx], l = lows[idx];
-    var prevC = idx > 0 ? closes[idx - 1] : o;
-    var diff = c - prevC;
-    var pct = prevC ? (diff / prevC * 100) : 0;
-    var cClass = diff > 0 ? 'val-up' : (diff < 0 ? 'val-dn' : '');
+    function updateAllPanes(idx) {
+        if (idx < 0 || idx >= totalPoints) return;
+        var d = dates[idx];
+        var c = closes[idx], o = opens[idx], h = highs[idx], l = lows[idx];
+        var prevC = idx > 0 ? closes[idx - 1] : o;
+        var diff = c - prevC;
+        var pct = prevC ? (diff / prevC * 100) : 0;
+        var cClass = diff > 0 ? 'val-up' : (diff < 0 ? 'val-dn' : '');
 
-    info1.innerHTML = '<span class="tag-lbl"><b>' + d + '</b></span>' +
-      '開:<span class="' + (o > prevC ? 'val-up' : (o < prevC ? 'val-dn' : '')) + '">' + fmtNum(o, 2) + '</span> ' +
-      '高:<span class="' + (h > prevC ? 'val-up' : (h < prevC ? 'val-dn' : '')) + '">' + fmtNum(h, 2) + '</span> ' +
-      '低:<span class="' + (l > prevC ? 'val-up' : (l < prevC ? 'val-dn' : '')) + '">' + fmtNum(l, 2) + '</span> ' +
-      '收:<span class="' + cClass + '">' + fmtNum(c, 2) + ' (' + (diff > 0 ? '+' : '') + fmtNum(diff, 2) + ', ' + (pct > 0 ? '+' : '') + fmtNum(pct, 2) + '%)</span> ' +
-      '量:' + fmtNum(vols[idx], 0) + '張 ' +
-      '<span class="tag-lbl"><b>換手:' + fmtNum(turnovers[idx], 2) + '%</b></span> ' +
-      'MA5:' + fmtNum(ma5s[idx], 2) + ' MA20:' + fmtNum(ma20s[idx], 2) + ' MA60:' + fmtNum(ma60s[idx], 2);
+        info1.innerHTML = '<span class="tag-lbl"><b>' + d + '</b></span>' +
+            '開:<span class="' + (o > prevC ? 'val-up' : (o < prevC ? 'val-dn' : '')) + '">' + fmtNum(o, 2) + '</span> ' +
+            '高:<span class="' + (h > prevC ? 'val-up' : (h < prevC ? 'val-dn' : '')) + '">' + fmtNum(h, 2) + '</span> ' +
+            '低:<span class="' + (l > prevC ? 'val-up' : (l < prevC ? 'val-dn' : '')) + '">' + fmtNum(l, 2) + '</span> ' +
+            '收:<span class="' + cClass + '">' + fmtNum(c, 2) + ' (' + (diff > 0 ? '+' : '') + fmtNum(diff, 2) + ', ' + (pct > 0 ? '+' : '') + fmtNum(pct, 2) + '%)</span> ' +
+            '量:' + fmtNum(vols[idx], 0) + '張 ' +
+            '<span class="tag-lbl"><b>換手:' + fmtNum(turnovers[idx], 2) + '%</b></span> ' +
+            'MA5:' + fmtNum(ma5s[idx], 2) + ' MA20:' + fmtNum(ma20s[idx], 2) + ' MA60:' + fmtNum(ma60s[idx], 2);
 
-    var oscClass = oscs[idx] > 0 ? 'val-up' : (oscs[idx] < 0 ? 'val-dn' : '');
-    infoTech.innerHTML = '<div><span class="tag-lbl"><b>' + d + '</b></span> ' +
-      '<span class="tag-lbl"><b>KD(9)</b></span><span style="color:#e74c3c;">K:' + fmtNum(ks[idx], 1) + '</span> <span style="color:#3498db;">D:' + fmtNum(ds[idx], 1) + '</span> | ' +
-      '<span class="tag-lbl"><b>OBV</b></span><span style="color:#16a085;">OBV:' + fmtNum(obvs[idx], 0) + '</span> <span style="color:#8e44ad;">MA20:' + fmtNum(obvMas[idx], 0) + '</span></div>' +
-      '<div><span class="tag-lbl"><b>MACD(' + d + ')</b></span><span style="color:#f39c12;">DIF:' + fmtNum(difs[idx], 2) + '</span> <span style="color:#2980b9;">MACD:' + fmtNum(macds[idx], 2) + '</span> OSC:<span class="' + oscClass + '">' + fmtNum(oscs[idx], 2) + '</span></div>';
+        var oscClass = oscs[idx] > 0 ? 'val-up' : (oscs[idx] < 0 ? 'val-dn' : '');
+        infoTech.innerHTML = '<div><span class="tag-lbl"><b>' + d + '</b></span> ' +
+            '<span class="tag-lbl"><b>KD(9)</b></span><span style="color:#e74c3c;">K:' + fmtNum(ks[idx], 1) + '</span> <span style="color:#3498db;">D:' + fmtNum(ds[idx], 1) + '</span> | ' +
+            '<span class="tag-lbl"><b>OBV</b></span><span style="color:#16a085;">OBV:' + fmtNum(obvs[idx], 0) + '</span> <span style="color:#8e44ad;">MA20:' + fmtNum(obvMas[idx], 0) + '</span></div>' +
+            '<div><span class="tag-lbl"><b>MACD(' + d + ')</b></span><span style="color:#f39c12;">DIF:' + fmtNum(difs[idx], 2) + '</span> <span style="color:#2980b9;">MACD:' + fmtNum(macds[idx], 2) + '</span> OSC:<span class="' + oscClass + '">' + fmtNum(oscs[idx], 2) + '</span></div>';
 
-    infoMs.innerHTML = '<span class="tag-lbl"><b>資券[千張](' + d + ')</b></span>' +
-      '融資:' + fmtDiff(mDiffs[idx], 3) + ' 融券:' + fmtDiff(sDiffs[idx], 3) + ' ' +
-      '<span class="tag-lbl"><b>券資比:' + fmtNum(rat[idx], 2) + '%</b></span>';
+        infoMs.innerHTML = '<span class="tag-lbl"><b>資券[千張](' + d + ')</b></span>' +
+            '融資:' + fmtDiff(mDiffs[idx], 3) + ' 融券:' + fmtDiff(sDiffs[idx], 3) + ' ' +
+            '<span class="tag-lbl"><b>券資比:' + fmtNum(rat[idx], 2) + '%</b></span>';
 
-    infoChip.innerHTML = '<span class="tag-lbl"><b>法人集保(' + d + ')</b></span>' +
-      '外資:' + fmtDiff(foreigns[idx], 0) + ' 投信:' + fmtDiff(trusts[idx], 0) + ' 自營:' + fmtDiff(dealers[idx], 0) + ' | ' +
-      '≥' + m1_thresh + '張: ' + fmtNum(m1_pcts[idx], 2) + '% ' +
-      '≥' + m2_thresh + '張: ' + fmtNum(m2_pcts[idx], 2) + '%';
-  }
+        infoChip.innerHTML = '<span class="tag-lbl"><b>法人集保(' + d + ')</b></span>' +
+            '外資:' + fmtDiff(foreigns[idx], 0) + ' 投信:' + fmtDiff(trusts[idx], 0) + ' 自營:' + fmtDiff(dealers[idx], 0) + ' | ' +
+            '≥' + m1_thresh + '張: ' + fmtNum(m1_pcts[idx], 2) + '% ' +
+            '≥' + m2_thresh + '張: ' + fmtNum(m2_pcts[idx], 2) + '%';
+    }
 
-  var cfg = {
-    responsive: true,
-    displayModeBar: false,
-    scrollZoom: false
-  };
+    var cfg = { responsive: true, displayModeBar: false, scrollZoom: false };
 
-  Plotly.newPlot(elTop, pTop.data, pTop.layout, cfg).then(function() {
-    return Plotly.newPlot(elBtm, pBtm.data, pBtm.layout, cfg);
-  }).then(function() {
-    updateAllPanes(initEnd);
+    Plotly.newPlot(elTop, pTop.data, pTop.layout, cfg).then(function() {
+        return Plotly.newPlot(elBtm, pBtm.data, pBtm.layout, cfg);
+    }).then(function() {
+        updateAllPanes(initEnd);
 
-    function syncXAxis(srcEl, destEl) {
-      srcEl.on('plotly_relayout', function(ed) {
-        if (isUpdating) return;
-        var r0 = ed['xaxis.range[0]'] !== undefined ? ed['xaxis.range[0]'] : (ed['xaxis.range'] ? ed['xaxis.range'][0] : null);
-        var r1 = ed['xaxis.range[1]'] !== undefined ? ed['xaxis.range[1]'] : (ed['xaxis.range'] ? ed['xaxis.range'][1] : null);
-        var auto = ed['xaxis.autorange'];
+        function syncXAxis(srcEl, destEl) {
+            srcEl.on('plotly_relayout', function(ed) {
+                if (isUpdating) return;
+                var r0 = ed['xaxis.range[0]'] !== undefined ? ed['xaxis.range[0]'] : (ed['xaxis.range'] ? ed['xaxis.range'][0] : null);
+                var r1 = ed['xaxis.range[1]'] !== undefined ? ed['xaxis.range[1]'] : (ed['xaxis.range'] ? ed['xaxis.range'][1] : null);
+                var auto = ed['xaxis.autorange'];
 
-        if (r0 !== null && r1 !== null) {
-          isUpdating = true;
-          var upd = {};
-          for (var i = 1; i <= 9; i++) {
-            var ax = (i === 1) ? 'xaxis' : 'xaxis' + i;
-            if (destEl.layout[ax]) {
-              upd[ax + '.range'] = [r0, r1];
-              upd[ax + '.autorange'] = false;
+                if (r0 !== null && r1 !== null) {
+                    isUpdating = true;
+                    var upd = {};
+                    for (var i = 1; i <= 9; i++) {
+                        var ax = (i === 1) ? 'xaxis' : 'xaxis' + i;
+                        if (destEl.layout[ax]) {
+                            upd[ax + '.range'] = [r0, r1];
+                            upd[ax + '.autorange'] = false;
+                        }
+                    }
+                    Plotly.relayout(destEl, upd).then(function() { isUpdating = false; }).catch(function() { isUpdating = false; });
+                } else if (auto) {
+                    isUpdating = true;
+                    var updAuto = {};
+                    for (var j = 1; j <= 9; j++) {
+                        var axAuto = (j === 1) ? 'xaxis' : 'xaxis' + j;
+                        if (destEl.layout[axAuto]) updAuto[axAuto + '.autorange'] = true;
+                    }
+                    Plotly.relayout(destEl, updAuto).then(function() { isUpdating = false; }).catch(function() { isUpdating = false; });
+                }
+            });
+        }
+
+        syncXAxis(elTop, elBtm);
+        syncXAxis(elBtm, elTop);
+
+        function processPointer(clientX) {
+            var rect = elTop.getBoundingClientRect();
+            var relX = clientX - rect.left;
+            var xaxis = elTop._fullLayout ? elTop._fullLayout.xaxis : null;
+            var yaxis = elTop._fullLayout ? elTop._fullLayout.yaxis : null;
+            if (!xaxis || typeof xaxis.p2c !== 'function') return;
+
+            var coord = xaxis.p2c(relX - (xaxis._offset || 0));
+            var idx = Math.round(coord);
+            if (idx >= 0 && idx < totalPoints) {
+                updateAllPanes(idx);
+                var snapX = xaxis.c2p(idx) + (xaxis._offset || 0);
+                lineTop.style.left = snapX + 'px';
+                lineBtm.style.left = snapX + 'px';
+                lineTop.style.display = 'block';
+                lineBtm.style.display = 'block';
+
+                if (yaxis && typeof yaxis.c2p === 'function' && closes[idx] !== null && closes[idx] !== undefined) {
+                    var snapY = yaxis.c2p(closes[idx]) + (yaxis._offset || 0);
+                    linePrice.style.top = snapY + 'px';
+                    linePrice.style.display = 'block';
+                }
             }
-          }
-          Plotly.relayout(destEl, upd).then(function() { isUpdating = false; }).catch(function() { isUpdating = false; });
-        } else if (auto) {
-          isUpdating = true;
-          var updAuto = {};
-          for (var j = 1; j <= 9; j++) {
-            var axAuto = (j === 1) ? 'xaxis' : 'xaxis' + j;
-            if (destEl.layout[axAuto]) updAuto[axAuto + '.autorange'] = true;
-          }
-          Plotly.relayout(destEl, updAuto).then(function() { isUpdating = false; }).catch(function() { isUpdating = false; });
         }
-      });
-    }
 
-    syncXAxis(elTop, elBtm);
-    syncXAxis(elBtm, elTop);
-
-    function processPointer(clientX) {
-      var rect = elTop.getBoundingClientRect();
-      var relX = clientX - rect.left;
-
-      var xaxis = elTop._fullLayout ? elTop._fullLayout.xaxis : null;
-      var yaxis = elTop._fullLayout ? elTop._fullLayout.yaxis : null;
-      if (!xaxis || typeof xaxis.p2c !== 'function') return;
-
-      var coord = xaxis.p2c(relX - (xaxis._offset || 0));
-      var idx = Math.round(coord);
-
-      if (idx >= 0 && idx < totalPoints) {
-        updateAllPanes(idx);
-
-        var snapX = xaxis.c2p(idx) + (xaxis._offset || 0);
-        lineTop.style.left = snapX + 'px';
-        lineBtm.style.left = snapX + 'px';
-        lineTop.style.display = 'block';
-        lineBtm.style.display = 'block';
-
-        if (yaxis && typeof yaxis.c2p === 'function' && closes[idx] !== null && closes[idx] !== undefined) {
-          var snapY = yaxis.c2p(closes[idx]) + (yaxis._offset || 0);
-          linePrice.style.top = snapY + 'px';
-          linePrice.style.display = 'block';
+        function onPointerMove(e) {
+            var clientX = e.clientX;
+            if (e.touches && e.touches.length > 0) {
+                clientX = e.touches[0].clientX;
+            }
+            if (clientX !== undefined) {
+                processPointer(clientX);
+            }
         }
-      }
-    }
 
-    function onPointerMove(e) {
-      var clientX = e.clientX;
-      if (e.touches && e.touches.length > 0) {
-        clientX = e.touches[0].clientX;
-      }
-      if (clientX !== undefined) {
-        processPointer(clientX);
-      }
-    }
+        function onPointerLeave() {
+            lineTop.style.display = 'none';
+            lineBtm.style.display = 'none';
+            linePrice.style.display = 'none';
+        }
 
-    function onPointerLeave() {
-      lineTop.style.display = 'none';
-      lineBtm.style.display = 'none';
-      linePrice.style.display = 'none';
-    }
-
-    container.addEventListener('mousemove', onPointerMove);
-    container.addEventListener('touchmove', onPointerMove, { passive: true });
-    container.addEventListener('touchstart', onPointerMove, { passive: true });
-    container.addEventListener('mouseleave', onPointerLeave);
-  });
+        container.addEventListener('mousemove', onPointerMove);
+        container.addEventListener('touchmove', onPointerMove, { passive: true });
+        container.addEventListener('touchstart', onPointerMove, { passive: true });
+        container.addEventListener('mouseleave', onPointerLeave);
+    });
 })();
 </script>
 """
-
 
 def render_interactive_chart_html(
     fig_top,
@@ -343,6 +322,7 @@ def render_interactive_chart_html(
         date_series = df.index
 
     dates_list = date_series.strftime('%Y-%m-%d').tolist() if hasattr(date_series, 'strftime') else [str(x)[:10] for x in date_series]
+
     opens_list = df['Open'].tolist()
     highs_list = df['High'].tolist()
     lows_list = df['Low'].tolist()
@@ -420,7 +400,6 @@ def render_interactive_chart_html(
     html = html.replace("__INITIAL_END_IDX__", str(end_idx))
 
     return html
-
 
 def get_component_html(*args, **kwargs):
     import inspect
