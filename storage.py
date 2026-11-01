@@ -1,6 +1,6 @@
 """
 storage.py - 本地 SQLite 資料庫與股票歷史紀錄管理器
-版本: 202611012345
+版本: 202611020045
 """
 import os
 import io
@@ -11,7 +11,7 @@ import requests
 from bs4 import BeautifulSoup
 import pandas as pd
 
-MODULE_VERSION = "202611012345"
+MODULE_VERSION = "202611020045"
 
 STORAGE_DIR = "."
 HISTORY_FILE = os.path.join(STORAGE_DIR, "stock_history.json")
@@ -36,16 +36,16 @@ def _sync_cloud_pull():
         from cloud_sync import pull_file
         pull_file("stock_history.json", HISTORY_FILE)
         pull_file("tw_stock_names.json", NAMES_CACHE_FILE)
-    except Exception:
-        pass
+    except Exception as e:
+        print(f"[CloudSync] Pull warning: {e}")
 
 def _sync_cloud_push():
     try:
         from cloud_sync import push_file
         push_file(HISTORY_FILE, "stock_history.json")
         push_file(NAMES_CACHE_FILE, "tw_stock_names.json")
-    except Exception:
-        pass
+    except Exception as e:
+        print(f"[CloudSync] Push warning: {e}")
 
 def _load_name_cache() -> dict:
     try:
@@ -167,14 +167,9 @@ def load_stock_history():
         except Exception:
             data = []
 
-    if not isinstance(data, list) or not data:
-        data = [
-            {"code": "4526", "name": "東台"},
-            {"code": "1504", "name": "東元"},
-            {"code": "2382", "name": "廣達"},
-            {"code": "6456", "name": "GIS-KY"},
-            {"code": "2330", "name": "台積電"}
-        ]
+    # 移除寫死的預設股票清單，若空則直接維持為空清單
+    if not isinstance(data, list):
+        data = []
 
     for item in data:
         code = str(item.get("code", "")).strip()
@@ -226,6 +221,8 @@ def clear_stock_history():
     try:
         if os.path.exists(HISTORY_FILE):
             os.remove(HISTORY_FILE)
+        with open(HISTORY_FILE, "w", encoding="utf-8") as f:
+            json.dump([], f)
         _sync_cloud_push()
     except Exception:
         pass
