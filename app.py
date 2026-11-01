@@ -1,11 +1,11 @@
 """
 app.py - 主應用程式介面與生命週期控制
-版本: 202611012356
+版本: 202611020015
 """
 import streamlit as st
 import streamlit.components.v1 as components
 
-MODULE_VERSION = "202611012356"
+MODULE_VERSION = "202611020015"
 
 from storage import (
     load_stock_history,
@@ -36,8 +36,16 @@ footer {visibility: hidden;}
 </style>
 """, unsafe_allow_html=True)
 
+# 載入歷史清單並判定股票代號預設值（優先取第一項，若清單為空則為 2330）
+initial_history = load_stock_history()
+default_code = "2330"
+if initial_history:
+    first_code = str(initial_history[0].get("code", "")).strip()
+    if first_code:
+        default_code = first_code
+
 if "stock_id" not in st.session_state:
-    st.session_state.stock_id = "2330"
+    st.session_state.stock_id = default_code
 if "period" not in st.session_state:
     st.session_state.period = "1y"
 if "disp_days" not in st.session_state:
@@ -98,6 +106,7 @@ with st.sidebar:
                 with c_del1:
                     if st.button("確認全刪", key="btn_confirm_delete_all", use_container_width=True):
                         clear_stock_history()
+                        st.session_state.stock_id = "2330"
                         st.session_state.confirm_clear_all = False
                         st.session_state.prev_selected_history = []
                         st.rerun()
@@ -144,13 +153,18 @@ with st.sidebar:
     m2_thresh = st.number_input("大戶門檻2 (張)", min_value=100, max_value=1000, value=400, step=100)
 
     if st.button("查詢", use_container_width=True):
-        save_stock_history(st.session_state.stock_id)
+        if st.session_state.stock_id.strip():
+            save_stock_history(st.session_state.stock_id.strip())
         st.rerun()
 
 st.subheader(f"台股技術與籌碼分析 v{MODULE_VERSION}")
 
-# 頂部：上一檔 / 下一檔 功能列（純切換，不調整歷史順序）
 stock_id = str(st.session_state.stock_id).strip()
+if not stock_id:
+    stock_id = "2330"
+    st.session_state.stock_id = stock_id
+
+# 頂部：上一檔 / 下一檔 功能列（純切換，不調整歷史順序）
 hist_records = load_stock_history()
 hist_codes = [str(item.get("code")).strip() for item in hist_records if item.get("code")]
 
