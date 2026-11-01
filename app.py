@@ -1,11 +1,11 @@
 """
 app.py - 主應用程式介面與生命週期控制
-版本: 202611020035
+版本: 202611020045
 """
 import streamlit as st
 import streamlit.components.v1 as components
 
-MODULE_VERSION = "202611020035"
+MODULE_VERSION = "202611020045"
 
 from storage import (
     load_stock_history,
@@ -24,6 +24,7 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
+# 透過包裹專屬 class 的容器，強制覆蓋 Streamlit 手機直向堆疊行為
 st.markdown("""
 <style>
 .block-container {
@@ -34,21 +35,17 @@ st.markdown("""
 }
 footer {visibility: hidden;}
 
-/* 強制手機窄螢幕下按鈕欄位橫向並排，禁止直向堆疊 */
-@media (max-width: 640px) {
-    div[data-testid="stHorizontalBlock"]:has(button[key*="btn_top_"]),
-    div[data-testid="stHorizontalBlock"]:has(button[key*="btn_btm_"]) {
-        display: flex !important;
-        flex-direction: row !important;
-        flex-wrap: nowrap !important;
-        gap: 8px !important;
-    }
-    div[data-testid="stHorizontalBlock"]:has(button[key*="btn_top_"]) > div[data-testid="column"],
-    div[data-testid="stHorizontalBlock"]:has(button[key*="btn_btm_"]) > div[data-testid="column"] {
-        flex: 1 1 50% !important;
-        width: 50% !important;
-        min-width: 0 !important;
-    }
+/* 強制按鈕容器在所有螢幕尺寸（包括手機版）維持橫向並排各佔 50% */
+.nav-btn-container [data-testid="stHorizontalBlock"] {
+    display: flex !important;
+    flex-direction: row !important;
+    flex-wrap: nowrap !important;
+    gap: 8px !important;
+}
+.nav-btn-container [data-testid="column"] {
+    flex: 1 1 50% !important;
+    width: 50% !important;
+    min-width: 0 !important;
 }
 </style>
 """, unsafe_allow_html=True)
@@ -181,12 +178,13 @@ if not stock_id:
     stock_id = "2330"
     st.session_state.stock_id = stock_id
 
-# 頂部：上一檔 / 下一檔 功能列（2 等分橫排）
+# 頂部：上一檔 / 下一檔 功能列（加入專屬 class 包覆）
 hist_records = load_stock_history()
 hist_codes = [str(item.get("code")).strip() for item in hist_records if item.get("code")]
 
 if hist_codes:
     curr_idx = hist_codes.index(stock_id) if stock_id in hist_codes else 0
+    st.markdown('<div class="nav-btn-container">', unsafe_allow_html=True)
     top_c1, top_c2 = st.columns(2)
     with top_c1:
         if st.button("◀ 上一檔", key="btn_top_prev", use_container_width=True):
@@ -198,6 +196,7 @@ if hist_codes:
             next_idx = (curr_idx + 1) % len(hist_codes)
             st.session_state.stock_id = hist_codes[next_idx]
             st.rerun()
+    st.markdown('</div>', unsafe_allow_html=True)
 
 fig_top, fig_btm, df, c_name, end_idx, disp_n = build_split_figures(
     raw_ticker=stock_id,
@@ -241,9 +240,10 @@ components.html(
     scrolling=False
 )
 
-# 底部：上一檔 / 下一檔 功能列（2 等分橫排）
+# 底部：上一檔 / 下一檔 功能列（加入專屬 class 包覆）
 if hist_codes:
     curr_idx = hist_codes.index(stock_id) if stock_id in hist_codes else 0
+    st.markdown('<div class="nav-btn-container">', unsafe_allow_html=True)
     btm_c1, btm_c2 = st.columns(2)
     with btm_c1:
         if st.button("◀ 上一檔", key="btn_btm_prev", use_container_width=True):
@@ -255,3 +255,4 @@ if hist_codes:
             next_idx = (curr_idx + 1) % len(hist_codes)
             st.session_state.stock_id = hist_codes[next_idx]
             st.rerun()
+    st.markdown('</div>', unsafe_allow_html=True)
