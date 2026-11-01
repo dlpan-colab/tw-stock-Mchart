@@ -1,11 +1,11 @@
 """
 app.py - 主應用程式介面與生命週期控制
-版本: 202611020015
+版本: 202611020035
 """
 import streamlit as st
 import streamlit.components.v1 as components
 
-MODULE_VERSION = "202611020015"
+MODULE_VERSION = "202611020035"
 
 from storage import (
     load_stock_history,
@@ -33,6 +33,23 @@ st.markdown("""
     padding-right: 1rem;
 }
 footer {visibility: hidden;}
+
+/* 強制手機窄螢幕下按鈕欄位橫向並排，禁止直向堆疊 */
+@media (max-width: 640px) {
+    div[data-testid="stHorizontalBlock"]:has(button[key*="btn_top_"]),
+    div[data-testid="stHorizontalBlock"]:has(button[key*="btn_btm_"]) {
+        display: flex !important;
+        flex-direction: row !important;
+        flex-wrap: nowrap !important;
+        gap: 8px !important;
+    }
+    div[data-testid="stHorizontalBlock"]:has(button[key*="btn_top_"]) > div[data-testid="column"],
+    div[data-testid="stHorizontalBlock"]:has(button[key*="btn_btm_"]) > div[data-testid="column"] {
+        flex: 1 1 50% !important;
+        width: 50% !important;
+        min-width: 0 !important;
+    }
+}
 </style>
 """, unsafe_allow_html=True)
 
@@ -164,13 +181,13 @@ if not stock_id:
     stock_id = "2330"
     st.session_state.stock_id = stock_id
 
-# 頂部：上一檔 / 下一檔 功能列（純切換，不調整歷史順序）
+# 頂部：上一檔 / 下一檔 功能列（2 等分橫排）
 hist_records = load_stock_history()
 hist_codes = [str(item.get("code")).strip() for item in hist_records if item.get("code")]
 
 if hist_codes:
     curr_idx = hist_codes.index(stock_id) if stock_id in hist_codes else 0
-    _, top_c1, top_c2, _ = st.columns([1, 2, 2, 1])
+    top_c1, top_c2 = st.columns(2)
     with top_c1:
         if st.button("◀ 上一檔", key="btn_top_prev", use_container_width=True):
             prev_idx = (curr_idx - 1) % len(hist_codes)
@@ -217,17 +234,17 @@ html_content = get_component_html(
     initial_end_idx=end_idx
 )
 
-total_h = 1920 if is_mobile else 1880
+total_h = 1980 if is_mobile else 1880
 components.html(
     html_content,
     height=total_h,
     scrolling=False
 )
 
-# 底部：上一檔 / 下一檔 功能列（純切換，不調整歷史順序）
+# 底部：上一檔 / 下一檔 功能列（2 等分橫排）
 if hist_codes:
     curr_idx = hist_codes.index(stock_id) if stock_id in hist_codes else 0
-    _, btm_c1, btm_c2, _ = st.columns([1, 2, 2, 1])
+    btm_c1, btm_c2 = st.columns(2)
     with btm_c1:
         if st.button("◀ 上一檔", key="btn_btm_prev", use_container_width=True):
             prev_idx = (curr_idx - 1) % len(hist_codes)
