@@ -1,11 +1,11 @@
 """
 app.py - 主應用程式介面與生命週期控制
-版本: 202611020045
+版本: 202611020110
 """
 import streamlit as st
 import streamlit.components.v1 as components
 
-MODULE_VERSION = "202611020045"
+MODULE_VERSION = "202611020110"
 
 from storage import (
     load_stock_history,
@@ -178,25 +178,31 @@ if not stock_id:
     stock_id = "2330"
     st.session_state.stock_id = stock_id
 
-# 頂部：上一檔 / 下一檔 功能列（加入專屬 class 包覆）
 hist_records = load_stock_history()
 hist_codes = [str(item.get("code")).strip() for item in hist_records if item.get("code")]
+if stock_id not in hist_codes:
+    active_nav_codes = [stock_id] + hist_codes
+else:
+    active_nav_codes = hist_codes
 
-if hist_codes:
-    curr_idx = hist_codes.index(stock_id) if stock_id in hist_codes else 0
-    st.markdown('<div class="nav-btn-container">', unsafe_allow_html=True)
-    top_c1, top_c2 = st.columns(2)
-    with top_c1:
-        if st.button("◀ 上一檔", key="btn_top_prev", use_container_width=True):
-            prev_idx = (curr_idx - 1) % len(hist_codes)
-            st.session_state.stock_id = hist_codes[prev_idx]
+curr_idx = active_nav_codes.index(stock_id) if stock_id in active_nav_codes else 0
+
+# 頂部：上一檔 / 下一檔 功能列（常駐顯示並鎖定橫排）
+st.markdown('<div class="nav-btn-container">', unsafe_allow_html=True)
+top_c1, top_c2 = st.columns(2)
+with top_c1:
+    if st.button("◀ 上一檔", key="btn_top_prev", use_container_width=True):
+        if len(active_nav_codes) > 1:
+            prev_idx = (curr_idx - 1) % len(active_nav_codes)
+            st.session_state.stock_id = active_nav_codes[prev_idx]
             st.rerun()
-    with top_c2:
-        if st.button("下一檔 ▶", key="btn_top_next", use_container_width=True):
-            next_idx = (curr_idx + 1) % len(hist_codes)
-            st.session_state.stock_id = hist_codes[next_idx]
+with top_c2:
+    if st.button("下一檔 ▶", key="btn_top_next", use_container_width=True):
+        if len(active_nav_codes) > 1:
+            next_idx = (curr_idx + 1) % len(active_nav_codes)
+            st.session_state.stock_id = active_nav_codes[next_idx]
             st.rerun()
-    st.markdown('</div>', unsafe_allow_html=True)
+st.markdown('</div>', unsafe_allow_html=True)
 
 fig_top, fig_btm, df, c_name, end_idx, disp_n = build_split_figures(
     raw_ticker=stock_id,
@@ -240,19 +246,19 @@ components.html(
     scrolling=False
 )
 
-# 底部：上一檔 / 下一檔 功能列（加入專屬 class 包覆）
-if hist_codes:
-    curr_idx = hist_codes.index(stock_id) if stock_id in hist_codes else 0
-    st.markdown('<div class="nav-btn-container">', unsafe_allow_html=True)
-    btm_c1, btm_c2 = st.columns(2)
-    with btm_c1:
-        if st.button("◀ 上一檔", key="btn_btm_prev", use_container_width=True):
-            prev_idx = (curr_idx - 1) % len(hist_codes)
-            st.session_state.stock_id = hist_codes[prev_idx]
+# 底部：上一檔 / 下一檔 功能列（常駐顯示並鎖定橫排）
+st.markdown('<div class="nav-btn-container">', unsafe_allow_html=True)
+btm_c1, btm_c2 = st.columns(2)
+with btm_c1:
+    if st.button("◀ 上一檔", key="btn_btm_prev", use_container_width=True):
+        if len(active_nav_codes) > 1:
+            prev_idx = (curr_idx - 1) % len(active_nav_codes)
+            st.session_state.stock_id = active_nav_codes[prev_idx]
             st.rerun()
-    with btm_c2:
-        if st.button("下一檔 ▶", key="btn_btm_next", use_container_width=True):
-            next_idx = (curr_idx + 1) % len(hist_codes)
-            st.session_state.stock_id = hist_codes[next_idx]
+with btm_c2:
+    if st.button("下一檔 ▶", key="btn_btm_next", use_container_width=True):
+        if len(active_nav_codes) > 1:
+            next_idx = (curr_idx + 1) % len(active_nav_codes)
+            st.session_state.stock_id = active_nav_codes[next_idx]
             st.rerun()
-    st.markdown('</div>', unsafe_allow_html=True)
+st.markdown('</div>', unsafe_allow_html=True)
