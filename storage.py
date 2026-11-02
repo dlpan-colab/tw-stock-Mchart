@@ -1,6 +1,6 @@
 """
 storage.py - 本地 SQLite 資料庫與股票歷史紀錄管理器
-版本: 202611020045
+版本: 202611022115
 """
 import os
 import io
@@ -11,8 +11,7 @@ import requests
 from bs4 import BeautifulSoup
 import pandas as pd
 
-MODULE_VERSION = "202611020045"
-
+MODULE_VERSION = "202611022115"
 STORAGE_DIR = "."
 HISTORY_FILE = os.path.join(STORAGE_DIR, "stock_history.json")
 NAMES_CACHE_FILE = os.path.join(STORAGE_DIR, "tw_stock_names.json")
@@ -47,6 +46,27 @@ def _sync_cloud_push():
     except Exception as e:
         print(f"[CloudSync] Push warning: {e}")
 
+def sync_db_pull(pure_code: str):
+    """從 Google Drive 下載指定股票的 SQLite 資料庫"""
+    try:
+        from cloud_sync import pull_file
+        db_name = f"data_{pure_code}.db"
+        local_path = os.path.join(STORAGE_DIR, db_name)
+        pull_file(db_name, local_path)
+    except Exception as e:
+        print(f"[CloudSync] DB pull warning for {pure_code}: {e}")
+
+def sync_db_push(pure_code: str):
+    """將指定股票的最新 SQLite 資料庫上傳推送至 Google Drive"""
+    try:
+        from cloud_sync import push_file
+        db_name = f"data_{pure_code}.db"
+        local_path = os.path.join(STORAGE_DIR, db_name)
+        if os.path.exists(local_path):
+            push_file(local_path, db_name)
+    except Exception as e:
+        print(f"[CloudSync] DB push warning for {pure_code}: {e}")
+
 def _load_name_cache() -> dict:
     try:
         if os.path.exists(NAMES_CACHE_FILE):
@@ -75,10 +95,9 @@ def get_stock_chinese_name(pure_code: str) -> str:
     pure_code = str(pure_code).strip()
     if not pure_code:
         return ""
-
     if pure_code in COMMON_STOCK_NAMES:
         return COMMON_STOCK_NAMES[pure_code]
-
+    
     cache = _load_name_cache()
     if pure_code in cache and cache[pure_code] and cache[pure_code] != pure_code:
         return cache[pure_code]
@@ -118,9 +137,9 @@ def get_stock_chinese_name(pure_code: str) -> str:
                     n = str(row.get("Name", "")).replace("\u3000", " ").strip()
                     if c and n:
                         COMMON_STOCK_NAMES[c] = n
-                        if c == pure_code:
-                            _save_name_cache(pure_code, n)
-                            return n
+                    if c == pure_code:
+                        _save_name_cache(pure_code, n)
+                        return n
     except Exception:
         pass
 
@@ -166,8 +185,7 @@ def load_stock_history():
                 data = json.load(f)
         except Exception:
             data = []
-
-    # 移除寫死的預設股票清單，若空則直接維持為空清單
+            
     if not isinstance(data, list):
         data = []
 
@@ -176,19 +194,20 @@ def load_stock_history():
         curr_name = str(item.get("name", "")).strip()
         if not curr_name or curr_name == code:
             item["name"] = get_stock_chinese_name(code)
+            
     return data
 
 def save_stock_history(code: str, name: str = None):
     code = str(code).strip()
     if not code:
         return load_stock_history()
-
+    
     c_name = name.strip() if name and name.strip() != code else get_stock_chinese_name(code)
     history = load_stock_history()
     new_hist = [h for h in history if str(h.get("code")).strip() != code]
     new_hist.insert(0, {"code": code, "name": c_name})
     new_hist = new_hist[:30]
-
+    
     try:
         with open(HISTORY_FILE, "w", encoding="utf-8") as f:
             json.dump(new_hist, f, ensure_ascii=False, indent=2)
@@ -245,6 +264,8 @@ class StockChipStorage:
         self.pure_code = str(pure_code).strip()
         self.db_name = f"data_{self.pure_code}.db"
         self.db_path = os.path.join(STORAGE_DIR, self.db_name)
+        # 初始化前先從雲端拉取最新資料庫
+        sync_db_pull(self.pure_code)
         self._init_db()
 
     def _init_db(self):
@@ -296,24 +317,39 @@ class StockChipStorage:
             return
         with sqlite3.connect(self.db_path) as conn:
             cur = conn.cursor()
-            cur.executemany("INSERT OR REPLACE INTO institutional_investors VALUES (?, ?, ?, ?)", records)
+            cur.executemany(
+                "INSERT OR REPLACE INTO institutional_investors VALUES (?, ?, ?, ?)",
+                records
+            )
             conn.commit()
+        # 寫入完成後推送回雲端硬碟
+        sync_db_push(self.pure_code)
 
     def save_margin_data(self, records):
         if not records:
             return
         with sqlite3.connect(self.db_path) as conn:
             cur = conn.cursor()
-            cur.executemany("INSERT OR REPLACE INTO margin_short VALUES (?, ?, ?, ?, ?)", records)
+            cur.executemany(
+                "INSERT OR REPLACE INTO margin_short VALUES (?, ?, ?, ?, ?)",
+                records
+            )
             conn.commit()
+        # 寫入完成後推送回雲端硬碟
+        sync_db_push(self.pure_code)
 
     def save_holding_data(self, records):
         if not records:
             return
         with sqlite3.connect(self.db_path) as conn:
             cur = conn.cursor()
-            cur.executemany("INSERT OR REPLACE INTO shareholding_distribution VALUES (?, ?, ?)", records)
+            cur.executemany(
+                "INSERT OR REPLACE INTO shareholding_distribution VALUES (?, ?, ?)",
+                records
+            )
             conn.commit()
+        # 寫入完成後推送回雲端硬碟
+        sync_db_push(self.pure_code)
 
     def load_institutional_df(self):
         with sqlite3.connect(self.db_path) as conn:
