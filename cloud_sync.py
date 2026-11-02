@@ -157,16 +157,15 @@ class GoogleDriveSync:
 
 
 # 全域實例
-cloud_sync_manager = GoogleDriveSync()
-drive_sync = cloud_sync_manager
+# cloud_sync_manager = GoogleDriveSync()
+# drive_sync = cloud_sync_manager
 
 
 # 模組級轉接函式：相容 storage.py 的呼叫介面
 def pull_file(remote_name: str, local_path: str) -> bool:
     """下載雲端檔案至本地路徑 (支援雙參數呼叫)"""
-    return cloud_sync_manager.pull_file(Path(local_path))
-
+    return GoogleDriveSync().pull_file(Path(local_path))
 
 def push_file(local_path: str, remote_name: str = None) -> bool:
     """將本地檔案上傳/更新至雲端 (支援雙參數呼叫)"""
-    return cloud_sync_manager.push_file(Path(local_path))
+    return GoogleDriveSync().push_file(Path(local_path))
