@@ -1,7 +1,11 @@
 """
 data_fetcher.py - 外部資料抓取與增量同步模組
-版本: 202611022030
+版本: 202611022230
 """
+
+MODULE_NAME = "data_fetcher"
+MODULE_VERSION = "202611022230"
+
 import os
 import re
 import io
@@ -13,13 +17,14 @@ from bs4 import BeautifulSoup
 from datetime import datetime, timedelta
 import pandas as pd
 import numpy as np
+
 from storage import StockChipStorage, get_stock_chinese_name
 
 FINMIND_TOKEN = ""
 
 def fetch_stock_name(pure_code: str) -> str:
     return get_stock_chinese_name(pure_code)
-##################################################
+
 def _detect_market_suffix(pure_code: str, raw_ticker: str) -> list:
     """
     依據台股名稱快取字典 (tw_stock_names.json) 精確鎖定市場別 (.TW 或 .TWO)，
@@ -30,7 +35,7 @@ def _detect_market_suffix(pure_code: str, raw_ticker: str) -> list:
         return ['.TW']
     if raw_upper.endswith(".TWO"):
         return ['.TWO']
-    
+        
     # 從快取或 storage 載入股票市場資訊
     try:
         from storage import load_stock_names_dict
@@ -49,16 +54,14 @@ def _detect_market_suffix(pure_code: str, raw_ticker: str) -> list:
                 return ['.TW']
     except Exception:
         pass
-
-    # 若快取無市場別標記，依代碼首位特徵作單一判定 (絕大多數 3x, 4x, 5x, 6x 為上櫃；1x, 2x 多為上市)
-    # 仍單獨指定單一市場，不雙向輪詢
+        
+    # 若快取無市場別標記，依代碼首位特徵作單一判定
     if len(pure_code) == 4 and pure_code[0] in ['3', '4', '5', '6', '8']:
         return ['.TWO']
     return ['.TW']
-###############################
+
 def fetch_stock_daily_k(raw_ticker: str, period: str = "1y", base_date: str = None):
     import yfinance as yf
-    
     raw_str = str(raw_ticker).strip().upper()
     match = re.search(r'\d+', raw_str)
     pure_code = match.group(0) if match else raw_str.split('.')[0]
@@ -67,9 +70,7 @@ def fetch_stock_daily_k(raw_ticker: str, period: str = "1y", base_date: str = No
     df = pd.DataFrame()
     shares_outstanding = None
     
-    # 依市場別決定嘗試順序，不再預設先敲 .TWO
     suffixes = _detect_market_suffix(pure_code, raw_str)
-    
     for suffix in suffixes:
         test_ticker = f"{pure_code}{suffix}" if suffix else pure_code
         try:
@@ -112,6 +113,7 @@ def fetch_stock_daily_k(raw_ticker: str, period: str = "1y", base_date: str = No
                 o_val = fast_info.open if fast_info.open and fast_info.open > 0 else cur_price
                 h_val = fast_info.day_high if fast_info.day_high and fast_info.day_high > 0 else cur_price
                 l_val = fast_info.day_low if fast_info.day_low and fast_info.day_low > 0 else cur_price
+                
                 today_row = pd.DataFrame({
                     'Open': [float(o_val)],
                     'High': [float(h_val)],
@@ -123,9 +125,7 @@ def fetch_stock_daily_k(raw_ticker: str, period: str = "1y", base_date: str = No
         except Exception:
             pass
             
-    # 剔除非交易日 (Volume <= 0)
     df = df[df['Volume'] > 0]
-    
     return df, ticker_obj.ticker, shares_outstanding
 
 def sync_chip_data(pure_code: str, df_dates, status_placeholder=None):
@@ -137,15 +137,15 @@ def sync_chip_data(pure_code: str, df_dates, status_placeholder=None):
     
     last_inst_date = storage.get_latest_inst_date()
     last_margin_date = storage.get_latest_margin_date()
+    
     target_start_date = (df_dates[0] - timedelta(days=5)).strftime('%Y-%m-%d')
     inst_query_start = (pd.to_datetime(last_inst_date) + timedelta(days=1)).strftime('%Y-%m-%d') if last_inst_date else target_start_date
     margin_query_start = (pd.to_datetime(last_margin_date) + timedelta(days=1)).strftime('%Y-%m-%d') if last_margin_date else target_start_date
     latest_trade_date_str = df_dates[-1].strftime('%Y-%m-%d')
-
-    # 1. 法人買賣超同步 (FinMind + 官方端點雙軌)
+    
+    # 1. 法人買賣超同步
     inst_records = []
     if not last_inst_date or inst_query_start <= latest_trade_date_str:
-        # A. 主管道: FinMind
         try:
             url_inst = "https://api.finmindtrade.com/api/v4/data"
             p_inst = {
@@ -167,14 +167,12 @@ def sync_chip_data(pure_code: str, df_dates, status_placeholder=None):
                     f_s = f_df.groupby('date')['net_sheets'].sum()
                     t_s = t_df.groupby('date')['net_sheets'].sum()
                     d_s = d_df.groupby('date')['net_sheets'].sum()
-                    
                     all_dates = sorted(list(set(idf['date'])))
                     for d in all_dates:
                         inst_records.append((d, float(f_s.get(d, 0.0)), float(t_s.get(d, 0.0)), float(d_s.get(d, 0.0))))
         except Exception:
             pass
-
-        # B. 備援管道: 若查無資料，從 TPEx (櫃買中心) 抓取官方日交易記錄
+            
         if not inst_records:
             try:
                 url_tpex_inst = f"https://www.tpex.org.tw/web/stock/3investor/daily_trading/stk_wn_result.php?l=zh-tw&stkno={pure_code}"
@@ -192,16 +190,13 @@ def sync_chip_data(pure_code: str, df_dates, status_placeholder=None):
                                 if d_fmt >= inst_query_start:
                                     def parse_v(x):
                                         return float(str(x).replace(',', '').replace('+', ''))
-                                    f_v = parse_v(row[1])
-                                    t_v = parse_v(row[2])
-                                    d_v = parse_v(row[3])
-                                    inst_records.append((d_fmt, f_v, t_v, d_v))
+                                    inst_records.append((d_fmt, parse_v(row[1]), parse_v(row[2]), parse_v(row[3])))
             except Exception:
                 pass
-
+                
         if inst_records:
             storage.save_institutional_data(inst_records)
-
+            
     # 2. 資券增減同步
     if not last_margin_date or margin_query_start <= latest_trade_date_str:
         try:
@@ -223,10 +218,12 @@ def sync_chip_data(pure_code: str, df_dates, status_placeholder=None):
                         ms = float(r.get('MarginPurchaseSell', 0) or 0)
                         mr = float(r.get('MarginPurchaseCashRepayment', 0) or 0)
                         m_diff = (mb - ms - mr) / 1000.0
+                        
                         sb = float(r.get('ShortSaleBuy', 0) or 0)
                         ss = float(r.get('ShortSaleSell', 0) or 0)
                         sr = float(r.get('ShortSaleCashRepayment', 0) or 0)
                         s_diff = (ss - sb - sr) / 1000.0
+                        
                         m_raw_bal = r.get('MarginPurchaseTodayBalance') or r.get('MarginPurchaseBalance') or r.get('margin_purchase') or 0
                         s_raw_bal = r.get('ShortSaleTodayBalance') or r.get('ShortSaleBalance') or r.get('short_sale') or 0
                         m_bal = float(m_raw_bal) / 1000.0
@@ -235,7 +232,7 @@ def sync_chip_data(pure_code: str, df_dates, status_placeholder=None):
                     storage.save_margin_data(records_ms)
         except Exception:
             pass
-
+            
     # 3. 集保大戶持股同步
     holding_df = storage.load_holding_df()
     existing_weeks = set(holding_df['date'].dt.strftime('%Y%m%d')) if not holding_df.empty else set()
@@ -249,9 +246,7 @@ def sync_chip_data(pure_code: str, df_dates, status_placeholder=None):
             action = form.get('action', '') if form else ''
             target_url = f"https://www.tdcc.com.tw{action}" if action.startswith('/') else (action if action.startswith('http') else f"https://www.tdcc.com.tw/portal/zh/smWeb/{action}")
             
-            available_dates = [o.get('value').strip() for o in soup_home.find_all('option') 
-                               if o.get('value') and o.get('value').strip().isdigit() and len(o.get('value').strip()) == 8 and o.get('value').strip().startswith('20')]
-            
+            available_dates = [o.get('value').strip() for o in soup_home.find_all('option') if o.get('value') and o.get('value').strip().isdigit() and len(o.get('value').strip()) == 8 and o.get('value').strip().startswith('20')]
             today = datetime.today()
             target_dates = list(available_dates)
             for i in range(16):
@@ -297,5 +292,5 @@ def sync_chip_data(pure_code: str, df_dates, status_placeholder=None):
                 storage.save_holding_data(h_rec)
     except Exception:
         pass
-
+        
     return storage.load_institutional_df(), storage.load_margin_df(), storage.load_holding_df()
