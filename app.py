@@ -1,11 +1,13 @@
 """
 app.py - 主應用程式介面與生命週期控制
-版本: 202611022110
+版本: 202611022230
 """
+
 import streamlit as st
 import streamlit.components.v1 as components
+import cloud_sync
 
-MODULE_VERSION = "202611022110"
+MODULE_VERSION = "202611022230"
 
 from storage import (
     load_stock_history,
@@ -27,14 +29,8 @@ st.set_page_config(
 # 透過包裹專屬 class 的容器，強制覆蓋 Streamlit 手機直向堆疊行為
 st.markdown("""
 <style>
-.block-container {
-    padding-top: 3.5rem;
-    padding-bottom: 0rem;
-    padding-left: 1rem;
-    padding-right: 1rem;
-}
+.block-container {padding-top: 3.5rem; padding-bottom: 0rem; padding-left: 1rem; padding-right: 1rem;}
 footer {visibility: hidden;}
-
 /* 強制按鈕容器在所有螢幕尺寸（包括手機版）維持橫向並排各佔 50% */
 .nav-btn-container [data-testid="stHorizontalBlock"] {
     display: flex !important;
@@ -92,18 +88,16 @@ with st.sidebar:
                 key="history_multiselect"
             )
             
-            # 偵測最新勾選的項目：同步更新股票代號與鍵入輸入框
+            # 偵測最新勾選的項目：同步更新股票代號（不強制覆寫輸入框，避免當機）
             newly_added = [item for item in selected_history if item not in st.session_state.prev_selected_history]
             if newly_added:
                 latest_sel_code = newly_added[-1].split()[0]
                 if latest_sel_code != st.session_state.stock_id:
                     st.session_state.stock_id = latest_sel_code
-                    st.session_state.stock_input_box = latest_sel_code
                     st.session_state.prev_selected_history = selected_history
                     st.rerun()
-
             st.session_state.prev_selected_history = selected_history
-
+            
             # 清除按鈕邏輯
             if st.button("清除歷史記錄", use_container_width=True):
                 if selected_history:
@@ -115,38 +109,33 @@ with st.sidebar:
                 else:
                     st.session_state.confirm_clear_all = True
                     st.rerun()
-
-            # 無勾選項目時的二次確認區塊
-            if st.session_state.confirm_clear_all:
-                st.warning("⚠️ 未勾選任何標的，確定要清除全部歷史紀錄嗎？")
-                c_del1, c_del2 = st.columns(2)
-                with c_del1:
-                    if st.button("確認全刪", key="btn_confirm_delete_all", use_container_width=True):
-                        clear_stock_history()
-                        st.session_state.stock_id = "2330"
-                        st.session_state.stock_input_box = "2330"
-                        st.session_state.confirm_clear_all = False
-                        st.session_state.prev_selected_history = []
-                        st.rerun()
-                with c_del2:
-                    if st.button("取消", key="btn_cancel_delete_all", use_container_width=True):
-                        st.session_state.confirm_clear_all = False
-                        st.rerun()
         else:
             st.caption("目前無歷史紀錄")
 
-    st.text_input(
-        "股票代號 (直接鍵入)",
-        key="stock_input_box",
-        on_change=on_stock_input_change
-    )
+    # 無勾選項目時的二次確認區塊
+    if st.session_state.confirm_clear_all:
+        st.warning("⚠️ 未勾選任何標的，確定要清除全部歷史紀錄嗎？")
+        c_del1, c_del2 = st.columns(2)
+        with c_del1:
+            if st.button("確認全刪", key="btn_confirm_delete_all", use_container_width=True):
+                clear_stock_history()
+                st.session_state.stock_id = "2330"
+                st.session_state.confirm_clear_all = False
+                st.session_state.prev_selected_history = []
+                st.rerun()
+        with c_del2:
+            if st.button("取消", key="btn_cancel_delete_all", use_container_width=True):
+                st.session_state.confirm_clear_all = False
+                st.rerun()
 
+    st.text_input("股票代號 (直接鍵入)", key="stock_input_box", on_change=on_stock_input_change)
+    
     st.session_state.period = st.selectbox(
         "下載區間",
         ["6mo", "1y", "2y", "5y", "max"],
         index=1
     )
-
+    
     mode_switch = st.selectbox(
         "模式切換",
         ["手機版 (Mobile) - 預設20日", "電腦版 (Desktop) - 預設60日"],
@@ -154,7 +143,7 @@ with st.sidebar:
     )
     is_mobile = "手機版" in mode_switch
     default_days = 20 if is_mobile else 60
-
+    
     st.session_state.disp_days = st.number_input(
         "顯示日數",
         min_value=10,
@@ -162,7 +151,7 @@ with st.sidebar:
         value=default_days,
         step=5
     )
-
+    
     use_target_date = st.checkbox("指定基準日 (復盤模式)")
     target_date_val = None
     if use_target_date:
@@ -177,14 +166,23 @@ with st.sidebar:
         input_code = st.session_state.stock_input_box.strip()
         if input_code:
             st.session_state.stock_id = input_code
-        st.rerun()
+            st.rerun()
 
-st.subheader(f"台股技術與籌碼分析 v{MODULE_VERSION}")
+# 取得金鑰與連線狀態燈號 (0: ⚪灰燈, 1: 🔵藍燈, 2: 🟡黃燈)
+auth_status = cloud_sync.get_auth_status()
+if auth_status == 2:
+    status_light = "🟡"
+elif auth_status == 1:
+    status_light = "🔵"
+else:
+    status_light = "⚪"
+
+st.markdown(f"## 台股技術與籌碼分析 v{MODULE_VERSION} {status_light}")
 
 stock_id = str(st.session_state.stock_id).strip()
 if not stock_id:
     stock_id = "2330"
-st.session_state.stock_id = stock_id
+    st.session_state.stock_id = stock_id
 
 hist_records = load_stock_history()
 hist_codes = [str(item.get("code")).strip() for item in hist_records if item.get("code")]
@@ -196,7 +194,7 @@ else:
 
 curr_idx = active_nav_codes.index(stock_id) if stock_id in active_nav_codes else 0
 
-# 頂部：上一檔 / 下一檔 功能列（常駐顯示並鎖定橫排）
+# 頂部：上一檔 / 下一檔 功能列（常駐顯示並鎖定橫排，已拔除會當機的 input_box 覆寫）
 st.markdown('<div class="nav-btn-container">', unsafe_allow_html=True)
 top_c1, top_c2 = st.columns(2)
 with top_c1:
@@ -249,13 +247,9 @@ html_content = get_component_html(
 )
 
 total_h = 1980 if is_mobile else 1880
-components.html(
-    html_content,
-    height=total_h,
-    scrolling=False
-)
+components.html(html_content, height=total_h, scrolling=False)
 
-# 底部：上一檔 / 下一檔 功能列（常駐顯示並鎖定橫排）
+# 底部：上一檔 / 下一檔 功能列（常駐顯示並鎖定橫排，已拔除會當機的 input_box 覆寫）
 st.markdown('<div class="nav-btn-container">', unsafe_allow_html=True)
 btm_c1, btm_c2 = st.columns(2)
 with btm_c1:
