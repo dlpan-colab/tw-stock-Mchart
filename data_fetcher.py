@@ -19,10 +19,11 @@ FINMIND_TOKEN = ""
 
 def fetch_stock_name(pure_code: str) -> str:
     return get_stock_chinese_name(pure_code)
-
+##################################################
 def _detect_market_suffix(pure_code: str, raw_ticker: str) -> list:
     """
-    依據輸入字串或代碼特徵判斷市場別，避免盲目雙向輪詢 (.TWO / .TW)
+    依據台股名稱快取字典 (tw_stock_names.json) 精確鎖定市場別 (.TW 或 .TWO)，
+    若為上櫃僅查 .TWO，若為上市僅查 .TW，根除盲試與 delisted 警告。
     """
     raw_upper = str(raw_ticker).strip().upper()
     if raw_upper.endswith(".TW"):
@@ -30,11 +31,31 @@ def _detect_market_suffix(pure_code: str, raw_ticker: str) -> list:
     if raw_upper.endswith(".TWO"):
         return ['.TWO']
     
-    # 若純代碼為 4 碼，優先判定市場
-    # 一般常見上櫃代碼區間 (如 30-68 開頭部分上櫃，或 ETF 006201 等)
-    # 但最穩定的台股權值與一般上市多以 .TW 為主，預設優先 .TW，若失敗才 fallback .TWO
-    return ['.TW', '.TWO']
+    # 從快取或 storage 載入股票市場資訊
+    try:
+        from storage import load_stock_names_dict
+        stock_dict = load_stock_names_dict()
+        meta = stock_dict.get(pure_code, "")
+        if isinstance(meta, dict):
+            mkt = meta.get('market', '')
+            if '櫃' in mkt or 'TWO' in mkt or 'OTC' in mkt:
+                return ['.TWO']
+            if '市' in mkt or 'TW' in mkt:
+                return ['.TW']
+        elif isinstance(meta, str):
+            if '上櫃' in meta:
+                return ['.TWO']
+            if '上市' in meta:
+                return ['.TW']
+    except Exception:
+        pass
 
+    # 若快取無市場別標記，依代碼首位特徵作單一判定 (絕大多數 3x, 4x, 5x, 6x 為上櫃；1x, 2x 多為上市)
+    # 仍單獨指定單一市場，不雙向輪詢
+    if len(pure_code) == 4 and pure_code[0] in ['3', '4', '5', '6', '8']:
+        return ['.TWO']
+    return ['.TW']
+###############################
 def fetch_stock_daily_k(raw_ticker: str, period: str = "1y", base_date: str = None):
     import yfinance as yf
     
