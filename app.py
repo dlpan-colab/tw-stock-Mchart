@@ -1,11 +1,11 @@
 """
 app.py - 主應用程式介面與生命週期控制
-版本: 202611022100
+版本: 202611022110
 """
 import streamlit as st
 import streamlit.components.v1 as components
 
-MODULE_VERSION = "202611022100"
+MODULE_VERSION = "202611022110"
 
 from storage import (
     load_stock_history,
@@ -92,7 +92,7 @@ with st.sidebar:
                 key="history_multiselect"
             )
             
-            # 偵測最新勾選的項目：同步更新股票代號與鍵入輸入框，移除中途上傳動作避免當機
+            # 偵測最新勾選的項目：同步更新股票代號與鍵入輸入框
             newly_added = [item for item in selected_history if item not in st.session_state.prev_selected_history]
             if newly_added:
                 latest_sel_code = newly_added[-1].split()[0]
