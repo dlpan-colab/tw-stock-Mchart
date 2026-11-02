@@ -204,14 +204,12 @@ with top_c1:
         if len(active_nav_codes) > 1:
             prev_idx = (curr_idx - 1) % len(active_nav_codes)
             st.session_state.stock_id = active_nav_codes[prev_idx]
-            st.session_state.stock_input_box = active_nav_codes[prev_idx]
             st.rerun()
 with top_c2:
     if st.button("下一檔 ▶", key="btn_top_next", use_container_width=True):
         if len(active_nav_codes) > 1:
             next_idx = (curr_idx + 1) % len(active_nav_codes)
             st.session_state.stock_id = active_nav_codes[next_idx]
-            st.session_state.stock_input_box = active_nav_codes[next_idx]
             st.rerun()
 st.markdown('</div>', unsafe_allow_html=True)
 
@@ -265,13 +263,11 @@ with btm_c1:
         if len(active_nav_codes) > 1:
             prev_idx = (curr_idx - 1) % len(active_nav_codes)
             st.session_state.stock_id = active_nav_codes[prev_idx]
-            st.session_state.stock_input_box = active_nav_codes[prev_idx]
             st.rerun()
 with btm_c2:
     if st.button("下一檔 ▶", key="btn_btm_next", use_container_width=True):
         if len(active_nav_codes) > 1:
             next_idx = (curr_idx + 1) % len(active_nav_codes)
             st.session_state.stock_id = active_nav_codes[next_idx]
-            st.session_state.stock_input_box = active_nav_codes[next_idx]
             st.rerun()
 st.markdown('</div>', unsafe_allow_html=True)
