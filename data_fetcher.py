@@ -1,8 +1,7 @@
 """
 data_fetcher.py - 外部資料抓取與增量同步模組
-版本: 202610302000
+版本: 202611022030
 """
-
 import os
 import re
 import io
@@ -14,7 +13,6 @@ from bs4 import BeautifulSoup
 from datetime import datetime, timedelta
 import pandas as pd
 import numpy as np
-
 from storage import StockChipStorage, get_stock_chinese_name
 
 FINMIND_TOKEN = ""
@@ -22,17 +20,36 @@ FINMIND_TOKEN = ""
 def fetch_stock_name(pure_code: str) -> str:
     return get_stock_chinese_name(pure_code)
 
+def _detect_market_suffix(pure_code: str, raw_ticker: str) -> list:
+    """
+    依據輸入字串或代碼特徵判斷市場別，避免盲目雙向輪詢 (.TWO / .TW)
+    """
+    raw_upper = str(raw_ticker).strip().upper()
+    if raw_upper.endswith(".TW"):
+        return ['.TW']
+    if raw_upper.endswith(".TWO"):
+        return ['.TWO']
+    
+    # 若純代碼為 4 碼，優先判定市場
+    # 一般常見上櫃代碼區間 (如 30-68 開頭部分上櫃，或 ETF 006201 等)
+    # 但最穩定的台股權值與一般上市多以 .TW 為主，預設優先 .TW，若失敗才 fallback .TWO
+    return ['.TW', '.TWO']
+
 def fetch_stock_daily_k(raw_ticker: str, period: str = "1y", base_date: str = None):
     import yfinance as yf
+    
     raw_str = str(raw_ticker).strip().upper()
     match = re.search(r'\d+', raw_str)
     pure_code = match.group(0) if match else raw_str.split('.')[0]
-
+    
     ticker_obj = None
     df = pd.DataFrame()
     shares_outstanding = None
-
-    for suffix in ['.TWO', '.TW', '']:
+    
+    # 依市場別決定嘗試順序，不再預設先敲 .TWO
+    suffixes = _detect_market_suffix(pure_code, raw_str)
+    
+    for suffix in suffixes:
         test_ticker = f"{pure_code}{suffix}" if suffix else pure_code
         try:
             t = yf.Ticker(test_ticker)
@@ -47,25 +64,24 @@ def fetch_stock_daily_k(raw_ticker: str, period: str = "1y", base_date: str = No
                 break
         except Exception:
             continue
-
+            
     if df.empty or ticker_obj is None:
         return None, "", None
-
+        
     if df.index.tz is not None:
         df.index = df.index.tz_localize(None)
     df.index = df.index.normalize()
     df = df.dropna(subset=['Open', 'High', 'Low', 'Close'])
-
+    
     now_dt = datetime.now()
     target_dt = now_dt
     if now_dt.time() < datetime.strptime("09:00", "%H:%M").time():
         target_dt -= timedelta(days=1)
     while target_dt.weekday() > 4:
         target_dt -= timedelta(days=1)
-
     target_date = target_dt.date()
+    
     latest_date = df.index[-1].date()
-
     if latest_date < target_date:
         try:
             fast_info = ticker_obj.fast_info
@@ -75,7 +91,6 @@ def fetch_stock_daily_k(raw_ticker: str, period: str = "1y", base_date: str = No
                 o_val = fast_info.open if fast_info.open and fast_info.open > 0 else cur_price
                 h_val = fast_info.day_high if fast_info.day_high and fast_info.day_high > 0 else cur_price
                 l_val = fast_info.day_low if fast_info.day_low and fast_info.day_low > 0 else cur_price
-
                 today_row = pd.DataFrame({
                     'Open': [float(o_val)],
                     'High': [float(h_val)],
@@ -86,23 +101,21 @@ def fetch_stock_daily_k(raw_ticker: str, period: str = "1y", base_date: str = No
                 df = pd.concat([df, today_row])
         except Exception:
             pass
-
+            
     # 剔除非交易日 (Volume <= 0)
     df = df[df['Volume'] > 0]
-
+    
     return df, ticker_obj.ticker, shares_outstanding
 
 def sync_chip_data(pure_code: str, df_dates, status_placeholder=None):
     storage = StockChipStorage(pure_code)
-
     headers = {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
         'Referer': 'https://www.tdcc.com.tw/portal/zh/smWeb/qryStock'
     }
-
+    
     last_inst_date = storage.get_latest_inst_date()
     last_margin_date = storage.get_latest_margin_date()
-
     target_start_date = (df_dates[0] - timedelta(days=5)).strftime('%Y-%m-%d')
     inst_query_start = (pd.to_datetime(last_inst_date) + timedelta(days=1)).strftime('%Y-%m-%d') if last_inst_date else target_start_date
     margin_query_start = (pd.to_datetime(last_margin_date) + timedelta(days=1)).strftime('%Y-%m-%d') if last_margin_date else target_start_date
@@ -129,9 +142,11 @@ def sync_chip_data(pure_code: str, df_dates, status_placeholder=None):
                     f_df = idf[idf['name'].str.contains('Foreign|外資|外陸資', na=False, case=False)]
                     t_df = idf[idf['name'].str.contains('Investment_Trust|投信', na=False, case=False)]
                     d_df = idf[idf['name'].str.contains('Dealer|自營', na=False, case=False)]
+                    
                     f_s = f_df.groupby('date')['net_sheets'].sum()
                     t_s = t_df.groupby('date')['net_sheets'].sum()
                     d_s = d_df.groupby('date')['net_sheets'].sum()
+                    
                     all_dates = sorted(list(set(idf['date'])))
                     for d in all_dates:
                         inst_records.append((d, float(f_s.get(d, 0.0)), float(t_s.get(d, 0.0)), float(d_s.get(d, 0.0))))
@@ -154,7 +169,8 @@ def sync_chip_data(pure_code: str, df_dates, status_placeholder=None):
                                 y = int(parts[0]) + 1911
                                 d_fmt = f"{y}-{int(parts[1]):02d}-{int(parts[2]):02d}"
                                 if d_fmt >= inst_query_start:
-                                    def parse_v(x): return float(str(x).replace(',', '').replace('+', ''))
+                                    def parse_v(x):
+                                        return float(str(x).replace(',', '').replace('+', ''))
                                     f_v = parse_v(row[1])
                                     t_v = parse_v(row[2])
                                     d_v = parse_v(row[3])
@@ -186,12 +202,10 @@ def sync_chip_data(pure_code: str, df_dates, status_placeholder=None):
                         ms = float(r.get('MarginPurchaseSell', 0) or 0)
                         mr = float(r.get('MarginPurchaseCashRepayment', 0) or 0)
                         m_diff = (mb - ms - mr) / 1000.0
-
                         sb = float(r.get('ShortSaleBuy', 0) or 0)
                         ss = float(r.get('ShortSaleSell', 0) or 0)
                         sr = float(r.get('ShortSaleCashRepayment', 0) or 0)
                         s_diff = (ss - sb - sr) / 1000.0
-
                         m_raw_bal = r.get('MarginPurchaseTodayBalance') or r.get('MarginPurchaseBalance') or r.get('margin_purchase') or 0
                         s_raw_bal = r.get('ShortSaleTodayBalance') or r.get('ShortSaleBalance') or r.get('short_sale') or 0
                         m_bal = float(m_raw_bal) / 1000.0
@@ -204,7 +218,6 @@ def sync_chip_data(pure_code: str, df_dates, status_placeholder=None):
     # 3. 集保大戶持股同步
     holding_df = storage.load_holding_df()
     existing_weeks = set(holding_df['date'].dt.strftime('%Y%m%d')) if not holding_df.empty else set()
-    
     try:
         session_tdcc = requests.Session()
         url_home = "https://www.tdcc.com.tw/portal/zh/smWeb/qryStock"
@@ -214,8 +227,8 @@ def sync_chip_data(pure_code: str, df_dates, status_placeholder=None):
             form = soup_home.find('form')
             action = form.get('action', '') if form else ''
             target_url = f"https://www.tdcc.com.tw{action}" if action.startswith('/') else (action if action.startswith('http') else f"https://www.tdcc.com.tw/portal/zh/smWeb/{action}")
-
-            available_dates = [o.get('value').strip() for o in soup_home.find_all('option')
+            
+            available_dates = [o.get('value').strip() for o in soup_home.find_all('option') 
                                if o.get('value') and o.get('value').strip().isdigit() and len(o.get('value').strip()) == 8 and o.get('value').strip().startswith('20')]
             
             today = datetime.today()
@@ -224,10 +237,9 @@ def sync_chip_data(pure_code: str, df_dates, status_placeholder=None):
                 d = today - timedelta(days=today.weekday() + 7 * i)
                 target_dates.append((d + timedelta(days=4)).strftime('%Y%m%d'))
                 target_dates.append((d + timedelta(days=3)).strftime('%Y%m%d'))
-
             target_dates = sorted(list(set(target_dates)), reverse=True)
             missing_dates = [d for d in target_dates if d not in existing_weeks][:20]
-
+            
             h_rec = []
             for d_str in missing_dates:
                 for attempt in range(2):
@@ -236,10 +248,15 @@ def sync_chip_data(pure_code: str, df_dates, status_placeholder=None):
                         sp_page = BeautifulSoup(r_page.text, 'html.parser')
                         cur_form = sp_page.find('form')
                         payload = {inp.get('name'): inp.get('value', '') for inp in cur_form.find_all('input') if inp.get('name')}
-                        payload.update({'scaDate': d_str, 'sqlMethod': 'StockNo', 'stockNo': pure_code, 'stockName': '', 'sub': '查詢'})
+                        payload.update({
+                            'scaDate': d_str,
+                            'sqlMethod': 'StockNo',
+                            'stockNo': pure_code,
+                            'stockName': '',
+                            'sub': '查詢'
+                        })
                         resp = session_tdcc.post(target_url, data=payload, headers=headers, timeout=8)
                         dfs = pd.read_html(StringIO(resp.text))
-
                         target_tbl = next((d for d in dfs if '1' in d.iloc[:, 0].astype(str).tolist() and '15' in d.iloc[:, 0].astype(str).tolist()), None)
                         if target_tbl is not None:
                             lvl_col, pct_col = target_tbl.columns[0], target_tbl.columns[-1]
@@ -255,7 +272,6 @@ def sync_chip_data(pure_code: str, df_dates, status_placeholder=None):
                         time.sleep(0.3)
                         continue
                 time.sleep(0.15)
-
             if h_rec:
                 storage.save_holding_data(h_rec)
     except Exception:
