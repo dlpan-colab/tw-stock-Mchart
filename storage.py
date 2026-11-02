@@ -1,10 +1,10 @@
 """
 storage.py - 本地 SQLite 資料庫與股票歷史紀錄管理器
-版本: 202611022230
+版本: 202611022350
 """
 
 MODULE_NAME = "storage"
-MODULE_VERSION = "202611022230"
+MODULE_VERSION = "202611022350"
 
 import os
 import io
@@ -50,7 +50,6 @@ def _sync_cloud_push():
         print(f"[CloudSync] Push warning: {e}")
 
 def sync_db_pull(pure_code: str):
-    """從 Google Drive 下載指定股票的 SQLite 資料庫"""
     try:
         from cloud_sync import pull_file
         db_name = f"data_{pure_code}.db"
@@ -60,7 +59,6 @@ def sync_db_pull(pure_code: str):
         print(f"[CloudSync] DB pull warning for {pure_code}: {e}")
 
 def sync_db_push(pure_code: str):
-    """將指定股票的最新 SQLite 資料庫上傳推送至 Google Drive"""
     try:
         from cloud_sync import push_file
         db_name = f"data_{pure_code}.db"
@@ -95,7 +93,6 @@ def _save_name_cache(code: str, name: str):
         pass
 
 def load_stock_names_dict() -> dict:
-    """供 data_fetcher 呼叫，載入完整的上市櫃名稱與市場對照字典"""
     cache = _load_name_cache()
     if not cache:
         return COMMON_STOCK_NAMES
@@ -115,7 +112,6 @@ def get_stock_chinese_name(pure_code: str) -> str:
         
     headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"}
     
-    # 1. TWSE ISIN 單筆查詢
     url_twse = f"https://isin.twse.com.tw/isin/single_main.jsp?owncode={pure_code}&stockname="
     for attempt in range(2):
         try:
@@ -134,7 +130,6 @@ def get_stock_chinese_name(pure_code: str) -> str:
         if attempt == 0:
             time.sleep(0.3)
             
-    # 2. TWSE 官方 OpenAPI 清單比對備援
     try:
         url_openapi = "https://openapi.twse.com.tw/v1/exchangeReport/BWIBBU_ALL"
         res_o = requests.get(url_openapi, headers=headers, timeout=5)
@@ -152,7 +147,6 @@ def get_stock_chinese_name(pure_code: str) -> str:
     except Exception:
         pass
         
-    # 3. TPEx 櫃買中心 API (上櫃股票)
     try:
         url_tpex = f"https://www.tpex.org.tw/web/stock/aftertrading/otc_quotes_no1430/stk_wn1430_result.php?l=zh-tw&stkno={pure_code}"
         res_t = requests.get(url_tpex, headers=headers, timeout=5)
@@ -166,7 +160,6 @@ def get_stock_chinese_name(pure_code: str) -> str:
     except Exception:
         pass
         
-    # 4. Yahoo Finance API 搜尋備援
     try:
         for suffix in [".TW", ".TWO"]:
             y_url = f"https://query2.finance.yahoo.com/v1/finance/search?q={pure_code}{suffix}"
