@@ -1,11 +1,11 @@
 """
 app.py - 主應用程式介面與生命週期控制
-版本: 202611020110
+版本: 202611022055
 """
 import streamlit as st
 import streamlit.components.v1 as components
 
-MODULE_VERSION = "202611020110"
+MODULE_VERSION = "202611022055"
 
 from storage import (
     load_stock_history,
@@ -60,6 +60,8 @@ if initial_history:
 
 if "stock_id" not in st.session_state:
     st.session_state.stock_id = default_code
+if "stock_input_box" not in st.session_state:
+    st.session_state.stock_input_box = default_code
 if "period" not in st.session_state:
     st.session_state.period = "1y"
 if "disp_days" not in st.session_state:
@@ -73,10 +75,10 @@ def on_stock_input_change():
     val = st.session_state.stock_input_box.strip()
     if val:
         st.session_state.stock_id = val
-        save_stock_history(val)
 
 with st.sidebar:
     st.header("參數設定")
+    
     history_records = load_stock_history()
     history_codes = [str(item.get("code")).strip() for item in history_records if item.get("code")]
     
@@ -90,15 +92,16 @@ with st.sidebar:
                 key="history_multiselect"
             )
             
-            # 偵測最新勾選的項目：更新股票代號並提至歷史清單最前面
+            # 偵測最新勾選的項目：同步更新股票代號與鍵入輸入框，移除中途上傳動作避免當機
             newly_added = [item for item in selected_history if item not in st.session_state.prev_selected_history]
             if newly_added:
                 latest_sel_code = newly_added[-1].split()[0]
                 if latest_sel_code != st.session_state.stock_id:
                     st.session_state.stock_id = latest_sel_code
-                    save_stock_history(latest_sel_code)
+                    st.session_state.stock_input_box = latest_sel_code
                     st.session_state.prev_selected_history = selected_history
                     st.rerun()
+
             st.session_state.prev_selected_history = selected_history
 
             # 清除按鈕邏輯
@@ -121,6 +124,7 @@ with st.sidebar:
                     if st.button("確認全刪", key="btn_confirm_delete_all", use_container_width=True):
                         clear_stock_history()
                         st.session_state.stock_id = "2330"
+                        st.session_state.stock_input_box = "2330"
                         st.session_state.confirm_clear_all = False
                         st.session_state.prev_selected_history = []
                         st.rerun()
@@ -133,15 +137,16 @@ with st.sidebar:
 
     st.text_input(
         "股票代號 (直接鍵入)",
-        value=st.session_state.stock_id,
         key="stock_input_box",
         on_change=on_stock_input_change
     )
+
     st.session_state.period = st.selectbox(
         "下載區間",
         ["6mo", "1y", "2y", "5y", "max"],
         index=1
     )
+
     mode_switch = st.selectbox(
         "模式切換",
         ["手機版 (Mobile) - 預設20日", "電腦版 (Desktop) - 預設60日"],
@@ -149,6 +154,7 @@ with st.sidebar:
     )
     is_mobile = "手機版" in mode_switch
     default_days = 20 if is_mobile else 60
+
     st.session_state.disp_days = st.number_input(
         "顯示日數",
         min_value=10,
@@ -156,6 +162,7 @@ with st.sidebar:
         value=default_days,
         step=5
     )
+
     use_target_date = st.checkbox("指定基準日 (復盤模式)")
     target_date_val = None
     if use_target_date:
@@ -167,8 +174,9 @@ with st.sidebar:
     m2_thresh = st.number_input("大戶門檻2 (張)", min_value=100, max_value=1000, value=400, step=100)
 
     if st.button("查詢", use_container_width=True):
-        if st.session_state.stock_id.strip():
-            save_stock_history(st.session_state.stock_id.strip())
+        input_code = st.session_state.stock_input_box.strip()
+        if input_code:
+            st.session_state.stock_id = input_code
         st.rerun()
 
 st.subheader(f"台股技術與籌碼分析 v{MODULE_VERSION}")
@@ -176,10 +184,12 @@ st.subheader(f"台股技術與籌碼分析 v{MODULE_VERSION}")
 stock_id = str(st.session_state.stock_id).strip()
 if not stock_id:
     stock_id = "2330"
-    st.session_state.stock_id = stock_id
+st.session_state.stock_id = stock_id
+st.session_state.stock_input_box = stock_id
 
 hist_records = load_stock_history()
 hist_codes = [str(item.get("code")).strip() for item in hist_records if item.get("code")]
+
 if stock_id not in hist_codes:
     active_nav_codes = [stock_id] + hist_codes
 else:
@@ -195,12 +205,14 @@ with top_c1:
         if len(active_nav_codes) > 1:
             prev_idx = (curr_idx - 1) % len(active_nav_codes)
             st.session_state.stock_id = active_nav_codes[prev_idx]
+            st.session_state.stock_input_box = active_nav_codes[prev_idx]
             st.rerun()
 with top_c2:
     if st.button("下一檔 ▶", key="btn_top_next", use_container_width=True):
         if len(active_nav_codes) > 1:
             next_idx = (curr_idx + 1) % len(active_nav_codes)
             st.session_state.stock_id = active_nav_codes[next_idx]
+            st.session_state.stock_input_box = active_nav_codes[next_idx]
             st.rerun()
 st.markdown('</div>', unsafe_allow_html=True)
 
@@ -254,11 +266,13 @@ with btm_c1:
         if len(active_nav_codes) > 1:
             prev_idx = (curr_idx - 1) % len(active_nav_codes)
             st.session_state.stock_id = active_nav_codes[prev_idx]
+            st.session_state.stock_input_box = active_nav_codes[prev_idx]
             st.rerun()
 with btm_c2:
     if st.button("下一檔 ▶", key="btn_btm_next", use_container_width=True):
         if len(active_nav_codes) > 1:
             next_idx = (curr_idx + 1) % len(active_nav_codes)
             st.session_state.stock_id = active_nav_codes[next_idx]
+            st.session_state.stock_input_box = active_nav_codes[next_idx]
             st.rerun()
 st.markdown('</div>', unsafe_allow_html=True)
