@@ -1,7 +1,11 @@
 """
 storage.py - 本地 SQLite 資料庫與股票歷史紀錄管理器
-版本: 202611022115
+版本: 202611022230
 """
+
+MODULE_NAME = "storage"
+MODULE_VERSION = "202611022230"
+
 import os
 import io
 import json
@@ -11,22 +15,21 @@ import requests
 from bs4 import BeautifulSoup
 import pandas as pd
 
-MODULE_VERSION = "202611022115"
 STORAGE_DIR = "."
 HISTORY_FILE = os.path.join(STORAGE_DIR, "stock_history.json")
 NAMES_CACHE_FILE = os.path.join(STORAGE_DIR, "tw_stock_names.json")
 
 COMMON_STOCK_NAMES = {
-    "1101": "台泥", "1102": "亞泥", "1104": "環泥", "1216": "統一",
-    "1301": "台塑", "1303": "南亞", "1312": "國喬", "1326": "台化",
-    "1504": "東元", "2002": "中鋼", "2105": "正新", "2303": "聯電",
-    "2308": "台達電", "2312": "金寶", "2317": "鴻海", "2324": "仁寶",
-    "2327": "國巨", "2330": "台積電", "2374": "佳能", "2382": "廣達",
-    "2454": "聯發科", "2478": "大毅", "2492": "華新科", "2609": "陽明",
-    "2615": "萬海", "3008": "大立光", "3022": "威強電", "3088": "艾訊",
-    "3231": "緯創", "3481": "群創", "3653": "健策", "3661": "世芯-KY",
-    "3718": "中光電投控", "4526": "東台", "4991": "環宇-KY", "5439": "高技",
-    "6191": "精成科", "6217": "中探針", "6234": "高僑", "6425": "易發",
+    "1101": "台泥", "1102": "亞泥", "1104": "環泥", "1216": "統一", 
+    "1301": "台塑", "1303": "南亞", "1312": "國喬", "1326": "台化", 
+    "1504": "東元", "2002": "中鋼", "2105": "正新", "2303": "聯電", 
+    "2308": "台達電", "2312": "金寶", "2317": "鴻海", "2324": "仁寶", 
+    "2327": "國巨", "2330": "台積電", "2374": "佳能", "2382": "廣達", 
+    "2454": "聯發科", "2478": "大毅", "2492": "華新科", "2609": "陽明", 
+    "2615": "萬海", "3008": "大立光", "3022": "威強電", "3088": "艾訊", 
+    "3231": "緯創", "3481": "群創", "3653": "健策", "3661": "世芯-KY", 
+    "3718": "中光電投控", "4526": "東台", "4991": "環宇-KY", "5439": "高技", 
+    "6191": "精成科", "6217": "中探針", "6234": "高僑", "6425": "易發", 
     "6456": "GIS-KY", "6505": "台塑化", "8111": "立碁", "8131": "福懋科"
 }
 
@@ -91,22 +94,28 @@ def _save_name_cache(code: str, name: str):
     except Exception:
         pass
 
+def load_stock_names_dict() -> dict:
+    """供 data_fetcher 呼叫，載入完整的上市櫃名稱與市場對照字典"""
+    cache = _load_name_cache()
+    if not cache:
+        return COMMON_STOCK_NAMES
+    merged = COMMON_STOCK_NAMES.copy()
+    merged.update(cache)
+    return merged
+
 def get_stock_chinese_name(pure_code: str) -> str:
     pure_code = str(pure_code).strip()
     if not pure_code:
         return ""
     if pure_code in COMMON_STOCK_NAMES:
         return COMMON_STOCK_NAMES[pure_code]
-    
     cache = _load_name_cache()
     if pure_code in cache and cache[pure_code] and cache[pure_code] != pure_code:
         return cache[pure_code]
-
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-    }
-
-    # 1. TWSE ISIN 單筆查詢 (比對 cols[2] 為代號，提取 cols[3] 為名稱)
+        
+    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"}
+    
+    # 1. TWSE ISIN 單筆查詢
     url_twse = f"https://isin.twse.com.tw/isin/single_main.jsp?owncode={pure_code}&stockname="
     for attempt in range(2):
         try:
@@ -124,7 +133,7 @@ def get_stock_chinese_name(pure_code: str) -> str:
             pass
         if attempt == 0:
             time.sleep(0.3)
-
+            
     # 2. TWSE 官方 OpenAPI 清單比對備援
     try:
         url_openapi = "https://openapi.twse.com.tw/v1/exchangeReport/BWIBBU_ALL"
@@ -137,12 +146,12 @@ def get_stock_chinese_name(pure_code: str) -> str:
                     n = str(row.get("Name", "")).replace("\u3000", " ").strip()
                     if c and n:
                         COMMON_STOCK_NAMES[c] = n
-                    if c == pure_code:
-                        _save_name_cache(pure_code, n)
-                        return n
+                        if c == pure_code:
+                            _save_name_cache(pure_code, n)
+                            return n
     except Exception:
         pass
-
+        
     # 3. TPEx 櫃買中心 API (上櫃股票)
     try:
         url_tpex = f"https://www.tpex.org.tw/web/stock/aftertrading/otc_quotes_no1430/stk_wn1430_result.php?l=zh-tw&stkno={pure_code}"
@@ -156,7 +165,7 @@ def get_stock_chinese_name(pure_code: str) -> str:
                     return c_name
     except Exception:
         pass
-
+        
     # 4. Yahoo Finance API 搜尋備援
     try:
         for suffix in [".TW", ".TWO"]:
@@ -173,7 +182,7 @@ def get_stock_chinese_name(pure_code: str) -> str:
                             return c_name
     except Exception:
         pass
-
+        
     return pure_code
 
 def load_stock_history():
@@ -185,29 +194,24 @@ def load_stock_history():
                 data = json.load(f)
         except Exception:
             data = []
-            
     if not isinstance(data, list):
         data = []
-
     for item in data:
         code = str(item.get("code", "")).strip()
         curr_name = str(item.get("name", "")).strip()
         if not curr_name or curr_name == code:
             item["name"] = get_stock_chinese_name(code)
-            
     return data
 
 def save_stock_history(code: str, name: str = None):
     code = str(code).strip()
     if not code:
         return load_stock_history()
-    
     c_name = name.strip() if name and name.strip() != code else get_stock_chinese_name(code)
     history = load_stock_history()
     new_hist = [h for h in history if str(h.get("code")).strip() != code]
     new_hist.insert(0, {"code": code, "name": c_name})
     new_hist = new_hist[:30]
-    
     try:
         with open(HISTORY_FILE, "w", encoding="utf-8") as f:
             json.dump(new_hist, f, ensure_ascii=False, indent=2)
@@ -264,7 +268,6 @@ class StockChipStorage:
         self.pure_code = str(pure_code).strip()
         self.db_name = f"data_{self.pure_code}.db"
         self.db_path = os.path.join(STORAGE_DIR, self.db_name)
-        # 初始化前先從雲端拉取最新資料庫
         sync_db_pull(self.pure_code)
         self._init_db()
 
@@ -317,12 +320,8 @@ class StockChipStorage:
             return
         with sqlite3.connect(self.db_path) as conn:
             cur = conn.cursor()
-            cur.executemany(
-                "INSERT OR REPLACE INTO institutional_investors VALUES (?, ?, ?, ?)",
-                records
-            )
+            cur.executemany("INSERT OR REPLACE INTO institutional_investors VALUES (?, ?, ?, ?)", records)
             conn.commit()
-        # 寫入完成後推送回雲端硬碟
         sync_db_push(self.pure_code)
 
     def save_margin_data(self, records):
@@ -330,12 +329,8 @@ class StockChipStorage:
             return
         with sqlite3.connect(self.db_path) as conn:
             cur = conn.cursor()
-            cur.executemany(
-                "INSERT OR REPLACE INTO margin_short VALUES (?, ?, ?, ?, ?)",
-                records
-            )
+            cur.executemany("INSERT OR REPLACE INTO margin_short VALUES (?, ?, ?, ?, ?)", records)
             conn.commit()
-        # 寫入完成後推送回雲端硬碟
         sync_db_push(self.pure_code)
 
     def save_holding_data(self, records):
@@ -343,12 +338,8 @@ class StockChipStorage:
             return
         with sqlite3.connect(self.db_path) as conn:
             cur = conn.cursor()
-            cur.executemany(
-                "INSERT OR REPLACE INTO shareholding_distribution VALUES (?, ?, ?)",
-                records
-            )
+            cur.executemany("INSERT OR REPLACE INTO shareholding_distribution VALUES (?, ?, ?)", records)
             conn.commit()
-        # 寫入完成後推送回雲端硬碟
         sync_db_push(self.pure_code)
 
     def load_institutional_df(self):
