@@ -5,10 +5,11 @@
 """
 
 MODULE_NAME = "cloud_sync"
-MODULE_VERSION = "202610281100"
+MODULE_VERSION = "202611021620"
 
 import io
 import os
+import json
 import logging
 from pathlib import Path
 from typing import Optional, List
@@ -66,7 +67,12 @@ class GoogleDriveSync:
             alt_name = filename.replace("data_", "") if filename.startswith("data_") else f"data_{filename}"
             q = f"(name = '{filename}' or name = '{alt_name}') and '{self.folder_id}' in parents and trashed = false"
             res = self.service.files().list(q=q, fields="files(id, name)", spaces="drive").execute()
-            files = res.get("files", [])
+
+            # 防禦型態非 dict 的異常狀況
+            if isinstance(res, str):
+                res = json.loads(res)
+
+            files = res.get("files", []) if isinstance(res, dict) else []
             if files:
                 return files[0]["id"]
             return None
