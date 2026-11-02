@@ -180,14 +180,15 @@ with st.sidebar:
         st.rerun()
 
 st.subheader(f"台股技術與籌碼分析 v{MODULE_VERSION}")
-
+####################################
 stock_id = str(st.session_state.stock_id).strip()
 if not stock_id:
     stock_id = "2330"
 st.session_state.stock_id = stock_id
-st.session_state.stock_input_box = stock_id
+# 移除 st.session_state.stock_input_box = stock_id，避免 Widget 實例化後被重複指派的報錯
 
 hist_records = load_stock_history()
+#################################################
 hist_codes = [str(item.get("code")).strip() for item in hist_records if item.get("code")]
 
 if stock_id not in hist_codes:
