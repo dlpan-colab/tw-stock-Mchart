@@ -21,6 +21,18 @@ try:
 except ImportError:
     st = None
 
+# 【新增】：在模組頂部（主執行緒）預先讀取金鑰，避開 Streamlit 背景執行緒無法讀取 secrets 的問題
+_DRIVE_SECRETS = None
+_FOLDER_ID = None
+
+try:
+    if st and hasattr(st, "secrets"):
+        if "gcp_service_account" in st.secrets:
+            _DRIVE_SECRETS = dict(st.secrets["gcp_service_account"])
+        if "FOLDER_ID" in st.secrets:
+            _FOLDER_ID = st.secrets["FOLDER_ID"]
+except Exception as e:
+    logger.warning(f"預先讀取 secrets 失敗: {e}")
 
 class GoogleDriveSync:
     def __init__(self):
@@ -29,11 +41,8 @@ class GoogleDriveSync:
         self._init_service()
 
     def _init_service(self):
-        # 1. 取得 Folder ID
-        if st and hasattr(st, "secrets") and "FOLDER_ID" in st.secrets:
-            self.folder_id = st.secrets["FOLDER_ID"]
-        else:
-            self.folder_id = os.environ.get("FOLDER_ID", "1lzC9_maXqA1BMBUMBkft8wDaLQIv2GI_")
+        # 1. 取得 Folder ID (改從預讀的全域變數提取)
+        self.folder_id = _FOLDER_ID or os.environ.get("FOLDER_ID", "1lzC9_maXqA1BMBUMBkft8wDaLQIv2GI_")
 
         # 2. 建立 Google Drive API Service
         try:
@@ -41,16 +50,17 @@ class GoogleDriveSync:
             from googleapiclient.discovery import build
 
             creds = None
-            if st and hasattr(st, "secrets") and "gcp_service_account" in st.secrets:
-                key_dict = dict(st.secrets["gcp_service_account"])
+            if _DRIVE_SECRETS:
+                key_dict = _DRIVE_SECRETS.copy()
                 if "private_key" in key_dict:
                     key_dict["private_key"] = key_dict["private_key"].replace("\\n", "\n")
                 creds = service_account.Credentials.from_service_account_info(
-                    key_dict,
+                    key_dict, 
                     scopes=["https://www.googleapis.com/auth/drive"]
                 )
-
+            
             if creds:
+                # 每次呼叫都建立全新且獨立的 service，確保執行緒安全不當機
                 self.service = build("drive", "v3", credentials=creds, cache_discovery=False)
                 logger.info("Google Drive 服務帳號驗證成功。")
             else:
@@ -66,12 +76,16 @@ class GoogleDriveSync:
             # 檔名相容：例如 data_1303.db 或 1303.db 皆能命中
             alt_name = filename.replace("data_", "") if filename.startswith("data_") else f"data_{filename}"
             q = f"(name = '{filename}' or name = '{alt_name}') and '{self.folder_id}' in parents and trashed = false"
-            res = self.service.files().list(q=q, fields="files(id, name)", spaces="drive").execute()
-
+            res = self.service.files().list(
+                q=q,
+                fields="files(id, name)",
+                spaces="drive"
+            ).execute()
+            
             # 防禦型態非 dict 的異常狀況
             if isinstance(res, str):
                 res = json.loads(res)
-
+            
             files = res.get("files", []) if isinstance(res, dict) else []
             if files:
                 return files[0]["id"]
@@ -84,15 +98,18 @@ class GoogleDriveSync:
         """從 Google Drive 下載檔案覆蓋至 local_path"""
         if not self.service:
             return False
+        
         local_path = Path(local_path)
         filename = local_path.name
         file_id = self._find_file_id(filename)
+        
         if not file_id:
             return False
-
+            
         try:
             from googleapiclient.http import MediaIoBaseDownload
             request = self.service.files().get_media(fileId=file_id)
+            
             local_path.parent.mkdir(parents=True, exist_ok=True)
             with open(local_path, "wb") as f:
                 downloader = MediaIoBaseDownload(f, request)
@@ -109,17 +126,18 @@ class GoogleDriveSync:
         """將本地檔案上傳/覆蓋至 Google Drive"""
         if not self.service or not self.folder_id:
             return False
+            
         local_path = Path(local_path)
         if not local_path.exists():
             return False
-
+            
         filename = local_path.name
         file_id = self._find_file_id(filename)
-
+        
         try:
             from googleapiclient.http import MediaFileUpload
             media = MediaFileUpload(str(local_path), resumable=True)
-
+            
             if file_id:
                 self.service.files().update(
                     fileId=file_id,
@@ -154,12 +172,6 @@ class GoogleDriveSync:
         except Exception as e:
             logger.error(f"刪除雲端檔案 {filename} 失敗: {e}")
             return False
-
-
-# 全域實例
-# cloud_sync_manager = GoogleDriveSync()
-# drive_sync = cloud_sync_manager
-
 
 # 模組級轉接函式：相容 storage.py 的呼叫介面
 def pull_file(remote_name: str, local_path: str) -> bool:
