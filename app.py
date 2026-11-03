@@ -1,6 +1,6 @@
 """
 app.py - 主應用程式介面與生命週期控制
-版本: 202611032145
+版本: 202611032215
 """
 
 import time
@@ -8,7 +8,7 @@ import streamlit as st
 import streamlit.components.v1 as components
 import cloud_sync
 
-MODULE_VERSION = "202611032145"
+MODULE_VERSION = "202611032215"
 
 from storage import (
     load_stock_history,
@@ -17,7 +17,7 @@ from storage import (
     remove_stocks_from_history,
     update_stock_name_only,
     get_stock_chinese_name,
-    repair_margin_short_data
+    clear_recent_margin_data
 )
 from chart_builder import build_split_figures
 from frontend import get_legend_html, get_component_html
@@ -173,11 +173,14 @@ with st.sidebar:
             st.rerun()
 
     st.markdown("---")
-    if st.button("🛠️ 執行資料庫資券校正", use_container_width=True):
-        with st.spinner("正在掃描並校正資料庫資券數值..."):
-            repair_msg = repair_margin_short_data()
-        st.sidebar.success(repair_msg)
-        time.sleep(1.2)
+    st.subheader("資券維護")
+    refetch_weeks = st.number_input("重抓週數", min_value=1, max_value=24, value=2, step=1)
+    if st.button("🛠️ 清除並重抓近N週資券", use_container_width=True):
+        cur_code = str(st.session_state.stock_id).strip()
+        with st.spinner(f"正在清除 {cur_code} 近 {refetch_weeks} 週資券紀錄..."):
+            clear_msg = clear_recent_margin_data(cur_code, weeks=int(refetch_weeks))
+        st.sidebar.success(clear_msg)
+        time.sleep(1.0)
         st.rerun()
 
 
