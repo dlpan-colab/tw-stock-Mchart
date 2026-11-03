@@ -1,6 +1,6 @@
 """
 app.py - 主應用程式介面與生命週期控制
-版本: 202611032245
+版本: 202611032300
 """
 
 import time
@@ -8,7 +8,7 @@ import streamlit as st
 import streamlit.components.v1 as components
 import cloud_sync
 
-MODULE_VERSION = "202611032245"
+MODULE_VERSION = "202611032300"
 
 from storage import (
     load_stock_history,
@@ -69,15 +69,13 @@ if "confirm_clear_all" not in st.session_state:
     st.session_state.confirm_clear_all = False
 if "prev_selected_history" not in st.session_state:
     st.session_state.prev_selected_history = []
-if "trigger_promote" not in st.session_state:
-    st.session_state.trigger_promote = False
 
 
 def on_stock_input_change():
     val = st.session_state.stock_input_box.strip()
     if val:
         st.session_state.stock_id = val
-        st.session_state.trigger_promote = True
+        save_stock_history(val)
 
 
 with st.sidebar:
@@ -95,14 +93,15 @@ with st.sidebar:
                 key="history_multiselect"
             )
 
-            # 偵測最新勾選的項目：同步更新股票代號並標記置頂
+            # 偵測最新勾選的項目：同步置頂至第一位並立即更新輸入框
             newly_added = [item for item in selected_history if item not in st.session_state.prev_selected_history]
             if newly_added:
                 latest_sel_code = newly_added[-1].split()[0]
                 if latest_sel_code != st.session_state.stock_id:
                     st.session_state.stock_id = latest_sel_code
+                    st.session_state.stock_input_box = latest_sel_code
                     st.session_state.prev_selected_history = selected_history
-                    st.session_state.trigger_promote = True
+                    save_stock_history(latest_sel_code)
                     st.rerun()
             st.session_state.prev_selected_history = selected_history
 
@@ -128,6 +127,7 @@ with st.sidebar:
             if st.button("確認全刪", key="btn_confirm_delete_all", use_container_width=True):
                 clear_stock_history()
                 st.session_state.stock_id = "2330"
+                st.session_state.stock_input_box = "2330"
                 st.session_state.confirm_clear_all = False
                 st.session_state.prev_selected_history = []
                 st.rerun()
@@ -174,7 +174,7 @@ with st.sidebar:
         input_code = st.session_state.stock_input_box.strip()
         if input_code:
             st.session_state.stock_id = input_code
-            st.session_state.trigger_promote = True
+            save_stock_history(input_code)
             st.rerun()
 
     st.markdown("---")
@@ -214,22 +214,24 @@ else:
 
 curr_idx = active_nav_codes.index(stock_id) if stock_id in active_nav_codes else 0
 
-# 頂部：上一檔 / 下一檔 功能列（標記 trigger_promote = False 保留原清單排序）
+# 頂部：上一檔 / 下一檔 功能列（保持原清單順序不變）
 st.markdown('<div class="nav-btn-container">', unsafe_allow_html=True)
 top_c1, top_c2 = st.columns(2)
 with top_c1:
     if st.button("◀ 上一檔", key="btn_top_prev", use_container_width=True):
         if len(active_nav_codes) > 1:
             prev_idx = (curr_idx - 1) % len(active_nav_codes)
-            st.session_state.stock_id = active_nav_codes[prev_idx]
-            st.session_state.trigger_promote = False
+            prev_code = active_nav_codes[prev_idx]
+            st.session_state.stock_id = prev_code
+            st.session_state.stock_input_box = prev_code
             st.rerun()
 with top_c2:
     if st.button("下一檔 ▶", key="btn_top_next", use_container_width=True):
         if len(active_nav_codes) > 1:
             next_idx = (curr_idx + 1) % len(active_nav_codes)
-            st.session_state.stock_id = active_nav_codes[next_idx]
-            st.session_state.trigger_promote = False
+            next_code = active_nav_codes[next_idx]
+            st.session_state.stock_id = next_code
+            st.session_state.stock_input_box = next_code
             st.rerun()
 st.markdown('</div>', unsafe_allow_html=True)
 
@@ -247,14 +249,8 @@ if fig_top is None or fig_btm is None or df is None or df.empty:
     st.error(f"無法取得股票代號 {stock_id} 之歷史行情資料，請確認網路連線或稍後點擊查詢重試。")
     st.stop()
 
-# 繪圖成功後：
-# 若 trigger_promote 為 True（手動鍵入/查詢/下拉勾選）或不在清單中，強制置頂至第一位；
-# 若為上一檔/下一檔切換，僅更新名稱，維持歷史清單原始排序。
-if st.session_state.trigger_promote or stock_id not in hist_codes:
-    save_stock_history(stock_id, c_name)
-    st.session_state.trigger_promote = False
-else:
-    update_stock_name_only(stock_id, c_name)
+# 繪圖成功後僅針對目前標的更新中文名稱，不更動由切換觸發的清單順序
+update_stock_name_only(stock_id, c_name)
 
 top_height = 420 if is_mobile else 460
 btm_height = 1180 if is_mobile else 1220
@@ -274,21 +270,23 @@ html_content = get_component_html(
 total_h = 1980 if is_mobile else 1880
 components.html(html_content, height=total_h, scrolling=False)
 
-# 底部：上一檔 / 下一檔 功能列（標記 trigger_promote = False 保留原清單排序）
+# 底部：上一檔 / 下一檔 功能列（保持原清單順序不變）
 st.markdown('<div class="nav-btn-container">', unsafe_allow_html=True)
 btm_c1, btm_c2 = st.columns(2)
 with btm_c1:
     if st.button("◀ 上一檔", key="btn_btm_prev", use_container_width=True):
         if len(active_nav_codes) > 1:
             prev_idx = (curr_idx - 1) % len(active_nav_codes)
-            st.session_state.stock_id = active_nav_codes[prev_idx]
-            st.session_state.trigger_promote = False
+            prev_code = active_nav_codes[prev_idx]
+            st.session_state.stock_id = prev_code
+            st.session_state.stock_input_box = prev_code
             st.rerun()
 with btm_c2:
     if st.button("下一檔 ▶", key="btn_btm_next", use_container_width=True):
         if len(active_nav_codes) > 1:
             next_idx = (curr_idx + 1) % len(active_nav_codes)
-            st.session_state.stock_id = active_nav_codes[next_idx]
-            st.session_state.trigger_promote = False
+            next_code = active_nav_codes[next_idx]
+            st.session_state.stock_id = next_code
+            st.session_state.stock_input_box = next_code
             st.rerun()
 st.markdown('</div>', unsafe_allow_html=True)
