@@ -3,6 +3,7 @@ app.py - 主應用程式介面與生命週期控制
 版本: 202611032145
 """
 
+import time
 import streamlit as st
 import streamlit.components.v1 as components
 import cloud_sync
