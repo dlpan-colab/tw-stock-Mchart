@@ -1,13 +1,13 @@
 """
 app.py - 主應用程式介面與生命週期控制
-版本: 202611022230
+版本: 202611032145
 """
 
 import streamlit as st
 import streamlit.components.v1 as components
 import cloud_sync
 
-MODULE_VERSION = "202611022230"
+MODULE_VERSION = "202611032145"
 
 from storage import (
     load_stock_history,
@@ -15,7 +15,8 @@ from storage import (
     clear_stock_history,
     remove_stocks_from_history,
     update_stock_name_only,
-    get_stock_chinese_name
+    get_stock_chinese_name,
+    repair_margin_short_data
 )
 from chart_builder import build_split_figures
 from frontend import get_legend_html, get_component_html
@@ -31,6 +32,7 @@ st.markdown("""
 <style>
 .block-container {padding-top: 3.5rem; padding-bottom: 0rem; padding-left: 1rem; padding-right: 1rem;}
 footer {visibility: hidden;}
+
 /* 強制按鈕容器在所有螢幕尺寸（包括手機版）維持橫向並排各佔 50% */
 .nav-btn-container [data-testid="stHorizontalBlock"] {
     display: flex !important;
@@ -67,17 +69,18 @@ if "confirm_clear_all" not in st.session_state:
 if "prev_selected_history" not in st.session_state:
     st.session_state.prev_selected_history = []
 
+
 def on_stock_input_change():
     val = st.session_state.stock_input_box.strip()
     if val:
         st.session_state.stock_id = val
 
+
 with st.sidebar:
     st.header("參數設定")
-    
     history_records = load_stock_history()
     history_codes = [str(item.get("code")).strip() for item in history_records if item.get("code")]
-    
+
     with st.expander("查詢歷史紀錄", expanded=False):
         if history_codes:
             history_display = [f"{h.get('code')} {h.get('name', '')}".strip() for h in history_records]
@@ -87,7 +90,7 @@ with st.sidebar:
                 default=[],
                 key="history_multiselect"
             )
-            
+
             # 偵測最新勾選的項目：同步更新股票代號（不強制覆寫輸入框，避免當機）
             newly_added = [item for item in selected_history if item not in st.session_state.prev_selected_history]
             if newly_added:
@@ -97,7 +100,7 @@ with st.sidebar:
                     st.session_state.prev_selected_history = selected_history
                     st.rerun()
             st.session_state.prev_selected_history = selected_history
-            
+
             # 清除按鈕邏輯
             if st.button("清除歷史記錄", use_container_width=True):
                 if selected_history:
@@ -129,13 +132,13 @@ with st.sidebar:
                 st.rerun()
 
     st.text_input("股票代號 (直接鍵入)", key="stock_input_box", on_change=on_stock_input_change)
-    
+
     st.session_state.period = st.selectbox(
         "下載區間",
         ["6mo", "1y", "2y", "5y", "max"],
         index=1
     )
-    
+
     mode_switch = st.selectbox(
         "模式切換",
         ["手機版 (Mobile) - 預設20日", "電腦版 (Desktop) - 預設60日"],
@@ -143,7 +146,7 @@ with st.sidebar:
     )
     is_mobile = "手機版" in mode_switch
     default_days = 20 if is_mobile else 60
-    
+
     st.session_state.disp_days = st.number_input(
         "顯示日數",
         min_value=10,
@@ -151,7 +154,7 @@ with st.sidebar:
         value=default_days,
         step=5
     )
-    
+
     use_target_date = st.checkbox("指定基準日 (復盤模式)")
     target_date_val = None
     if use_target_date:
@@ -168,6 +171,15 @@ with st.sidebar:
             st.session_state.stock_id = input_code
             st.rerun()
 
+    st.markdown("---")
+    if st.button("🛠️ 執行資料庫資券校正", use_container_width=True):
+        with st.spinner("正在掃描並校正資料庫資券數值..."):
+            repair_msg = repair_margin_short_data()
+        st.sidebar.success(repair_msg)
+        time.sleep(1.2)
+        st.rerun()
+
+
 # 取得金鑰與連線狀態燈號 (0: ⚪灰燈, 1: 🔵藍燈, 2: 🟡黃燈)
 auth_status = cloud_sync.get_auth_status()
 if auth_status == 2:
@@ -182,11 +194,10 @@ st.markdown(f"## 台股技術與籌碼分析 v{MODULE_VERSION} {status_light}")
 stock_id = str(st.session_state.stock_id).strip()
 if not stock_id:
     stock_id = "2330"
-    st.session_state.stock_id = stock_id
+st.session_state.stock_id = stock_id
 
 hist_records = load_stock_history()
 hist_codes = [str(item.get("code")).strip() for item in hist_records if item.get("code")]
-
 if stock_id not in hist_codes:
     active_nav_codes = [stock_id] + hist_codes
 else:
@@ -194,7 +205,7 @@ else:
 
 curr_idx = active_nav_codes.index(stock_id) if stock_id in active_nav_codes else 0
 
-# 頂部：上一檔 / 下一檔 功能列（常駐顯示並鎖定橫排，已拔除會當機的 input_box 覆寫）
+# 頂部：上一檔 / 下一檔 功能列
 st.markdown('<div class="nav-btn-container">', unsafe_allow_html=True)
 top_c1, top_c2 = st.columns(2)
 with top_c1:
@@ -249,7 +260,7 @@ html_content = get_component_html(
 total_h = 1980 if is_mobile else 1880
 components.html(html_content, height=total_h, scrolling=False)
 
-# 底部：上一檔 / 下一檔 功能列（常駐顯示並鎖定橫排，已拔除會當機的 input_box 覆寫）
+# 底部：上一檔 / 下一檔 功能列
 st.markdown('<div class="nav-btn-container">', unsafe_allow_html=True)
 btm_c1, btm_c2 = st.columns(2)
 with btm_c1:
