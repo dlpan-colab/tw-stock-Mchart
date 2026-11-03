@@ -1,10 +1,10 @@
 """
 storage.py - 本地 SQLite 資料庫與股票歷史紀錄管理器
-版本: 202611032145
+版本: 202611032205
 """
 
 MODULE_NAME = "storage"
-MODULE_VERSION = "202611032145"
+MODULE_VERSION = "202611032205"
 
 import os
 import io
@@ -14,6 +14,7 @@ import sqlite3
 import time
 import requests
 from bs4 import BeautifulSoup
+from datetime import datetime, timedelta
 import pandas as pd
 
 STORAGE_DIR = "."
@@ -277,59 +278,37 @@ def remove_stocks_from_history(target_codes: list) -> list:
     return new_history
 
 
-def repair_margin_short_data() -> str:
+def clear_recent_margin_data(pure_code: str, weeks: int = 2) -> str:
     """
-    掃描本地所有 data_*.db 資料庫中的 margin_short 資料表，
-    自動偵測小於 5.0（誤存為千張）的異常列，將其乘回 1000 恢復為張數，並推回雲端。
+    刪除指定股票最近 N 週的 margin_short 資料，並同步推回 Google Drive。
+    後續重新查詢時，系統將自動向官方 API 重新抓取乾淨正確的資券數據。
     """
-    db_files = glob.glob(os.path.join(STORAGE_DIR, "data_*.db"))
-    fixed_count = 0
-    total_db_repaired = 0
+    pure_code = str(pure_code).strip()
+    db_name = f"data_{pure_code}.db"
+    db_path = os.path.join(STORAGE_DIR, db_name)
+    sync_db_pull(pure_code)
 
-    for db_path in db_files:
-        filename = os.path.basename(db_path)
-        pure_code = filename.replace("data_", "").replace(".db", "")
-        changed = False
+    if not os.path.exists(db_path):
+        return f"查無代號 {pure_code} 之本地資料庫。"
 
-        try:
-            with sqlite3.connect(db_path) as conn:
-                cur = conn.cursor()
-                cur.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='margin_short'")
-                if not cur.fetchone():
-                    continue
+    cutoff_date = (datetime.now() - timedelta(days=weeks * 7)).strftime('%Y-%m-%d')
+    deleted_rows = 0
 
-                cur.execute("SELECT date, margin_diff, short_diff, margin_bal, short_bal FROM margin_short")
-                rows = cur.fetchall()
-                updates = []
+    try:
+        with sqlite3.connect(db_path) as conn:
+            cur = conn.cursor()
+            cur.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='margin_short'")
+            if not cur.fetchone():
+                return f"代號 {pure_code} 尚無資券資料表。"
 
-                for r in rows:
-                    d, md, sd, mb, sb = r[0], r[1] or 0.0, r[2] or 0.0, r[3] or 0.0, r[4] or 0.0
-                    # 特徵偵測：數值非 0 且絕對值小於 5.0，或餘額大於 0 且小於 100.0
-                    is_corrupted = (0 < abs(md) < 5.0) or (0 < abs(sd) < 5.0) or (0 < mb < 100.0)
-                    if is_corrupted:
-                        new_md = round(md * 1000.0)
-                        new_sd = round(sd * 1000.0)
-                        new_mb = round(mb * 1000.0)
-                        new_sb = round(sb * 1000.0)
-                        updates.append((new_md, new_sd, new_mb, new_sb, d))
+            cur.execute("DELETE FROM margin_short WHERE date >= ?", (cutoff_date,))
+            deleted_rows = cur.rowcount
+            conn.commit()
 
-                if updates:
-                    cur.executemany("""
-                        UPDATE margin_short 
-                        SET margin_diff = ?, short_diff = ?, margin_bal = ?, short_bal = ? 
-                        WHERE date = ?
-                    """, updates)
-                    conn.commit()
-                    changed = True
-                    fixed_count += len(updates)
-                    total_db_repaired += 1
-
-            if changed:
-                sync_db_push(pure_code)
-        except Exception as e:
-            print(f"校正 {db_path} 失敗: {e}")
-
-    return f"資券資料校正完成：共檢測修復 {total_db_repaired} 個資料庫，共修訂 {fixed_count} 筆資料。"
+        sync_db_push(pure_code)
+        return f"已成功清除 {pure_code} 自 {cutoff_date} 起（近 {weeks} 週）共 {deleted_rows} 筆資券資料，重新載入將自動重抓。"
+    except Exception as e:
+        return f"清除資券資料失敗: {e}"
 
 
 class StockChipStorage:
