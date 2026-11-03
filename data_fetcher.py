@@ -1,10 +1,10 @@
 """
 data_fetcher.py - 外部資料抓取與增量同步模組
-版本: 202611032145
+版本: 202611032230
 """
 
 MODULE_NAME = "data_fetcher"
-MODULE_VERSION = "202611032145"
+MODULE_VERSION = "202611032230"
 
 import os
 import re
@@ -28,8 +28,8 @@ def fetch_stock_name(pure_code: str) -> str:
 
 def _detect_market_suffix(pure_code: str, raw_ticker: str) -> list:
     """
-    依據台股名稱快取字典 (tw_stock_names.json) 精確鎖定市場別 (.TW 或 .TWO)，
-    若為上櫃僅查 .TWO，若為上市僅查 .TW，根除盲試與 delisted 警告。
+    依據輸入後綴或台股名稱快取字典 (tw_stock_names.json) 鎖定市場別 (.TW 或 .TWO)。
+    若無明確快取，則預設優先查詢上市 (.TW)，再備援查詢上櫃 (.TWO)。
     """
     raw_upper = str(raw_ticker).strip().upper()
     if raw_upper.endswith(".TW"):
@@ -44,20 +44,18 @@ def _detect_market_suffix(pure_code: str, raw_ticker: str) -> list:
         if isinstance(meta, dict):
             mkt = meta.get('market', '')
             if '櫃' in mkt or 'TWO' in mkt or 'OTC' in mkt:
-                return ['.TWO']
+                return ['.TWO', '.TW']
             if '市' in mkt or 'TW' in mkt:
-                return ['.TW']
+                return ['.TW', '.TWO']
         elif isinstance(meta, str):
             if '上櫃' in meta:
-                return ['.TWO']
+                return ['.TWO', '.TW']
             if '上市' in meta:
-                return ['.TW']
+                return ['.TW', '.TWO']
     except Exception:
         pass
 
-    if len(pure_code) == 4 and pure_code[0] in ['3', '4', '5', '6', '8']:
-        return ['.TWO']
-    return ['.TW']
+    return ['.TW', '.TWO']
 
 
 def fetch_stock_daily_k(raw_ticker: str, period: str = "1y", base_date: str = None):
@@ -101,10 +99,9 @@ def fetch_stock_daily_k(raw_ticker: str, period: str = "1y", base_date: str = No
         target_dt -= timedelta(days=1)
     while target_dt.weekday() > 4:
         target_dt -= timedelta(days=1)
-
     target_date = target_dt.date()
-    latest_date = df.index[-1].date()
 
+    latest_date = df.index[-1].date()
     if latest_date < target_date:
         try:
             fast_info = ticker_obj.fast_info
@@ -142,6 +139,7 @@ def sync_chip_data(pure_code: str, df_dates, status_placeholder=None):
     target_start_date = (df_dates[0] - timedelta(days=5)).strftime('%Y-%m-%d')
     inst_query_start = (pd.to_datetime(last_inst_date) + timedelta(days=1)).strftime('%Y-%m-%d') if last_inst_date else target_start_date
     margin_query_start = (pd.to_datetime(last_margin_date) + timedelta(days=1)).strftime('%Y-%m-%d') if last_margin_date else target_start_date
+
     latest_trade_date_str = df_dates[-1].strftime('%Y-%m-%d')
 
     # 1. 法人買賣超同步
@@ -171,7 +169,12 @@ def sync_chip_data(pure_code: str, df_dates, status_placeholder=None):
 
                     all_dates = sorted(list(set(idf['date'])))
                     for d in all_dates:
-                        inst_records.append((d, float(f_s.get(d, 0.0)), float(t_s.get(d, 0.0)), float(d_s.get(d, 0.0))))
+                        inst_records.append((
+                            d,
+                            float(f_s.get(d, 0.0)),
+                            float(t_s.get(d, 0.0)),
+                            float(d_s.get(d, 0.0))
+                        ))
         except Exception:
             pass
 
@@ -250,17 +253,20 @@ def sync_chip_data(pure_code: str, df_dates, status_placeholder=None):
             action = form.get('action', '') if form else ''
             target_url = f"https://www.tdcc.com.tw{action}" if action.startswith('/') else (action if action.startswith('http') else f"https://www.tdcc.com.tw/portal/zh/smWeb/{action}")
 
-            available_dates = [o.get('value').strip() for o in soup_home.find_all('option') if o.get('value') and o.get('value').strip().isdigit() and len(o.get('value').strip()) == 8 and o.get('value').strip().startswith('20')]
-
+            available_dates = [
+                o.get('value').strip() for o in soup_home.find_all('option')
+                if o.get('value') and o.get('value').strip().isdigit() and len(o.get('value').strip()) == 8 and o.get('value').strip().startswith('20')
+            ]
             today = datetime.today()
             target_dates = list(available_dates)
             for i in range(16):
                 d = today - timedelta(days=today.weekday() + 7 * i)
                 target_dates.append((d + timedelta(days=4)).strftime('%Y%m%d'))
                 target_dates.append((d + timedelta(days=3)).strftime('%Y%m%d'))
-            target_dates = sorted(list(set(target_dates)), reverse=True)
 
+            target_dates = sorted(list(set(target_dates)), reverse=True)
             missing_dates = [d for d in target_dates if d not in existing_weeks][:20]
+
             h_rec = []
             for d_str in missing_dates:
                 for attempt in range(2):
@@ -288,7 +294,7 @@ def sync_chip_data(pure_code: str, df_dates, status_placeholder=None):
                                     h_rec.append((d_fmt, int(row[lvl_col]), float(str(row[pct_col]).replace('%', '').replace(',', ''))))
                                 except ValueError:
                                     pass
-                        break
+                            break
                     except Exception:
                         time.sleep(0.3)
                         continue
