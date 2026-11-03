@@ -1,10 +1,10 @@
 """
 storage.py - 本地 SQLite 資料庫與股票歷史紀錄管理器
-版本: 202611022350
+版本: 202611030900
 """
 
 MODULE_NAME = "storage"
-MODULE_VERSION = "202611022350"
+MODULE_VERSION = "202611030900"
 
 import os
 import io
@@ -314,6 +314,7 @@ class StockChipStorage:
 
     def save_institutional_data(self, records):
         if not records:
+            sync_db_push(self.pure_code)
             return
         with sqlite3.connect(self.db_path) as conn:
             cur = conn.cursor()
@@ -323,6 +324,7 @@ class StockChipStorage:
 
     def save_margin_data(self, records):
         if not records:
+            sync_db_push(self.pure_code)
             return
         with sqlite3.connect(self.db_path) as conn:
             cur = conn.cursor()
@@ -332,6 +334,7 @@ class StockChipStorage:
 
     def save_holding_data(self, records):
         if not records:
+            sync_db_push(self.pure_code)
             return
         with sqlite3.connect(self.db_path) as conn:
             cur = conn.cursor()
