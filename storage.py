@@ -1,14 +1,15 @@
 """
 storage.py - 本地 SQLite 資料庫與股票歷史紀錄管理器
-版本: 202611030900
+版本: 202611032145
 """
 
 MODULE_NAME = "storage"
-MODULE_VERSION = "202611030900"
+MODULE_VERSION = "202611032145"
 
 import os
 import io
 import json
+import glob
 import sqlite3
 import time
 import requests
@@ -20,18 +21,19 @@ HISTORY_FILE = os.path.join(STORAGE_DIR, "stock_history.json")
 NAMES_CACHE_FILE = os.path.join(STORAGE_DIR, "tw_stock_names.json")
 
 COMMON_STOCK_NAMES = {
-    "1101": "台泥", "1102": "亞泥", "1104": "環泥", "1216": "統一", 
-    "1301": "台塑", "1303": "南亞", "1312": "國喬", "1326": "台化", 
-    "1504": "東元", "2002": "中鋼", "2105": "正新", "2303": "聯電", 
-    "2308": "台達電", "2312": "金寶", "2317": "鴻海", "2324": "仁寶", 
-    "2327": "國巨", "2330": "台積電", "2374": "佳能", "2382": "廣達", 
-    "2454": "聯發科", "2478": "大毅", "2492": "華新科", "2609": "陽明", 
-    "2615": "萬海", "3008": "大立光", "3022": "威強電", "3088": "艾訊", 
-    "3231": "緯創", "3481": "群創", "3653": "健策", "3661": "世芯-KY", 
-    "3718": "中光電投控", "4526": "東台", "4991": "環宇-KY", "5439": "高技", 
-    "6191": "精成科", "6217": "中探針", "6234": "高僑", "6425": "易發", 
+    "1101": "台泥", "1102": "亞泥", "1104": "環泥", "1216": "統一",
+    "1301": "台塑", "1303": "南亞", "1312": "國喬", "1326": "台化",
+    "1504": "東元", "2002": "中鋼", "2105": "正新", "2303": "聯電",
+    "2308": "台達電", "2312": "金寶", "2317": "鴻海", "2324": "仁寶",
+    "2327": "國巨", "2330": "台積電", "2374": "佳能", "2382": "廣達",
+    "2454": "聯發科", "2478": "大毅", "2492": "華新科", "2609": "陽明",
+    "2615": "萬海", "3008": "大立光", "3022": "威強電", "3088": "艾訊",
+    "3231": "緯創", "3481": "群創", "3653": "健策", "3661": "世芯-KY",
+    "3718": "中光電投控", "4526": "東台", "4991": "環宇-KY", "5439": "高技",
+    "6191": "精成科", "6217": "中探針", "6234": "高僑", "6425": "易發",
     "6456": "GIS-KY", "6505": "台塑化", "8111": "立碁", "8131": "福懋科"
 }
+
 
 def _sync_cloud_pull():
     try:
@@ -41,6 +43,7 @@ def _sync_cloud_pull():
     except Exception as e:
         print(f"[CloudSync] Pull warning: {e}")
 
+
 def _sync_cloud_push():
     try:
         from cloud_sync import push_file
@@ -48,6 +51,7 @@ def _sync_cloud_push():
         push_file(NAMES_CACHE_FILE, "tw_stock_names.json")
     except Exception as e:
         print(f"[CloudSync] Push warning: {e}")
+
 
 def sync_db_pull(pure_code: str):
     try:
@@ -57,6 +61,7 @@ def sync_db_pull(pure_code: str):
         pull_file(db_name, local_path)
     except Exception as e:
         print(f"[CloudSync] DB pull warning for {pure_code}: {e}")
+
 
 def sync_db_push(pure_code: str):
     try:
@@ -68,6 +73,7 @@ def sync_db_push(pure_code: str):
     except Exception as e:
         print(f"[CloudSync] DB push warning for {pure_code}: {e}")
 
+
 def _load_name_cache() -> dict:
     try:
         if os.path.exists(NAMES_CACHE_FILE):
@@ -76,6 +82,7 @@ def _load_name_cache() -> dict:
     except Exception:
         pass
     return {}
+
 
 def _save_name_cache(code: str, name: str):
     code = str(code).strip()
@@ -92,6 +99,7 @@ def _save_name_cache(code: str, name: str):
     except Exception:
         pass
 
+
 def load_stock_names_dict() -> dict:
     cache = _load_name_cache()
     if not cache:
@@ -100,18 +108,20 @@ def load_stock_names_dict() -> dict:
     merged.update(cache)
     return merged
 
+
 def get_stock_chinese_name(pure_code: str) -> str:
     pure_code = str(pure_code).strip()
     if not pure_code:
         return ""
     if pure_code in COMMON_STOCK_NAMES:
         return COMMON_STOCK_NAMES[pure_code]
+
     cache = _load_name_cache()
     if pure_code in cache and cache[pure_code] and cache[pure_code] != pure_code:
         return cache[pure_code]
-        
+
     headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"}
-    
+
     # 1. TWSE ISIN 單筆查詢
     url_twse = f"https://isin.twse.com.tw/isin/single_main.jsp?owncode={pure_code}&stockname="
     for attempt in range(2):
@@ -130,7 +140,7 @@ def get_stock_chinese_name(pure_code: str) -> str:
             pass
         if attempt == 0:
             time.sleep(0.3)
-            
+
     # 2. TWSE 官方 OpenAPI 清單比對備援
     try:
         url_openapi = "https://openapi.twse.com.tw/v1/exchangeReport/BWIBBU_ALL"
@@ -148,7 +158,7 @@ def get_stock_chinese_name(pure_code: str) -> str:
                             return n
     except Exception:
         pass
-        
+
     # 3. TPEx 櫃買中心 API (上櫃股票)
     try:
         url_tpex = f"https://www.tpex.org.tw/web/stock/aftertrading/otc_quotes_no1430/stk_wn1430_result.php?l=zh-tw&stkno={pure_code}"
@@ -162,7 +172,7 @@ def get_stock_chinese_name(pure_code: str) -> str:
                     return c_name
     except Exception:
         pass
-        
+
     # 4. Yahoo Finance API 搜尋備援
     try:
         for suffix in [".TW", ".TWO"]:
@@ -179,8 +189,9 @@ def get_stock_chinese_name(pure_code: str) -> str:
                             return c_name
     except Exception:
         pass
-        
+
     return pure_code
+
 
 def load_stock_history():
     _sync_cloud_pull()
@@ -193,12 +204,14 @@ def load_stock_history():
             data = []
     if not isinstance(data, list):
         data = []
+
     for item in data:
         code = str(item.get("code", "")).strip()
         curr_name = str(item.get("name", "")).strip()
         if not curr_name or curr_name == code:
             item["name"] = get_stock_chinese_name(code)
     return data
+
 
 def save_stock_history(code: str, name: str = None):
     code = str(code).strip()
@@ -216,6 +229,7 @@ def save_stock_history(code: str, name: str = None):
     except Exception:
         pass
     return new_hist
+
 
 def update_stock_name_only(code: str, name: str):
     code = str(code).strip()
@@ -237,6 +251,7 @@ def update_stock_name_only(code: str, name: str):
         except Exception:
             pass
 
+
 def clear_stock_history():
     try:
         if os.path.exists(HISTORY_FILE):
@@ -247,6 +262,7 @@ def clear_stock_history():
     except Exception:
         pass
     return []
+
 
 def remove_stocks_from_history(target_codes: list) -> list:
     history = load_stock_history()
@@ -259,6 +275,62 @@ def remove_stocks_from_history(target_codes: list) -> list:
     except Exception:
         pass
     return new_history
+
+
+def repair_margin_short_data() -> str:
+    """
+    掃描本地所有 data_*.db 資料庫中的 margin_short 資料表，
+    自動偵測小於 5.0（誤存為千張）的異常列，將其乘回 1000 恢復為張數，並推回雲端。
+    """
+    db_files = glob.glob(os.path.join(STORAGE_DIR, "data_*.db"))
+    fixed_count = 0
+    total_db_repaired = 0
+
+    for db_path in db_files:
+        filename = os.path.basename(db_path)
+        pure_code = filename.replace("data_", "").replace(".db", "")
+        changed = False
+
+        try:
+            with sqlite3.connect(db_path) as conn:
+                cur = conn.cursor()
+                cur.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='margin_short'")
+                if not cur.fetchone():
+                    continue
+
+                cur.execute("SELECT date, margin_diff, short_diff, margin_bal, short_bal FROM margin_short")
+                rows = cur.fetchall()
+                updates = []
+
+                for r in rows:
+                    d, md, sd, mb, sb = r[0], r[1] or 0.0, r[2] or 0.0, r[3] or 0.0, r[4] or 0.0
+                    # 特徵偵測：數值非 0 且絕對值小於 5.0，或餘額大於 0 且小於 100.0
+                    is_corrupted = (0 < abs(md) < 5.0) or (0 < abs(sd) < 5.0) or (0 < mb < 100.0)
+                    if is_corrupted:
+                        new_md = round(md * 1000.0)
+                        new_sd = round(sd * 1000.0)
+                        new_mb = round(mb * 1000.0)
+                        new_sb = round(sb * 1000.0)
+                        updates.append((new_md, new_sd, new_mb, new_sb, d))
+
+                if updates:
+                    cur.executemany("""
+                        UPDATE margin_short 
+                        SET margin_diff = ?, short_diff = ?, margin_bal = ?, short_bal = ? 
+                        WHERE date = ?
+                    """, updates)
+                    conn.commit()
+                    changed = True
+                    fixed_count += len(updates)
+                    total_db_repaired += 1
+
+            if changed:
+                sync_db_push(pure_code)
+        except Exception as e:
+            print(f"校正 {db_path} 失敗: {e}")
+
+    return f"資券資料校正完成：共檢測修復 {total_db_repaired} 個資料庫，共修訂 {fixed_count} 筆資料。"
+
 
 class StockChipStorage:
     def __init__(self, pure_code: str):
