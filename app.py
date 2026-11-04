@@ -1,6 +1,6 @@
 """
 app.py - 主應用程式介面與生命週期控制
-版本: 202611042235
+版本: 202611042240
 """
 
 import time
@@ -8,7 +8,7 @@ import streamlit as st
 import streamlit.components.v1 as components
 import cloud_sync
 
-MODULE_VERSION = "202611042235"
+MODULE_VERSION = "202611042240"
 
 from storage import (
     load_stock_history,
@@ -28,32 +28,10 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# 透過強制 CSS 覆蓋 Streamlit 手機直向堆疊行為，將按鈕寬度縮減為 1/3 (約 75px) 並置中並排
 st.markdown("""
 <style>
 .block-container {padding-top: 3.5rem; padding-bottom: 0rem; padding-left: 1rem; padding-right: 1rem;}
 footer {visibility: hidden;}
-
-/* 強制主畫面水平按鈕列在同一行、置中，寬度縮為約 75px */
-[data-testid="stMainBlockContainer"] [data-testid="stHorizontalBlock"] {
-    display: flex !important;
-    flex-direction: row !important;
-    flex-wrap: nowrap !important;
-    justify-content: center !important;
-    align-items: center !important;
-    gap: 8px !important;
-}
-
-[data-testid="stMainBlockContainer"] [data-testid="stHorizontalBlock"] > [data-testid="column"] {
-    flex: 0 0 auto !important;
-    width: 75px !important;
-    min-width: 75px !important;
-}
-
-[data-testid="stMainBlockContainer"] [data-testid="stHorizontalBlock"] button {
-    padding: 2px 6px !important;
-    font-size: 13px !important;
-}
 </style>
 """, unsafe_allow_html=True)
 
@@ -222,16 +200,16 @@ else:
 
 curr_idx = active_nav_codes.index(stock_id) if stock_id in active_nav_codes else 0
 
-# 頂部：上一檔 / 下一檔 功能列
-top_c1, top_c2 = st.columns(2)
+# 頂部：上一檔 / 下一檔 功能列（2:1:1:2 比例居中縮寬為原本 1/3）
+_, top_c1, top_c2, _ = st.columns([2, 1, 1, 2], gap="small")
 with top_c1:
-    if st.button("◀ 上一檔", key="btn_top_prev", use_container_width=True):
+    if st.button("◀ 上一檔", key="btn_top_prev"):
         if len(active_nav_codes) > 1:
             prev_idx = (curr_idx - 1) % len(active_nav_codes)
             st.session_state.stock_id = active_nav_codes[prev_idx]
             st.rerun()
 with top_c2:
-    if st.button("下一檔 ▶", key="btn_top_next", use_container_width=True):
+    if st.button("下一檔 ▶", key="btn_top_next"):
         if len(active_nav_codes) > 1:
             next_idx = (curr_idx + 1) % len(active_nav_codes)
             st.session_state.stock_id = active_nav_codes[next_idx]
@@ -272,16 +250,16 @@ html_content = get_component_html(
 total_h = 1980 if is_mobile else 1880
 components.html(html_content, height=total_h, scrolling=False)
 
-# 底部：上一檔 / 下一檔 功能列
-btm_c1, btm_c2 = st.columns(2)
+# 底部：上一檔 / 下一檔 功能列（2:1:1:2 比例居中縮寬為原本 1/3）
+_, btm_c1, btm_c2, _ = st.columns([2, 1, 1, 2], gap="small")
 with btm_c1:
-    if st.button("◀ 上一檔", key="btn_btm_prev", use_container_width=True):
+    if st.button("◀ 上一檔", key="btn_btm_prev"):
         if len(active_nav_codes) > 1:
             prev_idx = (curr_idx - 1) % len(active_nav_codes)
             st.session_state.stock_id = active_nav_codes[prev_idx]
             st.rerun()
 with btm_c2:
-    if st.button("下一檔 ▶", key="btn_btm_next", use_container_width=True):
+    if st.button("下一檔 ▶", key="btn_btm_next"):
         if len(active_nav_codes) > 1:
             next_idx = (curr_idx + 1) % len(active_nav_codes)
             st.session_state.stock_id = active_nav_codes[next_idx]
