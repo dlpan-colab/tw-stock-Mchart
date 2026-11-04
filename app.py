@@ -1,6 +1,6 @@
 """
 app.py - 主應用程式介面與生命週期控制
-版本: 202611042240
+版本: 202611042245
 """
 
 import time
@@ -8,7 +8,7 @@ import streamlit as st
 import streamlit.components.v1 as components
 import cloud_sync
 
-MODULE_VERSION = "202611042240"
+MODULE_VERSION = "202611042245"
 
 from storage import (
     load_stock_history,
@@ -28,10 +28,38 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
+# 徹底鎖死手機直向並排，並將按鈕寬度縮為原本 1/3 (約 65px)
 st.markdown("""
 <style>
 .block-container {padding-top: 3.5rem; padding-bottom: 0rem; padding-left: 1rem; padding-right: 1rem;}
 footer {visibility: hidden;}
+
+/* 強制所有水平區塊絕不折行、橫向置中 */
+[data-testid="stHorizontalBlock"] {
+    display: flex !important;
+    flex-direction: row !important;
+    flex-wrap: nowrap !important;
+    justify-content: center !important;
+    align-items: center !important;
+    gap: 8px !important;
+}
+
+/* 包含按鈕的欄位寬度鎖死為 65px (原寬度的 1/3) */
+[data-testid="stHorizontalBlock"] > div {
+    flex: 0 0 65px !important;
+    width: 65px !important;
+    min-width: 65px !important;
+    max-width: 65px !important;
+}
+
+/* 按鈕本體樣式收縮為緊湊膠囊型 */
+[data-testid="stHorizontalBlock"] button {
+    width: 100% !important;
+    min-width: 65px !important;
+    padding: 2px 4px !important;
+    font-size: 12px !important;
+    white-space: nowrap !important;
+}
 </style>
 """, unsafe_allow_html=True)
 
@@ -200,8 +228,8 @@ else:
 
 curr_idx = active_nav_codes.index(stock_id) if stock_id in active_nav_codes else 0
 
-# 頂部：上一檔 / 下一檔 功能列（2:1:1:2 比例居中縮寬為原本 1/3）
-_, top_c1, top_c2, _ = st.columns([2, 1, 1, 2], gap="small")
+# 頂部：上一檔 / 下一檔 功能列（維持雙欄並透過 CSS 鎖死並排＋1/3寬度）
+top_c1, top_c2 = st.columns(2)
 with top_c1:
     if st.button("◀ 上一檔", key="btn_top_prev"):
         if len(active_nav_codes) > 1:
@@ -250,8 +278,8 @@ html_content = get_component_html(
 total_h = 1980 if is_mobile else 1880
 components.html(html_content, height=total_h, scrolling=False)
 
-# 底部：上一檔 / 下一檔 功能列（2:1:1:2 比例居中縮寬為原本 1/3）
-_, btm_c1, btm_c2, _ = st.columns([2, 1, 1, 2], gap="small")
+# 底部：上一檔 / 下一檔 功能列（維持雙欄並透過 CSS 鎖死並排＋1/3寬度）
+btm_c1, btm_c2 = st.columns(2)
 with btm_c1:
     if st.button("◀ 上一檔", key="btn_btm_prev"):
         if len(active_nav_codes) > 1:
