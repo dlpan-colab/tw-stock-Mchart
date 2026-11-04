@@ -1,6 +1,6 @@
 """
 app.py - 主應用程式介面與生命週期控制
-版本: 202611042230
+版本: 202611042235
 """
 
 import time
@@ -8,7 +8,7 @@ import streamlit as st
 import streamlit.components.v1 as components
 import cloud_sync
 
-MODULE_VERSION = "202611042230"
+MODULE_VERSION = "202611042235"
 
 from storage import (
     load_stock_history,
@@ -28,26 +28,31 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# 透過強制 CSS 覆蓋 Streamlit 手機直向堆疊行為，將按鈕寬度縮為 1/3 並置中並排
+# 透過強制 CSS 覆蓋 Streamlit 手機直向堆疊行為，將按鈕寬度縮減為 1/3 (約 75px) 並置中並排
 st.markdown("""
 <style>
 .block-container {padding-top: 3.5rem; padding-bottom: 0rem; padding-left: 1rem; padding-right: 1rem;}
 footer {visibility: hidden;}
 
-/* 強制主畫面水平按鈕列在同一行、置中，寬度縮為 1/3 (約 110px) */
+/* 強制主畫面水平按鈕列在同一行、置中，寬度縮為約 75px */
 [data-testid="stMainBlockContainer"] [data-testid="stHorizontalBlock"] {
     display: flex !important;
     flex-direction: row !important;
     flex-wrap: nowrap !important;
     justify-content: center !important;
     align-items: center !important;
-    gap: 12px !important;
+    gap: 8px !important;
 }
 
 [data-testid="stMainBlockContainer"] [data-testid="stHorizontalBlock"] > [data-testid="column"] {
     flex: 0 0 auto !important;
-    width: 110px !important;
-    min-width: 110px !important;
+    width: 75px !important;
+    min-width: 75px !important;
+}
+
+[data-testid="stMainBlockContainer"] [data-testid="stHorizontalBlock"] button {
+    padding: 2px 6px !important;
+    font-size: 13px !important;
 }
 </style>
 """, unsafe_allow_html=True)
