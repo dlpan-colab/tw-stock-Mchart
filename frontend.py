@@ -1,10 +1,10 @@
 """
 frontend.py - 前端 HTML/CSS 渲染與手勢/游標跨圖同步模組
-版本: 202611032145
+版本: 202611042135
 """
 
 MODULE_NAME = "frontend"
-MODULE_VERSION = "202611032145"
+MODULE_VERSION = "202611042135"
 
 import os
 import re
@@ -12,7 +12,10 @@ import re
 
 def get_system_version() -> str:
     versions = [MODULE_VERSION]
-    module_names = ["app", "chart_builder", "indicators", "data_fetcher", "storage", "config", "cloud_sync"]
+    module_names = [
+        "app", "chart_builder", "indicators", "data_fetcher",
+        "storage", "config", "cloud_sync"
+    ]
     base_dir = os.path.dirname(os.path.abspath(__file__))
     for mod_name in module_names:
         try:
@@ -196,8 +199,7 @@ js_template = """
     var pct = prevC ? (diff / prevC * 100) : 0;
     var cClass = diff > 0 ? 'val-up' : (diff < 0 ? 'val-dn' : '');
 
-    info1.innerHTML = 
-      '<span class="tag-lbl"><b>' + d + '</b></span>' +
+    info1.innerHTML = '<span class="tag-lbl"><b>' + d + '</b></span>' +
       '開:<span class="' + (o > prevC ? 'val-up' : (o < prevC ? 'val-dn' : '')) + '">' + fmtNum(o, 2) + '</span> ' +
       '高:<span class="' + (h > prevC ? 'val-up' : (h < prevC ? 'val-dn' : '')) + '">' + fmtNum(h, 2) + '</span> ' +
       '低:<span class="' + (l > prevC ? 'val-up' : (l < prevC ? 'val-dn' : '')) + '">' + fmtNum(l, 2) + '</span> ' +
@@ -207,22 +209,18 @@ js_template = """
       'MA5:' + fmtNum(ma5s[idx], 2) + ' MA20:' + fmtNum(ma20s[idx], 2) + ' MA60:' + fmtNum(ma60s[idx], 2);
 
     var oscClass = oscs[idx] > 0 ? 'val-up' : (oscs[idx] < 0 ? 'val-dn' : '');
-    infoTech.innerHTML = 
-      '<div><span class="tag-lbl"><b>' + d + '</b></span> ' +
+    infoTech.innerHTML = '<div><span class="tag-lbl"><b>' + d + '</b></span> ' +
       '<span class="tag-lbl"><b>KD(9)</b></span><span style="color:#e74c3c;">K:' + fmtNum(ks[idx], 1) + '</span> <span style="color:#3498db;">D:' + fmtNum(ds[idx], 1) + '</span> | ' +
       '<span class="tag-lbl"><b>OBV</b></span><span style="color:#16a085;">OBV:' + fmtNum(obvs[idx], 0) + '</span> <span style="color:#8e44ad;">MA20:' + fmtNum(obvMas[idx], 0) + '</span></div>' +
       '<div><span class="tag-lbl"><b>MACD(' + d + ')</b></span><span style="color:#f39c12;">DIF:' + fmtNum(difs[idx], 2) + '</span> <span style="color:#2980b9;">MACD:' + fmtNum(macds[idx], 2) + '</span> OSC:<span class="' + oscClass + '">' + fmtNum(oscs[idx], 2) + '</span></div>';
 
     var mDiffThousand = mDiffs[idx] !== null && mDiffs[idx] !== undefined ? Number(mDiffs[idx]) / 1000.0 : null;
     var sDiffThousand = sDiffs[idx] !== null && sDiffs[idx] !== undefined ? Number(sDiffs[idx]) / 1000.0 : null;
-
-    infoMs.innerHTML = 
-      '<span class="tag-lbl"><b>資券[千張](' + d + ')</b></span>' +
+    infoMs.innerHTML = '<span class="tag-lbl"><b>資券[千張](' + d + ')</b></span>' +
       '融資:' + fmtDiff(mDiffThousand, 3) + ' 融券:' + fmtDiff(sDiffThousand, 3) + ' ' +
       '<span class="tag-lbl"><b>券資比:' + fmtNum(rat[idx], 2) + '%</b></span>';
 
-    infoChip.innerHTML = 
-      '<span class="tag-lbl"><b>法人集保(' + d + ')</b></span>' +
+    infoChip.innerHTML = '<span class="tag-lbl"><b>法人集保(' + d + ')</b></span>' +
       '外資:' + fmtDiff(foreigns[idx], 0) + ' 投信:' + fmtDiff(trusts[idx], 0) + ' 自營:' + fmtDiff(dealers[idx], 0) + ' | ' +
       '≥' + m1_thresh + '張: ' + fmtNum(m1_pcts[idx], 2) + '% ' +
       '≥' + m2_thresh + '張: ' + fmtNum(m2_pcts[idx], 2) + '%';
@@ -244,6 +242,24 @@ js_template = """
 
         if (r0 !== null && r1 !== null) {
           isUpdating = true;
+          var span = r1 - r0;
+          var maxBound = (totalPoints - 1) + 0.5;
+
+          // 若往左拖曳導致最右側超過最後一個交易日，強制緊貼最右邊界
+          if (r1 > maxBound) {
+            r1 = maxBound;
+            r0 = r1 - span;
+            // 修正來源圖自身的範圍，避免自身右邊露出空白
+            var selfUpd = {};
+            for (var s = 1; s <= 9; s++) {
+              var sAx = (s === 1) ? 'xaxis' : 'xaxis' + s;
+              if (srcEl.layout[sAx]) {
+                selfUpd[sAx + '.range'] = [r0, r1];
+              }
+            }
+            Plotly.relayout(srcEl, selfUpd).catch(function() {});
+          }
+
           var upd = {};
           for (var i = 1; i <= 9; i++) {
             var ax = (i === 1) ? 'xaxis' : 'xaxis' + i;
@@ -283,7 +299,6 @@ js_template = """
       var idx = Math.round(coord);
       if (idx >= 0 && idx < totalPoints) {
         updateAllPanes(idx);
-
         var snapX = xaxis.c2p(idx) + (xaxis._offset || 0);
         lineTop.style.left = snapX + 'px';
         lineBtm.style.left = snapX + 'px';
@@ -356,7 +371,9 @@ def render_interactive_chart_html(
     ma5_list = df['MA5'].fillna(0).tolist() if 'MA5' in df.columns else [0] * n_pts
     ma20_list = df['MA20'].fillna(0).tolist() if 'MA20' in df.columns else [0] * n_pts
     ma60_list = df['MA60'].fillna(0).tolist() if 'MA60' in df.columns else [0] * n_pts
-    turnover_list = df['Turnover_Rate'].fillna(0).tolist() if 'Turnover_Rate' in df.columns else (df['TurnoverRate'].fillna(0).tolist() if 'TurnoverRate' in df.columns else [0] * n_pts)
+    turnover_list = df['Turnover_Rate'].fillna(0).tolist() if 'Turnover_Rate' in df.columns else (
+        df['TurnoverRate'].fillna(0).tolist() if 'TurnoverRate' in df.columns else [0] * n_pts
+    )
 
     k_list = df['K'].fillna(0).tolist() if 'K' in df.columns else [0] * n_pts
     d_list = df['D'].fillna(0).tolist() if 'D' in df.columns else [0] * n_pts
@@ -384,7 +401,6 @@ def render_interactive_chart_html(
     html = html.replace("__BTM_H__", f"{btm_height}px")
     html = html.replace("__PLOT_JSON_TOP__", p_top_json)
     html = html.replace("__PLOT_JSON_BTM__", p_btm_json)
-
     html = html.replace("__DATES__", json.dumps(dates_list))
     html = html.replace("__OPENS__", json.dumps(opens_list))
     html = html.replace("__HIGHS__", json.dumps(highs_list))
@@ -395,27 +411,21 @@ def render_interactive_chart_html(
     html = html.replace("__MA20S__", json.dumps(ma20_list))
     html = html.replace("__MA60S__", json.dumps(ma60_list))
     html = html.replace("__TURNOVERS__", json.dumps(turnover_list))
-
     html = html.replace("__KS__", json.dumps(k_list))
     html = html.replace("__DS__", json.dumps(d_list))
     html = html.replace("__DIFS__", json.dumps(dif_list))
     html = html.replace("__MACDS__", json.dumps(macd_list))
     html = html.replace("__OSCS__", json.dumps(osc_list))
-
     html = html.replace("__OBVS__", json.dumps(obv_list))
     html = html.replace("__OBVMAS__", json.dumps(obv_ma_list))
-
     html = html.replace("__FOREIGNS__", json.dumps(foreign_list))
     html = html.replace("__TRUSTS__", json.dumps(trust_list))
     html = html.replace("__DEALERS__", json.dumps(dealer_list))
-
     html = html.replace("__MARGIN_DIFFS__", json.dumps(m_diff_list))
     html = html.replace("__SHORT_DIFFS__", json.dumps(s_diff_list))
     html = html.replace("__RATIOS__", json.dumps(ratio_list))
-
     html = html.replace("__M1_PCTS__", json.dumps(m1_pct_list))
     html = html.replace("__M2_PCTS__", json.dumps(m2_pct_list))
-
     html = html.replace("__M1_THRESH__", str(m1_thresh))
     html = html.replace("__M2_THRESH__", str(m2_thresh))
     html = html.replace("__INITIAL_DISP_DAYS__", str(initial_disp_days))
