@@ -1,10 +1,10 @@
 """
 storage.py - 本地 SQLite 資料庫與股票歷史紀錄管理器
-版本: 202611042145
+版本: 202611042150
 """
 
 MODULE_NAME = "storage"
-MODULE_VERSION = "202611042145"
+MODULE_VERSION = "202611042150"
 
 import os
 import io
@@ -211,6 +211,54 @@ def get_stock_chinese_name(pure_code: str) -> str:
     return pure_code
 
 
+def _recover_history_from_databases() -> list:
+    """若歷史紀錄遺失或為空，自動透過現存的資料庫檔案修復重組"""
+    recovered = []
+    seen = set()
+
+    # 優先從 Google Drive 雲端搜尋現有的 data_*.db 清單
+    try:
+        from cloud_sync import GoogleDriveSync
+        sync_client = GoogleDriveSync()
+        if sync_client.service and sync_client.folder_id:
+            q = f"'{sync_client.folder_id}' in parents and name contains 'data_' and name contains '.db' and trashed = false"
+            res = sync_client.service.files().list(
+                q=q,
+                fields="files(id, name, modifiedTime)",
+                orderBy="modifiedTime desc",
+                pageSize=50
+            ).execute()
+            files = res.get("files", [])
+            for f in files:
+                fname = f.get("name", "")
+                pure = fname.replace("data_", "").replace(".db", "").strip()
+                if pure.isdigit() and pure not in seen:
+                    seen.add(pure)
+                    recovered.append({"code": pure, "name": get_stock_chinese_name(pure)})
+    except Exception as e:
+        print(f"[Storage] 雲端資料庫掃描還原失敗: {e}")
+
+    # 若雲端未取得足夠資料，從本地 data_*.db 補齊
+    local_files = glob.glob(os.path.join(STORAGE_DIR, "data_*.db"))
+    local_files.sort(key=os.path.getmtime, reverse=True)
+    for p in local_files:
+        base = os.path.basename(p)
+        pure = base.replace("data_", "").replace(".db", "").strip()
+        if pure.isdigit() and pure not in seen:
+            seen.add(pure)
+            recovered.append({"code": pure, "name": get_stock_chinese_name(pure)})
+
+    if recovered:
+        try:
+            with open(HISTORY_FILE, "w", encoding="utf-8") as f:
+                json.dump(recovered[:30], f, ensure_ascii=False, indent=2)
+            _sync_cloud_push(allow_empty_history=False)
+            print(f"[Storage] 已自動由資料庫還原 {len(recovered)} 筆歷史紀錄！")
+        except Exception:
+            pass
+    return recovered[:30]
+
+
 def load_stock_history():
     _sync_cloud_pull()
     data = []
@@ -222,6 +270,11 @@ def load_stock_history():
             data = []
     if not isinstance(data, list):
         data = []
+
+    # 若為空清單，啟動資料庫自動修復還原
+    if not data:
+        data = _recover_history_from_databases()
+
     for item in data:
         code = str(item.get("code", "")).strip()
         curr_name = str(item.get("name", "")).strip()
@@ -290,7 +343,6 @@ def remove_stocks_from_history(target_codes: list) -> list:
     try:
         with open(HISTORY_FILE, "w", encoding="utf-8") as f:
             json.dump(new_history, f, ensure_ascii=False, indent=2)
-        # 若刪除後仍有項目則正常推播，若剛好刪空則允許推播
         _sync_cloud_push(allow_empty_history=True)
     except Exception:
         pass
