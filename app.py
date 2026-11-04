@@ -1,6 +1,6 @@
 """
 app.py - 主應用程式介面與生命週期控制
-版本: 202611032300
+版本: 202611042115
 """
 
 import time
@@ -8,7 +8,7 @@ import streamlit as st
 import streamlit.components.v1 as components
 import cloud_sync
 
-MODULE_VERSION = "202611032300"
+MODULE_VERSION = "202611042115"
 
 from storage import (
     load_stock_history,
@@ -59,8 +59,6 @@ if initial_history:
 
 if "stock_id" not in st.session_state:
     st.session_state.stock_id = default_code
-if "stock_input_box" not in st.session_state:
-    st.session_state.stock_input_box = default_code
 if "period" not in st.session_state:
     st.session_state.period = "1y"
 if "disp_days" not in st.session_state:
@@ -93,13 +91,12 @@ with st.sidebar:
                 key="history_multiselect"
             )
 
-            # 偵測最新勾選的項目：同步置頂至第一位並立即更新輸入框
+            # 偵測最新勾選的項目：同步置頂至第一位並切換標的
             newly_added = [item for item in selected_history if item not in st.session_state.prev_selected_history]
             if newly_added:
                 latest_sel_code = newly_added[-1].split()[0]
                 if latest_sel_code != st.session_state.stock_id:
                     st.session_state.stock_id = latest_sel_code
-                    st.session_state.stock_input_box = latest_sel_code
                     st.session_state.prev_selected_history = selected_history
                     save_stock_history(latest_sel_code)
                     st.rerun()
@@ -127,7 +124,6 @@ with st.sidebar:
             if st.button("確認全刪", key="btn_confirm_delete_all", use_container_width=True):
                 clear_stock_history()
                 st.session_state.stock_id = "2330"
-                st.session_state.stock_input_box = "2330"
                 st.session_state.confirm_clear_all = False
                 st.session_state.prev_selected_history = []
                 st.rerun()
@@ -135,6 +131,10 @@ with st.sidebar:
             if st.button("取消", key="btn_cancel_delete_all", use_container_width=True):
                 st.session_state.confirm_clear_all = False
                 st.rerun()
+
+    # 安全同步輸入框初始值（在元件實例化之前設定，避開生命週期錯誤）
+    if "stock_input_box" not in st.session_state or st.session_state.stock_input_box != st.session_state.stock_id:
+        st.session_state.stock_input_box = st.session_state.stock_id
 
     st.text_input("股票代號 (直接鍵入)", key="stock_input_box", on_change=on_stock_input_change)
 
@@ -214,24 +214,20 @@ else:
 
 curr_idx = active_nav_codes.index(stock_id) if stock_id in active_nav_codes else 0
 
-# 頂部：上一檔 / 下一檔 功能列（保持原清單順序不變）
+# 頂部：上一檔 / 下一檔 功能列（保持原清單順序不變，僅設定 stock_id 後重跑）
 st.markdown('<div class="nav-btn-container">', unsafe_allow_html=True)
 top_c1, top_c2 = st.columns(2)
 with top_c1:
     if st.button("◀ 上一檔", key="btn_top_prev", use_container_width=True):
         if len(active_nav_codes) > 1:
             prev_idx = (curr_idx - 1) % len(active_nav_codes)
-            prev_code = active_nav_codes[prev_idx]
-            st.session_state.stock_id = prev_code
-            st.session_state.stock_input_box = prev_code
+            st.session_state.stock_id = active_nav_codes[prev_idx]
             st.rerun()
 with top_c2:
     if st.button("下一檔 ▶", key="btn_top_next", use_container_width=True):
         if len(active_nav_codes) > 1:
             next_idx = (curr_idx + 1) % len(active_nav_codes)
-            next_code = active_nav_codes[next_idx]
-            st.session_state.stock_id = next_code
-            st.session_state.stock_input_box = next_code
+            st.session_state.stock_id = active_nav_codes[next_idx]
             st.rerun()
 st.markdown('</div>', unsafe_allow_html=True)
 
@@ -270,23 +266,19 @@ html_content = get_component_html(
 total_h = 1980 if is_mobile else 1880
 components.html(html_content, height=total_h, scrolling=False)
 
-# 底部：上一檔 / 下一檔 功能列（保持原清單順序不變）
+# 底部：上一檔 / 下一檔 功能列（保持原清單順序不變，僅設定 stock_id 後重跑）
 st.markdown('<div class="nav-btn-container">', unsafe_allow_html=True)
 btm_c1, btm_c2 = st.columns(2)
 with btm_c1:
     if st.button("◀ 上一檔", key="btn_btm_prev", use_container_width=True):
         if len(active_nav_codes) > 1:
             prev_idx = (curr_idx - 1) % len(active_nav_codes)
-            prev_code = active_nav_codes[prev_idx]
-            st.session_state.stock_id = prev_code
-            st.session_state.stock_input_box = prev_code
+            st.session_state.stock_id = active_nav_codes[prev_idx]
             st.rerun()
 with btm_c2:
     if st.button("下一檔 ▶", key="btn_btm_next", use_container_width=True):
         if len(active_nav_codes) > 1:
             next_idx = (curr_idx + 1) % len(active_nav_codes)
-            next_code = active_nav_codes[next_idx]
-            st.session_state.stock_id = next_code
-            st.session_state.stock_input_box = next_code
+            st.session_state.stock_id = active_nav_codes[next_idx]
             st.rerun()
 st.markdown('</div>', unsafe_allow_html=True)
