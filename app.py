@@ -1,6 +1,6 @@
 """
 app.py - 主應用程式介面與生命週期控制
-版本: 202611042115
+版本: 202611042220
 """
 
 import time
@@ -8,7 +8,7 @@ import streamlit as st
 import streamlit.components.v1 as components
 import cloud_sync
 
-MODULE_VERSION = "202611042115"
+MODULE_VERSION = "202611042220"
 
 from storage import (
     load_stock_history,
@@ -34,14 +34,17 @@ st.markdown("""
 .block-container {padding-top: 3.5rem; padding-bottom: 0rem; padding-left: 1rem; padding-right: 1rem;}
 footer {visibility: hidden;}
 
-/* 強制按鈕容器在所有螢幕尺寸（包括手機版）維持橫向並排各佔 50% */
-.nav-btn-container [data-testid="stHorizontalBlock"] {
+/* 強制包含上一檔/下一檔的水平排版在所有螢幕尺寸（包括手機直向）永遠維持並排 50% / 50% */
+div[data-testid="stHorizontalBlock"]:has(button[key*="prev"]),
+div[data-testid="stHorizontalBlock"]:has(button[key*="next"]) {
     display: flex !important;
     flex-direction: row !important;
     flex-wrap: nowrap !important;
     gap: 8px !important;
 }
-.nav-btn-container [data-testid="column"] {
+
+div[data-testid="stHorizontalBlock"]:has(button[key*="prev"]) > div[data-testid="column"],
+div[data-testid="stHorizontalBlock"]:has(button[key*="next"]) > div[data-testid="column"] {
     flex: 1 1 50% !important;
     width: 50% !important;
     min-width: 0 !important;
@@ -214,8 +217,7 @@ else:
 
 curr_idx = active_nav_codes.index(stock_id) if stock_id in active_nav_codes else 0
 
-# 頂部：上一檔 / 下一檔 功能列（保持原清單順序不變，僅設定 stock_id 後重跑）
-st.markdown('<div class="nav-btn-container">', unsafe_allow_html=True)
+# 頂部：上一檔 / 下一檔 功能列（手機版強制作為單列 50%/50%）
 top_c1, top_c2 = st.columns(2)
 with top_c1:
     if st.button("◀ 上一檔", key="btn_top_prev", use_container_width=True):
@@ -229,7 +231,6 @@ with top_c2:
             next_idx = (curr_idx + 1) % len(active_nav_codes)
             st.session_state.stock_id = active_nav_codes[next_idx]
             st.rerun()
-st.markdown('</div>', unsafe_allow_html=True)
 
 fig_top, fig_btm, df, c_name, end_idx, disp_n = build_split_figures(
     raw_ticker=stock_id,
@@ -266,8 +267,7 @@ html_content = get_component_html(
 total_h = 1980 if is_mobile else 1880
 components.html(html_content, height=total_h, scrolling=False)
 
-# 底部：上一檔 / 下一檔 功能列（保持原清單順序不變，僅設定 stock_id 後重跑）
-st.markdown('<div class="nav-btn-container">', unsafe_allow_html=True)
+# 底部：上一檔 / 下一檔 功能列（手機版強制作為單列 50%/50%）
 btm_c1, btm_c2 = st.columns(2)
 with btm_c1:
     if st.button("◀ 上一檔", key="btn_btm_prev", use_container_width=True):
@@ -281,4 +281,3 @@ with btm_c2:
             next_idx = (curr_idx + 1) % len(active_nav_codes)
             st.session_state.stock_id = active_nav_codes[next_idx]
             st.rerun()
-st.markdown('</div>', unsafe_allow_html=True)
