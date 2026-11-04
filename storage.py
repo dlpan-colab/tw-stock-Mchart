@@ -1,10 +1,10 @@
 """
 storage.py - 本地 SQLite 資料庫與股票歷史紀錄管理器
-版本: 202611032205
+版本: 202611042145
 """
 
 MODULE_NAME = "storage"
-MODULE_VERSION = "202611032205"
+MODULE_VERSION = "202611042145"
 
 import os
 import io
@@ -22,17 +22,16 @@ HISTORY_FILE = os.path.join(STORAGE_DIR, "stock_history.json")
 NAMES_CACHE_FILE = os.path.join(STORAGE_DIR, "tw_stock_names.json")
 
 COMMON_STOCK_NAMES = {
-    "1101": "台泥", "1102": "亞泥", "1104": "環泥", "1216": "統一",
-    "1301": "台塑", "1303": "南亞", "1312": "國喬", "1326": "台化",
-    "1504": "東元", "2002": "中鋼", "2105": "正新", "2303": "聯電",
-    "2308": "台達電", "2312": "金寶", "2317": "鴻海", "2324": "仁寶",
-    "2327": "國巨", "2330": "台積電", "2374": "佳能", "2382": "廣達",
-    "2454": "聯發科", "2478": "大毅", "2492": "華新科", "2609": "陽明",
-    "2615": "萬海", "3008": "大立光", "3022": "威強電", "3088": "艾訊",
-    "3231": "緯創", "3481": "群創", "3653": "健策", "3661": "世芯-KY",
-    "3718": "中光電投控", "4526": "東台", "4991": "環宇-KY", "5439": "高技",
-    "6191": "精成科", "6217": "中探針", "6234": "高僑", "6425": "易發",
-    "6456": "GIS-KY", "6505": "台塑化", "8111": "立碁", "8131": "福懋科"
+    "1101": "台泥", "1102": "亞泥", "1104": "環泥", "1216": "統一", "1301": "台塑",
+    "1303": "南亞", "1312": "國喬", "1326": "台化", "1504": "東元", "2002": "中鋼",
+    "2105": "正新", "2303": "聯電", "2308": "台達電", "2312": "金寶", "2317": "鴻海",
+    "2324": "仁寶", "2327": "國巨", "2330": "台積電", "2374": "佳能", "2382": "廣達",
+    "2454": "聯發科", "2478": "大毅", "2492": "華新科", "2609": "陽明", "2615": "萬海",
+    "3008": "大立光", "3022": "威強電", "3088": "艾訊", "3231": "緯創", "3481": "群創",
+    "3653": "健策", "3661": "世芯-KY", "3718": "中光電投控", "4526": "東台",
+    "4991": "環宇-KY", "5439": "高技", "6191": "精成科", "6217": "中探針",
+    "6234": "高僑", "6425": "易發", "6456": "GIS-KY", "6505": "台塑化",
+    "8111": "立碁", "8131": "福懋科"
 }
 
 
@@ -45,11 +44,30 @@ def _sync_cloud_pull():
         print(f"[CloudSync] Pull warning: {e}")
 
 
-def _sync_cloud_push():
+def _sync_cloud_push(allow_empty_history: bool = False):
+    """
+    推播至 Google Drive。
+    預設情況下，若 stock_history.json 檔案為空或內容為 []，則強行阻擋上傳，
+    防止多執行緒/實例重啟期間誤將空檔覆寫雲端累積紀錄。
+    """
     try:
         from cloud_sync import push_file
-        push_file(HISTORY_FILE, "stock_history.json")
-        push_file(NAMES_CACHE_FILE, "tw_stock_names.json")
+        if os.path.exists(HISTORY_FILE):
+            can_push = True
+            if not allow_empty_history:
+                try:
+                    with open(HISTORY_FILE, "r", encoding="utf-8") as f:
+                        chk_data = json.load(f)
+                    if not chk_data or len(chk_data) == 0:
+                        can_push = False
+                        print("[CloudSync] 偵測到歷史紀錄為空陣列，觸發防空覆寫保護，取消推播。")
+                except Exception:
+                    can_push = False
+            if can_push:
+                push_file(HISTORY_FILE, "stock_history.json")
+
+        if os.path.exists(NAMES_CACHE_FILE):
+            push_file(NAMES_CACHE_FILE, "tw_stock_names.json")
     except Exception as e:
         print(f"[CloudSync] Push warning: {e}")
 
@@ -116,7 +134,6 @@ def get_stock_chinese_name(pure_code: str) -> str:
         return ""
     if pure_code in COMMON_STOCK_NAMES:
         return COMMON_STOCK_NAMES[pure_code]
-
     cache = _load_name_cache()
     if pure_code in cache and cache[pure_code] and cache[pure_code] != pure_code:
         return cache[pure_code]
@@ -205,7 +222,6 @@ def load_stock_history():
             data = []
     if not isinstance(data, list):
         data = []
-
     for item in data:
         code = str(item.get("code", "")).strip()
         curr_name = str(item.get("name", "")).strip()
@@ -218,6 +234,7 @@ def save_stock_history(code: str, name: str = None):
     code = str(code).strip()
     if not code:
         return load_stock_history()
+
     c_name = name.strip() if name and name.strip() != code else get_stock_chinese_name(code)
     history = load_stock_history()
     new_hist = [h for h in history if str(h.get("code")).strip() != code]
@@ -254,12 +271,13 @@ def update_stock_name_only(code: str, name: str):
 
 
 def clear_stock_history():
+    """使用者點擊確認全刪時，才允許強制將空陣列推播覆寫雲端"""
     try:
         if os.path.exists(HISTORY_FILE):
             os.remove(HISTORY_FILE)
         with open(HISTORY_FILE, "w", encoding="utf-8") as f:
             json.dump([], f)
-        _sync_cloud_push()
+        _sync_cloud_push(allow_empty_history=True)
     except Exception:
         pass
     return []
@@ -272,7 +290,8 @@ def remove_stocks_from_history(target_codes: list) -> list:
     try:
         with open(HISTORY_FILE, "w", encoding="utf-8") as f:
             json.dump(new_history, f, ensure_ascii=False, indent=2)
-        _sync_cloud_push()
+        # 若刪除後仍有項目則正常推播，若剛好刪空則允許推播
+        _sync_cloud_push(allow_empty_history=True)
     except Exception:
         pass
     return new_history
@@ -293,14 +312,12 @@ def clear_recent_margin_data(pure_code: str, weeks: int = 2) -> str:
 
     cutoff_date = (datetime.now() - timedelta(days=weeks * 7)).strftime('%Y-%m-%d')
     deleted_rows = 0
-
     try:
         with sqlite3.connect(db_path) as conn:
             cur = conn.cursor()
             cur.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='margin_short'")
             if not cur.fetchone():
                 return f"代號 {pure_code} 尚無資券資料表。"
-
             cur.execute("DELETE FROM margin_short WHERE date >= ?", (cutoff_date,))
             deleted_rows = cur.rowcount
             conn.commit()
