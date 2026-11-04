@@ -1,6 +1,6 @@
 """
 app.py - 主應用程式介面與生命週期控制
-版本: 202611042220
+版本: 202611042225
 """
 
 import time
@@ -8,7 +8,7 @@ import streamlit as st
 import streamlit.components.v1 as components
 import cloud_sync
 
-MODULE_VERSION = "202611042220"
+MODULE_VERSION = "202611042225"
 
 from storage import (
     load_stock_history,
@@ -28,23 +28,21 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# 透過包裹專屬 class 的容器，強制覆蓋 Streamlit 手機直向堆疊行為
+# 透過強制 CSS 覆蓋 Streamlit 手機直向堆疊行為，確保按鈕橫向並排各 50%
 st.markdown("""
 <style>
 .block-container {padding-top: 3.5rem; padding-bottom: 0rem; padding-left: 1rem; padding-right: 1rem;}
 footer {visibility: hidden;}
 
-/* 強制包含上一檔/下一檔的水平排版在所有螢幕尺寸（包括手機直向）永遠維持並排 50% / 50% */
-div[data-testid="stHorizontalBlock"]:has(button[key*="prev"]),
-div[data-testid="stHorizontalBlock"]:has(button[key*="next"]) {
+/* 強制主畫面所有水平雙欄在任何螢幕（含手機版）一律水平並排、絕不換行 */
+[data-testid="stMainBlockContainer"] [data-testid="stHorizontalBlock"] {
     display: flex !important;
     flex-direction: row !important;
     flex-wrap: nowrap !important;
     gap: 8px !important;
 }
 
-div[data-testid="stHorizontalBlock"]:has(button[key*="prev"]) > div[data-testid="column"],
-div[data-testid="stHorizontalBlock"]:has(button[key*="next"]) > div[data-testid="column"] {
+[data-testid="stMainBlockContainer"] [data-testid="stHorizontalBlock"] > [data-testid="column"] {
     flex: 1 1 50% !important;
     width: 50% !important;
     min-width: 0 !important;
@@ -217,7 +215,7 @@ else:
 
 curr_idx = active_nav_codes.index(stock_id) if stock_id in active_nav_codes else 0
 
-# 頂部：上一檔 / 下一檔 功能列（手機版強制作為單列 50%/50%）
+# 頂部：上一檔 / 下一檔 功能列
 top_c1, top_c2 = st.columns(2)
 with top_c1:
     if st.button("◀ 上一檔", key="btn_top_prev", use_container_width=True):
@@ -267,7 +265,7 @@ html_content = get_component_html(
 total_h = 1980 if is_mobile else 1880
 components.html(html_content, height=total_h, scrolling=False)
 
-# 底部：上一檔 / 下一檔 功能列（手機版強制作為單列 50%/50%）
+# 底部：上一檔 / 下一檔 功能列
 btm_c1, btm_c2 = st.columns(2)
 with btm_c1:
     if st.button("◀ 上一檔", key="btn_btm_prev", use_container_width=True):
