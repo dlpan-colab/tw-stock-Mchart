@@ -1,10 +1,10 @@
 """
 data_fetcher.py - 外部資料抓取與增量同步模組
-版本: 202611052115
+版本: 202611052200
 """
 
 MODULE_NAME = "data_fetcher"
-MODULE_VERSION = "202611052115"
+MODULE_VERSION = "202611052200"
 
 import os
 import re
@@ -50,11 +50,6 @@ def fetch_stock_name(pure_code: str) -> str:
     return get_stock_chinese_name(pure_code)
 
 def _detect_market_suffix(pure_code: str, raw_ticker: str) -> list:
-    """
-    若為指數（以 ^ 開頭），不補任何市場後綴。
-    若明確指定 .TW 或 .TWO 則直接採用。
-    其餘台股純代號依字典或預設依序嘗試 [.TW, .TWO]。
-    """
     if str(pure_code).startswith("^") or str(raw_ticker).startswith("^"):
         return [""]
 
@@ -84,7 +79,7 @@ def _detect_market_suffix(pure_code: str, raw_ticker: str) -> list:
 
     return ['.TW', '.TWO']
 
-def fetch_stock_daily_k(raw_ticker: str, period: str = "1y", base_date: str = None):
+def fetch_stock_daily_k(raw_ticker: str, period: str = "1y", base_date: str = None, force_refresh: bool = False):
     import yfinance as yf
     resolved_ticker = resolve_ticker_code(raw_ticker)
     raw_str = resolved_ticker.strip().upper()
@@ -95,8 +90,17 @@ def fetch_stock_daily_k(raw_ticker: str, period: str = "1y", base_date: str = No
         match = re.search(r'\d+', raw_str)
         pure_code = match.group(0) if match else raw_str.split('.')[0]
 
+    storage = StockChipStorage(pure_code)
+    cached_df = storage.load_daily_k_df()
+    latest_cached_date = storage.get_latest_daily_k_date()
+
+    # 判定下載期間：若本地已有充足歷史，僅下載近 5 天增量更新 (極速)
+    fetch_period = period
+    if not force_refresh and not cached_df.empty and len(cached_df) >= 40 and latest_cached_date:
+        fetch_period = "5d"
+
     ticker_obj = None
-    df = pd.DataFrame()
+    df_new = pd.DataFrame()
     shares_outstanding = None
     suffixes = _detect_market_suffix(pure_code, raw_str)
 
@@ -104,9 +108,9 @@ def fetch_stock_daily_k(raw_ticker: str, period: str = "1y", base_date: str = No
         test_ticker = f"{pure_code}{suffix}" if suffix else pure_code
         try:
             t = yf.Ticker(test_ticker)
-            d = t.history(period=period, auto_adjust=False)
-            if not d.empty and len(d) >= 5:
-                df = d
+            d = t.history(period=fetch_period, auto_adjust=False)
+            if not d.empty and len(d) >= 1:
+                df_new = d
                 ticker_obj = t
                 try:
                     shares_outstanding = t.fast_info.shares
@@ -116,51 +120,34 @@ def fetch_stock_daily_k(raw_ticker: str, period: str = "1y", base_date: str = No
         except Exception:
             continue
 
-    if df.empty or ticker_obj is None:
+    if df_new.empty and cached_df.empty:
         return None, "", None
 
-    if df.index.tz is not None:
-        df.index = df.index.tz_localize(None)
-    df.index = df.index.normalize()
-    df = df.dropna(subset=['Open', 'High', 'Low', 'Close'])
+    # 合併本地快取與新下載資料
+    if not df_new.empty:
+        if df_new.index.tz is not None:
+            df_new.index = df_new.index.tz_localize(None)
+        df_new.index = df_new.index.normalize()
+        df_new = df_new.dropna(subset=['Open', 'High', 'Low', 'Close'])
+        if not cached_df.empty and fetch_period == "5d":
+            df = pd.concat([cached_df[~cached_df.index.isin(df_new.index)], df_new]).sort_index()
+        else:
+            df = df_new
+        storage.save_daily_k_df(df)
+    else:
+        df = cached_df
 
-    now_dt = datetime.now()
-    target_dt = now_dt
-    if now_dt.time() < datetime.strptime("09:00", "%H:%M").time():
-        target_dt -= timedelta(days=1)
-    while target_dt.weekday() > 4:
-        target_dt -= timedelta(days=1)
-    target_date = target_dt.date()
+    if ticker_obj is None:
+        full_ticker_name = f"{pure_code}.TW" if not pure_code.startswith("^") else pure_code
+    else:
+        full_ticker_name = ticker_obj.ticker
 
-    latest_date = df.index[-1].date()
-    if latest_date < target_date:
-        try:
-            fast_info = ticker_obj.fast_info
-            cur_price = fast_info.last_price
-            v_val = fast_info.last_volume if fast_info.last_volume else 0
-            if cur_price is not None and not np.isnan(cur_price) and cur_price > 0:
-                o_val = fast_info.open if fast_info.open and fast_info.open > 0 else cur_price
-                h_val = fast_info.day_high if fast_info.day_high and fast_info.day_high > 0 else cur_price
-                l_val = fast_info.day_low if fast_info.day_low and fast_info.day_low > 0 else cur_price
-                today_row = pd.DataFrame({
-                    'Open': [float(o_val)],
-                    'High': [float(h_val)],
-                    'Low': [float(l_val)],
-                    'Close': [float(cur_price)],
-                    'Volume': [float(v_val)]
-                }, index=[pd.Timestamp(target_date)])
-                df = pd.concat([df, today_row])
-        except Exception:
-            pass
-
-    # 成交量過濾：個股需 > 0，但國際指數若為 0 亦允許保留，避免整張圖被過濾掉
     if not pure_code.startswith("^"):
         df = df[df['Volume'] > 0]
-    return df, ticker_obj.ticker, shares_outstanding
+    return df, full_ticker_name, shares_outstanding
 
-def sync_chip_data(pure_code: str, df_dates, status_placeholder=None):
+def sync_chip_data(pure_code: str, df_dates, status_placeholder=None, force_refresh: bool = False):
     pure_code = str(pure_code).strip()
-    # 指數不抓取個股三大法人、資券與集保
     if pure_code.startswith("^"):
         return pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
 
@@ -172,15 +159,41 @@ def sync_chip_data(pure_code: str, df_dates, status_placeholder=None):
 
     last_inst_date = storage.get_latest_inst_date()
     last_margin_date = storage.get_latest_margin_date()
+    last_holding_date = storage.get_latest_holding_date()
+
+    now = datetime.now()
+    now_date_str = now.strftime('%Y-%m-%d')
+    latest_trade_date_str = df_dates[-1].strftime('%Y-%m-%d')
+
+    # 短路判斷 1：三大法人與資券是否需要抓取？
+    # 每天 17:00 前證交所不公布當日數據。若最後紀錄已達最新收盤日，或今日尚未到 17:00 且已有昨日資料，則短路跳過。
+    should_fetch_inst = force_refresh
+    if not should_fetch_inst:
+        if not last_inst_date:
+            should_fetch_inst = True
+        elif last_inst_date < latest_trade_date_str:
+            if now_date_str == latest_trade_date_str and now.hour < 17:
+                should_fetch_inst = False
+            else:
+                should_fetch_inst = True
+
+    should_fetch_margin = force_refresh
+    if not should_fetch_margin:
+        if not last_margin_date:
+            should_fetch_margin = True
+        elif last_margin_date < latest_trade_date_str:
+            if now_date_str == latest_trade_date_str and now.hour < 17:
+                should_fetch_margin = False
+            else:
+                should_fetch_margin = True
 
     target_start_date = (df_dates[0] - timedelta(days=5)).strftime('%Y-%m-%d')
     inst_query_start = (pd.to_datetime(last_inst_date) + timedelta(days=1)).strftime('%Y-%m-%d') if last_inst_date else target_start_date
     margin_query_start = (pd.to_datetime(last_margin_date) + timedelta(days=1)).strftime('%Y-%m-%d') if last_margin_date else target_start_date
-    latest_trade_date_str = df_dates[-1].strftime('%Y-%m-%d')
 
     # 1. 法人買賣超同步
-    inst_records = []
-    if not last_inst_date or inst_query_start <= latest_trade_date_str:
+    if should_fetch_inst:
+        inst_records = []
         try:
             url_inst = "https://api.finmindtrade.com/api/v4/data"
             p_inst = {
@@ -189,7 +202,7 @@ def sync_chip_data(pure_code: str, df_dates, status_placeholder=None):
                 "start_date": inst_query_start,
                 "token": FINMIND_TOKEN
             }
-            res = requests.get(url_inst, params=p_inst, headers=headers, timeout=12)
+            res = requests.get(url_inst, params=p_inst, headers=headers, timeout=6)
             if res.status_code == 200:
                 data = res.json().get('data', [])
                 if data:
@@ -214,32 +227,11 @@ def sync_chip_data(pure_code: str, df_dates, status_placeholder=None):
         except Exception:
             pass
 
-        if not inst_records:
-            try:
-                url_tpex_inst = f"https://www.tpex.org.tw/web/stock/3investor/daily_trading/stk_wn_result.php?l=zh-tw&stkno={pure_code}"
-                res_tp = requests.get(url_tpex_inst, headers=headers, timeout=10)
-                if res_tp.status_code == 200:
-                    tp_data = res_tp.json()
-                    rows = tp_data.get('aaData', [])
-                    for row in rows:
-                        if len(row) >= 4:
-                            date_str = str(row[0]).strip()
-                            parts = date_str.split('/')
-                            if len(parts) == 3:
-                                y = int(parts[0]) + 1911
-                                d_fmt = f"{y}-{int(parts[1]):02d}-{int(parts[2]):02d}"
-                                if d_fmt >= inst_query_start:
-                                    def parse_v(x):
-                                        return float(str(x).replace(',', '').replace('+', ''))
-                                    inst_records.append((d_fmt, parse_v(row[1]), parse_v(row[2]), parse_v(row[3])))
-            except Exception:
-                pass
-
         if inst_records:
             storage.save_institutional_data(inst_records)
 
-    # 2. 資券增減同步 (以「張」儲存至資料庫)
-    if not last_margin_date or margin_query_start <= latest_trade_date_str:
+    # 2. 資券增減同步
+    if should_fetch_margin:
         try:
             url_ms = "https://api.finmindtrade.com/api/v4/data"
             p_ms = {
@@ -248,7 +240,7 @@ def sync_chip_data(pure_code: str, df_dates, status_placeholder=None):
                 "start_date": margin_query_start,
                 "token": FINMIND_TOKEN
             }
-            res_ms = requests.get(url_ms, params=p_ms, headers=headers, timeout=12)
+            res_ms = requests.get(url_ms, params=p_ms, headers=headers, timeout=6)
             if res_ms.status_code == 200:
                 data_ms = res_ms.json().get('data', [])
                 if data_ms:
@@ -275,36 +267,39 @@ def sync_chip_data(pure_code: str, df_dates, status_placeholder=None):
         except Exception:
             pass
 
-    # 3. 集保大戶持股同步
-    holding_df = storage.load_holding_df()
-    existing_weeks = set(holding_df['date'].dt.strftime('%Y%m%d')) if not holding_df.empty else set()
-    try:
-        session_tdcc = requests.Session()
-        url_home = "https://www.tdcc.com.tw/portal/zh/smWeb/qryStock"
-        r_home = session_tdcc.get(url_home, headers=headers, timeout=10)
-        if r_home.status_code == 200:
-            soup_home = BeautifulSoup(r_home.text, 'html.parser')
-            form = soup_home.find('form')
-            action = form.get('action', '') if form else ''
-            target_url = f"https://www.tdcc.com.tw{action}" if action.startswith('/') else (action if action.startswith('http') else f"https://www.tdcc.com.tw/portal/zh/smWeb/{action}")
-            available_dates = [
-                o.get('value').strip() for o in soup_home.find_all('option')
-                if o.get('value') and o.get('value').strip().isdigit() and len(o.get('value').strip()) == 8 and o.get('value').strip().startswith('20')
-            ]
-            today = datetime.today()
-            target_dates = list(available_dates)
-            for i in range(16):
-                d = today - timedelta(days=today.weekday() + 7 * i)
-                target_dates.append((d + timedelta(days=4)).strftime('%Y%m%d'))
-                target_dates.append((d + timedelta(days=3)).strftime('%Y%m%d'))
-            target_dates = sorted(list(set(target_dates)), reverse=True)
-            missing_dates = [d for d in target_dates if d not in existing_weeks][:20]
+    # 3. 集保大戶持股同步 (短路快取：週六 09:00 前不爬)
+    should_fetch_holding = force_refresh
+    if not should_fetch_holding:
+        if not last_holding_date:
+            should_fetch_holding = True
+        else:
+            # 上次資料日期距今超過 7 天，且今天為週六或週日才允許發動
+            days_since = (now.date() - pd.to_datetime(last_holding_date).date()).days
+            if days_since >= 7 and (now.weekday() >= 5 or (now.weekday() == 4 and now.hour >= 20)):
+                should_fetch_holding = True
 
-            h_rec = []
-            for d_str in missing_dates:
-                for attempt in range(2):
+    if should_fetch_holding:
+        holding_df = storage.load_holding_df()
+        existing_weeks = set(holding_df['date'].dt.strftime('%Y%m%d')) if not holding_df.empty else set()
+        try:
+            session_tdcc = requests.Session()
+            url_home = "https://www.tdcc.com.tw/portal/zh/smWeb/qryStock"
+            r_home = session_tdcc.get(url_home, headers=headers, timeout=6)
+            if r_home.status_code == 200:
+                soup_home = BeautifulSoup(r_home.text, 'html.parser')
+                form = soup_home.find('form')
+                action = form.get('action', '') if form else ''
+                target_url = f"https://www.tdcc.com.tw{action}" if action.startswith('/') else (action if action.startswith('http') else f"https://www.tdcc.com.tw/portal/zh/smWeb/{action}")
+                available_dates = [
+                    o.get('value').strip() for o in soup_home.find_all('option')
+                    if o.get('value') and o.get('value').strip().isdigit() and len(o.get('value').strip()) == 8 and o.get('value').strip().startswith('20')
+                ]
+                missing_dates = [d for d in available_dates if d not in existing_weeks][:10]
+
+                h_rec = []
+                for d_str in missing_dates:
                     try:
-                        r_page = session_tdcc.get(url_home, headers=headers, timeout=8)
+                        r_page = session_tdcc.get(url_home, headers=headers, timeout=5)
                         sp_page = BeautifulSoup(r_page.text, 'html.parser')
                         cur_form = sp_page.find('form')
                         payload = {inp.get('name'): inp.get('value', '') for inp in cur_form.find_all('input') if inp.get('name')}
@@ -315,7 +310,7 @@ def sync_chip_data(pure_code: str, df_dates, status_placeholder=None):
                             'stockName': '',
                             'sub': '查詢'
                         })
-                        resp = session_tdcc.post(target_url, data=payload, headers=headers, timeout=8)
+                        resp = session_tdcc.post(target_url, data=payload, headers=headers, timeout=5)
                         dfs = pd.read_html(StringIO(resp.text))
                         target_tbl = next((d for d in dfs if '1' in d.iloc[:, 0].astype(str).tolist() and '15' in d.iloc[:, 0].astype(str).tolist()), None)
                         if target_tbl is not None:
@@ -327,14 +322,11 @@ def sync_chip_data(pure_code: str, df_dates, status_placeholder=None):
                                     h_rec.append((d_fmt, int(row[lvl_col]), float(str(row[pct_col]).replace('%', '').replace(',', ''))))
                                 except ValueError:
                                     pass
-                        break
                     except Exception:
-                        time.sleep(0.3)
                         continue
-                time.sleep(0.15)
-            if h_rec:
-                storage.save_holding_data(h_rec)
-    except Exception:
-        pass
+                if h_rec:
+                    storage.save_holding_data(h_rec)
+        except Exception:
+            pass
 
     return storage.load_institutional_df(), storage.load_margin_df(), storage.load_holding_df()
