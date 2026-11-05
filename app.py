@@ -1,6 +1,6 @@
 """
 app.py - 主應用程式介面與生命週期控制
-版本: 202611052225
+版本: 202611052230
 """
 
 import time
@@ -9,7 +9,7 @@ import streamlit as st
 import streamlit.components.v1 as components
 import cloud_sync
 
-MODULE_VERSION = "202611052225"
+MODULE_VERSION = "202611052230"
 
 from storage import (
     load_stock_history,
@@ -119,8 +119,6 @@ if "confirm_clear_all" not in st.session_state:
     st.session_state.confirm_clear_all = False
 if "index_select_box" not in st.session_state:
     st.session_state.index_select_box = "選擇主要市場指數..."
-if "ms_counter" not in st.session_state:
-    st.session_state.ms_counter = 0
 
 def on_stock_input_change():
     val = st.session_state.stock_input_box.strip()
@@ -138,6 +136,14 @@ def on_index_select_change():
             st.session_state.stock_id = idx_code
             save_stock_history(idx_code)
         st.session_state.index_select_box = "選擇主要市場指數..."
+
+def on_history_multiselect_change():
+    selected = st.session_state.history_multiselect
+    if selected:
+        codes = [item.split()[0] for item in selected]
+        for c in codes:
+            save_stock_history(c)
+        st.session_state.stock_id = codes[-1]
 
 with st.sidebar:
     st.header("參數設定")
@@ -170,43 +176,24 @@ with st.sidebar:
         if history_codes:
             history_display = [f"{h.get('code')} {h.get('name', '')}".strip() for h in history_records]
             
-            # 使用動態 key 支援多選置頂後能自動重設清空
-            current_ms_key = f"history_multiselect_{st.session_state.ms_counter}"
             selected_history = st.multiselect(
                 "點擊展開並勾選標的...",
                 options=history_display,
                 default=[],
-                key=current_ms_key
+                key="history_multiselect",
+                on_change=on_history_multiselect_change
             )
 
-            c_btn_query, c_btn_clear = st.columns(2)
-            with c_btn_query:
-                btn_apply = st.button("確認選取", use_container_width=True)
-            with c_btn_clear:
-                btn_clear = st.button("清除歷史記錄", use_container_width=True)
-
-            # 點擊「清除歷史記錄」：只刪除勾選項目
-            if btn_clear:
+            # 清除按鈕單獨佔一列
+            if st.button("清除歷史記錄", use_container_width=True):
                 if selected_history:
                     target_codes = [item.split()[0] for item in selected_history]
                     remove_stocks_from_history(target_codes)
                     st.session_state.confirm_clear_all = False
-                    st.session_state.ms_counter += 1
                     st.rerun()
                 else:
                     st.session_state.confirm_clear_all = True
                     st.rerun()
-
-            # 點擊「確認選取」：依選取順序置頂，並以最後一項作為查詢目標
-            if btn_apply and selected_history:
-                codes_to_top = [item.split()[0] for item in selected_history]
-                for c in codes_to_top:
-                    save_stock_history(c)
-                # 以最後勾選者為查詢目標
-                target_code = codes_to_top[-1]
-                st.session_state.stock_id = target_code
-                st.session_state.ms_counter += 1
-                st.rerun()
         else:
             st.caption("目前無歷史紀錄")
 
@@ -218,7 +205,6 @@ with st.sidebar:
                 clear_stock_history()
                 st.session_state.stock_id = "2330"
                 st.session_state.confirm_clear_all = False
-                st.session_state.ms_counter += 1
                 st.rerun()
         with c_del2:
             if st.button("取消", key="btn_cancel_delete_all", use_container_width=True):
