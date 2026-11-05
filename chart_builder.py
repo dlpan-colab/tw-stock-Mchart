@@ -1,10 +1,10 @@
 """
 chart_builder.py - Plotly 圖表建置模組 (純淨無原生 hover/spikes)
-版本: 202611052155
+版本: 202611052200
 """
 
 MODULE_NAME = "chart_builder"
-MODULE_VERSION = "202611052155"
+MODULE_VERSION = "202611052200"
 
 from typing import Tuple, Optional
 import numpy as np
@@ -21,10 +21,11 @@ def build_split_figures(raw_ticker: str,
                         major1_thresh: int = 1000,
                         major2_thresh: int = 400,
                         is_mobile: bool = False,
-                        status_placeholder=None
+                        status_placeholder=None,
+                        force_refresh: bool = False
                         ) -> Tuple[Optional[go.Figure], Optional[go.Figure], Optional[pd.DataFrame], str, int, int]:
 
-    k_res = fetch_stock_daily_k(raw_ticker, period=period, base_date=str(base_date) if base_date else None)
+    k_res = fetch_stock_daily_k(raw_ticker, period=period, base_date=str(base_date) if base_date else None, force_refresh=force_refresh)
     if k_res is None or k_res[0] is None or k_res[0].empty:
         return None, None, None, "", 0, 0
 
@@ -225,8 +226,6 @@ def build_split_figures(raw_ticker: str,
 
     fig_top.update_xaxes(type='category', range=[start_idx - 0.5, end_idx + 0.5], domain=[0, 1], showspikes=False, tickfont=dict(size=11), row=1, col=1)
     fig_top.update_xaxes(type='category', range=[start_idx - 0.5, end_idx + 0.5], domain=[0, 1], showticklabels=True, tickvals=month_ticks_vals, ticktext=month_ticks_text, showspikes=False, tickfont=dict(size=11), row=2, col=1)
-    
-    # 關鍵修改：取消價格主圖 yaxis 的 fixedrange 鎖定，允許前端動態適應
     fig_top.update_yaxes(title_text='', range=[p_min - (p_max - p_min) * 0.08, p_max + p_pad], fixedrange=False, showspikes=False, tickfont=dict(size=11), row=1, col=1)
     fig_top.update_yaxes(title_text='', range=[0, vol_upper], fixedrange=True, showspikes=False, tickfont=dict(size=11), row=2, col=1)
 
