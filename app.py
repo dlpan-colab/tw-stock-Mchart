@@ -1,6 +1,6 @@
 """
 app.py - 主應用程式介面與生命週期控制
-版本: 202611052300
+版本: 202611052310
 """
 
 import time
@@ -9,7 +9,7 @@ import streamlit as st
 import streamlit.components.v1 as components
 import cloud_sync
 
-MODULE_VERSION = "202611052300"
+MODULE_VERSION = "202611052310"
 
 from storage import (
     load_stock_history,
@@ -125,7 +125,9 @@ def on_stock_input_change():
     if val:
         resolved = resolve_ticker_code(val)
         st.session_state.stock_id = resolved
-        save_stock_history(resolved)
+        # 僅個股列入查詢歷史紀錄，指數不列入
+        if not resolved.startswith("^"):
+            save_stock_history(resolved)
 
 def on_index_select_change():
     sel = st.session_state.index_select_box
@@ -134,7 +136,7 @@ def on_index_select_change():
         if m:
             idx_code = m.group(1)
             st.session_state.stock_id = idx_code
-            save_stock_history(idx_code)
+            # 指數不列入查詢歷史紀錄
         st.session_state.index_select_box = "選擇主要市場指數..."
 
 with st.sidebar:
@@ -267,7 +269,9 @@ with st.sidebar:
         if input_code:
             resolved = resolve_ticker_code(input_code)
             st.session_state.stock_id = resolved
-            save_stock_history(resolved)
+            # 僅個股列入查詢歷史紀錄，指數不列入
+            if not resolved.startswith("^"):
+                save_stock_history(resolved)
             st.rerun()
 
     st.markdown("---")
@@ -337,8 +341,8 @@ if fig_top is None or fig_btm is None or df is None or df.empty:
     st.error(f"無法取得代號 {stock_id} 之歷史行情資料，請確認網路連線或稍後點擊查詢重試。")
     st.stop()
 
-# 背景靜態比對中文名稱，不觸發重複推播重繪
-if c_name and c_name != stock_id:
+# 背景靜態比對中文名稱，僅個股執行更名推播
+if not stock_id.startswith("^") and c_name and c_name != stock_id:
     update_stock_name_only(stock_id, c_name)
 
 top_height = 420 if is_mobile else 460
