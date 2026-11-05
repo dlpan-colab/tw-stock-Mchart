@@ -1,20 +1,19 @@
 """
 frontend.py - 前端 HTML/CSS 渲染與手勢/游標跨圖同步模組
-版本: 202611042135
+版本: 202611052140
 """
 
 MODULE_NAME = "frontend"
-MODULE_VERSION = "202611042135"
+MODULE_VERSION = "202611052140"
 
 import os
 import re
 
-
 def get_system_version() -> str:
     versions = [MODULE_VERSION]
     module_names = [
-        "app", "chart_builder", "indicators", "data_fetcher",
-        "storage", "config", "cloud_sync"
+        "app", "chart_builder", "indicators",
+        "data_fetcher", "storage", "config", "cloud_sync"
     ]
     base_dir = os.path.dirname(os.path.abspath(__file__))
     for mod_name in module_names:
@@ -30,9 +29,7 @@ def get_system_version() -> str:
             pass
     return max(versions)
 
-
 SYSTEM_VERSION = get_system_version()
-
 
 def get_legend_html(version_tag: str = None) -> str:
     tag = version_tag if version_tag else SYSTEM_VERSION
@@ -41,7 +38,6 @@ def get_legend_html(version_tag: str = None) -> str:
         <span style="background:#2c3e50; color:#ffffff; padding: 2px 8px; border-radius: 4px; font-weight:bold; font-size:12px;">台股技術與籌碼分析 v{tag}</span>
     </div>
     """
-
 
 js_template = """
 <style>
@@ -199,7 +195,8 @@ js_template = """
     var pct = prevC ? (diff / prevC * 100) : 0;
     var cClass = diff > 0 ? 'val-up' : (diff < 0 ? 'val-dn' : '');
 
-    info1.innerHTML = '<span class="tag-lbl"><b>' + d + '</b></span>' +
+    info1.innerHTML =
+      '<span class="tag-lbl"><b>' + d + '</b></span>' +
       '開:<span class="' + (o > prevC ? 'val-up' : (o < prevC ? 'val-dn' : '')) + '">' + fmtNum(o, 2) + '</span> ' +
       '高:<span class="' + (h > prevC ? 'val-up' : (h < prevC ? 'val-dn' : '')) + '">' + fmtNum(h, 2) + '</span> ' +
       '低:<span class="' + (l > prevC ? 'val-up' : (l < prevC ? 'val-dn' : '')) + '">' + fmtNum(l, 2) + '</span> ' +
@@ -209,18 +206,22 @@ js_template = """
       'MA5:' + fmtNum(ma5s[idx], 2) + ' MA20:' + fmtNum(ma20s[idx], 2) + ' MA60:' + fmtNum(ma60s[idx], 2);
 
     var oscClass = oscs[idx] > 0 ? 'val-up' : (oscs[idx] < 0 ? 'val-dn' : '');
-    infoTech.innerHTML = '<div><span class="tag-lbl"><b>' + d + '</b></span> ' +
+    infoTech.innerHTML =
+      '<div><span class="tag-lbl"><b>' + d + '</b></span> ' +
       '<span class="tag-lbl"><b>KD(9)</b></span><span style="color:#e74c3c;">K:' + fmtNum(ks[idx], 1) + '</span> <span style="color:#3498db;">D:' + fmtNum(ds[idx], 1) + '</span> | ' +
       '<span class="tag-lbl"><b>OBV</b></span><span style="color:#16a085;">OBV:' + fmtNum(obvs[idx], 0) + '</span> <span style="color:#8e44ad;">MA20:' + fmtNum(obvMas[idx], 0) + '</span></div>' +
       '<div><span class="tag-lbl"><b>MACD(' + d + ')</b></span><span style="color:#f39c12;">DIF:' + fmtNum(difs[idx], 2) + '</span> <span style="color:#2980b9;">MACD:' + fmtNum(macds[idx], 2) + '</span> OSC:<span class="' + oscClass + '">' + fmtNum(oscs[idx], 2) + '</span></div>';
 
-    var mDiffThousand = mDiffs[idx] !== null && mDiffs[idx] !== undefined ? Number(mDiffs[idx]) / 1000.0 : null;
-    var sDiffThousand = sDiffs[idx] !== null && sDiffs[idx] !== undefined ? Number(sDiffs[idx]) / 1000.0 : null;
-    infoMs.innerHTML = '<span class="tag-lbl"><b>資券[千張](' + d + ')</b></span>' +
+    var mDiffThousand = (mDiffs[idx] !== null && mDiffs[idx] !== undefined) ? Number(mDiffs[idx]) / 1000.0 : null;
+    var sDiffThousand = (sDiffs[idx] !== null && sDiffs[idx] !== undefined) ? Number(sDiffs[idx]) / 1000.0 : null;
+
+    infoMs.innerHTML =
+      '<span class="tag-lbl"><b>資券[千張](' + d + ')</b></span>' +
       '融資:' + fmtDiff(mDiffThousand, 3) + ' 融券:' + fmtDiff(sDiffThousand, 3) + ' ' +
       '<span class="tag-lbl"><b>券資比:' + fmtNum(rat[idx], 2) + '%</b></span>';
 
-    infoChip.innerHTML = '<span class="tag-lbl"><b>法人集保(' + d + ')</b></span>' +
+    infoChip.innerHTML =
+      '<span class="tag-lbl"><b>法人集保(' + d + ')</b></span>' +
       '外資:' + fmtDiff(foreigns[idx], 0) + ' 投信:' + fmtDiff(trusts[idx], 0) + ' 自營:' + fmtDiff(dealers[idx], 0) + ' | ' +
       '≥' + m1_thresh + '張: ' + fmtNum(m1_pcts[idx], 2) + '% ' +
       '≥' + m2_thresh + '張: ' + fmtNum(m2_pcts[idx], 2) + '%';
@@ -249,7 +250,6 @@ js_template = """
           if (r1 > maxBound) {
             r1 = maxBound;
             r0 = r1 - span;
-            // 修正來源圖自身的範圍，避免自身右邊露出空白
             var selfUpd = {};
             for (var s = 1; s <= 9; s++) {
               var sAx = (s === 1) ? 'xaxis' : 'xaxis' + s;
@@ -295,11 +295,21 @@ js_template = """
       var yaxis = elTop._fullLayout ? elTop._fullLayout.yaxis : null;
       if (!xaxis || typeof xaxis.p2c !== 'function') return;
 
-      var coord = xaxis.p2c(relX - (xaxis._offset || 0));
+      // === 議題 2 核心防呆：繪圖區邊界限制 ===
+      var plotLeft = (xaxis._offset !== undefined) ? xaxis._offset : 80;
+      var plotLength = (xaxis._length !== undefined) ? xaxis._length : (rect.width - plotLeft - 15);
+      var plotRight = plotLeft + plotLength;
+
+      // 手指或游標滑出繪圖區邊界（如左側 Y 軸或右側空白），直接阻擋，不觸發更新
+      if (relX < plotLeft || relX > plotRight) {
+        return;
+      }
+
+      var coord = xaxis.p2c(relX - plotLeft);
       var idx = Math.round(coord);
       if (idx >= 0 && idx < totalPoints) {
         updateAllPanes(idx);
-        var snapX = xaxis.c2p(idx) + (xaxis._offset || 0);
+        var snapX = xaxis.c2p(idx) + plotLeft;
         lineTop.style.left = snapX + 'px';
         lineBtm.style.left = snapX + 'px';
         lineTop.style.display = 'block';
@@ -338,7 +348,6 @@ js_template = """
 </script>
 """
 
-
 def render_interactive_chart_html(
     fig_top, fig_btm, df,
     m1_thresh=1000, m2_thresh=400,
@@ -360,8 +369,8 @@ def render_interactive_chart_html(
         date_series = df['Date']
     else:
         date_series = df.index
-    dates_list = date_series.strftime('%Y-%m-%d').tolist() if hasattr(date_series, 'strftime') else [str(x)[:10] for x in date_series]
 
+    dates_list = date_series.strftime('%Y-%m-%d').tolist() if hasattr(date_series, 'strftime') else [str(x)[:10] for x in date_series]
     opens_list = df['Open'].tolist()
     highs_list = df['High'].tolist()
     lows_list = df['Low'].tolist()
@@ -371,12 +380,14 @@ def render_interactive_chart_html(
     ma5_list = df['MA5'].fillna(0).tolist() if 'MA5' in df.columns else [0] * n_pts
     ma20_list = df['MA20'].fillna(0).tolist() if 'MA20' in df.columns else [0] * n_pts
     ma60_list = df['MA60'].fillna(0).tolist() if 'MA60' in df.columns else [0] * n_pts
+
     turnover_list = df['Turnover_Rate'].fillna(0).tolist() if 'Turnover_Rate' in df.columns else (
         df['TurnoverRate'].fillna(0).tolist() if 'TurnoverRate' in df.columns else [0] * n_pts
     )
 
     k_list = df['K'].fillna(0).tolist() if 'K' in df.columns else [0] * n_pts
     d_list = df['D'].fillna(0).tolist() if 'D' in df.columns else [0] * n_pts
+
     dif_list = df['DIF'].fillna(0).tolist() if 'DIF' in df.columns else [0] * n_pts
     macd_list = df['MACD'].fillna(0).tolist() if 'MACD' in df.columns else [0] * n_pts
     osc_list = df['OSC'].fillna(0).tolist() if 'OSC' in df.columns else [0] * n_pts
@@ -401,6 +412,7 @@ def render_interactive_chart_html(
     html = html.replace("__BTM_H__", f"{btm_height}px")
     html = html.replace("__PLOT_JSON_TOP__", p_top_json)
     html = html.replace("__PLOT_JSON_BTM__", p_btm_json)
+
     html = html.replace("__DATES__", json.dumps(dates_list))
     html = html.replace("__OPENS__", json.dumps(opens_list))
     html = html.replace("__HIGHS__", json.dumps(highs_list))
@@ -432,7 +444,6 @@ def render_interactive_chart_html(
     html = html.replace("__INITIAL_END_IDX__", str(end_idx))
 
     return html
-
 
 def get_component_html(*args, **kwargs):
     import inspect
