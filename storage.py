@@ -1,10 +1,10 @@
 """
 storage.py - 本地 SQLite 資料庫與股票歷史紀錄管理器
-版本: 202611052115
+版本: 202611052200
 """
 
 MODULE_NAME = "storage"
-MODULE_VERSION = "202611052115"
+MODULE_VERSION = "202611052200"
 
 import os
 import io
@@ -57,11 +57,6 @@ def _sync_cloud_pull():
         print(f"[CloudSync] Pull warning: {e}")
 
 def _sync_cloud_push(allow_empty_history: bool = False):
-    """
-    推播至 Google Drive。
-    預設情況下，若 stock_history.json 檔案為空或內容為 []，則強行阻擋上傳，
-    防止多執行緒/實例重啟期間誤將空檔覆寫雲端累積紀錄。
-    """
     try:
         from cloud_sync import push_file
         if os.path.exists(HISTORY_FILE):
@@ -221,11 +216,9 @@ def get_stock_chinese_name(pure_code: str) -> str:
     return pure_code
 
 def _recover_history_from_databases() -> list:
-    """若歷史紀錄遺失或為空，自動透過現存的資料庫檔案修復重組"""
     recovered = []
     seen = set()
 
-    # 優先從 Google Drive 雲端搜尋現有的 data_*.db 清單
     try:
         from cloud_sync import GoogleDriveSync
         sync_client = GoogleDriveSync()
@@ -247,7 +240,6 @@ def _recover_history_from_databases() -> list:
     except Exception as e:
         print(f"[Storage] 雲端資料庫掃描還原失敗: {e}")
 
-    # 若雲端未取得足夠資料，從本地 data_*.db 補齊
     local_files = glob.glob(os.path.join(STORAGE_DIR, "data_*.db"))
     local_files.sort(key=os.path.getmtime, reverse=True)
     for p in local_files:
@@ -280,7 +272,6 @@ def load_stock_history():
     if not isinstance(data, list):
         data = []
 
-    # 若為空清單，啟動資料庫自動修復還原
     if not data:
         data = _recover_history_from_databases()
 
@@ -329,7 +320,6 @@ def update_stock_name_only(code: str, name: str):
             pass
 
 def clear_stock_history():
-    """使用者點擊確認全刪時，才允許強制將空陣列推播覆寫雲端"""
     try:
         if os.path.exists(HISTORY_FILE):
             os.remove(HISTORY_FILE)
@@ -353,10 +343,6 @@ def remove_stocks_from_history(target_codes: list) -> list:
     return new_history
 
 def clear_recent_margin_data(pure_code: str, weeks: int = 2) -> str:
-    """
-    刪除指定股票最近 N 週的 margin_short 資料，並同步推回 Google Drive。
-    後續重新查詢時，系統將自動向官方 API 重新抓取乾淨正確的資券數據。
-    """
     pure_code = str(pure_code).strip()
     db_name = f"data_{pure_code}.db"
     db_path = os.path.join(STORAGE_DIR, db_name)
@@ -392,6 +378,17 @@ class StockChipStorage:
     def _init_db(self):
         with sqlite3.connect(self.db_path) as conn:
             cur = conn.cursor()
+            # 建立日 K 線歷史資料表 (供增量複用)
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS daily_k (
+                    date TEXT PRIMARY KEY,
+                    open REAL,
+                    high REAL,
+                    low REAL,
+                    close REAL,
+                    volume REAL
+                )
+            """)
             cur.execute("""
                 CREATE TABLE IF NOT EXISTS institutional_investors (
                     date TEXT PRIMARY KEY,
@@ -419,6 +416,13 @@ class StockChipStorage:
             """)
             conn.commit()
 
+    def get_latest_daily_k_date(self):
+        with sqlite3.connect(self.db_path) as conn:
+            cur = conn.cursor()
+            cur.execute("SELECT MAX(date) FROM daily_k")
+            row = cur.fetchone()
+            return row[0] if row and row[0] else None
+
     def get_latest_inst_date(self):
         with sqlite3.connect(self.db_path) as conn:
             cur = conn.cursor()
@@ -432,6 +436,41 @@ class StockChipStorage:
             cur.execute("SELECT MAX(date) FROM margin_short")
             row = cur.fetchone()
             return row[0] if row and row[0] else None
+
+    def get_latest_holding_date(self):
+        with sqlite3.connect(self.db_path) as conn:
+            cur = conn.cursor()
+            cur.execute("SELECT MAX(date) FROM shareholding_distribution")
+            row = cur.fetchone()
+            return row[0] if row and row[0] else None
+
+    def save_daily_k_df(self, df: pd.DataFrame):
+        if df is None or df.empty:
+            return
+        records = []
+        for d, row in df.iterrows():
+            d_str = d.strftime('%Y-%m-%d') if hasattr(d, 'strftime') else str(d)[:10]
+            records.append((
+                d_str,
+                float(row['Open']),
+                float(row['High']),
+                float(row['Low']),
+                float(row['Close']),
+                float(row['Volume'])
+            ))
+        with sqlite3.connect(self.db_path) as conn:
+            cur = conn.cursor()
+            cur.executemany("INSERT OR REPLACE INTO daily_k VALUES (?, ?, ?, ?, ?, ?)", records)
+            conn.commit()
+        sync_db_push(self.pure_code)
+
+    def load_daily_k_df(self) -> pd.DataFrame:
+        with sqlite3.connect(self.db_path) as conn:
+            df = pd.read_sql("SELECT date, open as Open, high as High, low as Low, close as Close, volume as Volume FROM daily_k ORDER BY date", conn)
+            if not df.empty:
+                df['date'] = pd.to_datetime(df['date'])
+                df = df.set_index('date')
+            return df
 
     def save_institutional_data(self, records):
         if not records:
