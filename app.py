@@ -1,6 +1,6 @@
 """
 app.py - 主應用程式介面與生命週期控制
-版本: 202611052125
+版本: 202611052130
 """
 
 import time
@@ -9,7 +9,7 @@ import streamlit as st
 import streamlit.components.v1 as components
 import cloud_sync
 
-MODULE_VERSION = "202611052125"
+MODULE_VERSION = "202611052130"
 
 from storage import (
     load_stock_history,
@@ -107,6 +107,8 @@ if "confirm_clear_all" not in st.session_state:
     st.session_state.confirm_clear_all = False
 if "prev_selected_history" not in st.session_state:
     st.session_state.prev_selected_history = []
+if "index_select_box" not in st.session_state:
+    st.session_state.index_select_box = "選擇主要市場指數..."
 
 def on_stock_input_change():
     val = st.session_state.stock_input_box.strip()
@@ -115,10 +117,20 @@ def on_stock_input_change():
         st.session_state.stock_id = resolved
         save_stock_history(resolved)
 
+def on_index_select_change():
+    sel = st.session_state.index_select_box
+    if sel != "選擇主要市場指數...":
+        m = re.search(r'\((.*?)\)', sel)
+        if m:
+            idx_code = m.group(1)
+            st.session_state.stock_id = idx_code
+            save_stock_history(idx_code)
+        # 選完後重置回預設提示文字，避免霸佔狀態
+        st.session_state.index_select_box = "選擇主要市場指數..."
+
 with st.sidebar:
     st.header("參數設定")
 
-    # 主要市場指數選單
     INDEX_CHOICES = [
         "選擇主要市場指數...",
         "加權指數 (^TWII)",
@@ -133,15 +145,12 @@ with st.sidebar:
         "德國DAX (^GDAXI)",
         "法國CAC40 (^FCHI)"
     ]
-    selected_index = st.selectbox("主要市場指數", INDEX_CHOICES, index=0)
-    if selected_index != "選擇主要市場指數...":
-        m = re.search(r'\((.*?)\)', selected_index)
-        if m:
-            idx_code = m.group(1)
-            if idx_code != st.session_state.stock_id:
-                st.session_state.stock_id = idx_code
-                save_stock_history(idx_code)
-                st.rerun()
+    st.selectbox(
+        "主要市場指數",
+        INDEX_CHOICES,
+        key="index_select_box",
+        on_change=on_index_select_change
+    )
 
     history_records = load_stock_history()
     history_codes = [str(item.get("code")).strip() for item in history_records if item.get("code")]
@@ -156,7 +165,6 @@ with st.sidebar:
                 key="history_multiselect"
             )
 
-            # 偵測最新勾選的項目：同步置頂至第一位並切換標的
             newly_added = [item for item in selected_history if item not in st.session_state.prev_selected_history]
             if newly_added:
                 latest_sel_code = newly_added[-1].split()[0]
@@ -168,7 +176,6 @@ with st.sidebar:
 
             st.session_state.prev_selected_history = selected_history
 
-            # 清除按鈕邏輯
             if st.button("清除歷史記錄", use_container_width=True):
                 if selected_history:
                     target_codes = [item.split()[0] for item in selected_history]
@@ -182,7 +189,6 @@ with st.sidebar:
         else:
             st.caption("目前無歷史紀錄")
 
-    # 無勾選項目時的二次確認區塊
     if st.session_state.confirm_clear_all:
         st.warning("⚠️ 未勾選任何標的，確定要清除全部歷史紀錄嗎？")
         c_del1, c_del2 = st.columns(2)
@@ -198,7 +204,6 @@ with st.sidebar:
                 st.session_state.confirm_clear_all = False
                 st.rerun()
 
-    # 安全同步輸入框初始值（在元件實例化之前設定，避開生命週期錯誤）
     if "stock_input_box" not in st.session_state or st.session_state.stock_input_box != st.session_state.stock_id:
         st.session_state.stock_input_box = st.session_state.stock_id
 
@@ -258,7 +263,6 @@ with st.sidebar:
                 time.sleep(1.0)
                 st.rerun()
 
-# 取得金鑰與連線狀態燈號 (0: ⚪灰燈, 1: 🔵藍燈, 2: 🟡黃燈)
 auth_status = cloud_sync.get_auth_status()
 if auth_status == 2:
     status_light = "🟡"
@@ -283,7 +287,6 @@ else:
 
 curr_idx = active_nav_codes.index(stock_id) if stock_id in active_nav_codes else 0
 
-# 頂部：上一檔 / 下一檔 功能列
 top_c1, top_c2 = st.columns(2)
 with top_c1:
     if st.button("◀ 上一檔", key="btn_top_prev"):
@@ -312,7 +315,6 @@ if fig_top is None or fig_btm is None or df is None or df.empty:
     st.error(f"無法取得代號 {stock_id} 之歷史行情資料，請確認網路連線或稍後點擊查詢重試。")
     st.stop()
 
-# 繪圖成功後僅針對目前標的更新中文名稱，不更動由切換觸發的清單順序
 update_stock_name_only(stock_id, c_name)
 
 top_height = 420 if is_mobile else 460
@@ -333,7 +335,6 @@ html_content = get_component_html(
 total_h = 1980 if is_mobile else 1880
 components.html(html_content, height=total_h, scrolling=False)
 
-# 底部：上一檔 / 下一檔 功能列
 btm_c1, btm_c2 = st.columns(2)
 with btm_c1:
     if st.button("◀ 上一檔", key="btn_btm_prev"):
