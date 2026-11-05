@@ -1,10 +1,10 @@
 """
 chart_builder.py - Plotly 圖表建置模組 (純淨無原生 hover/spikes)
-版本: 202611052115
+版本: 202611052155
 """
 
 MODULE_NAME = "chart_builder"
-MODULE_VERSION = "202611052115"
+MODULE_VERSION = "202611052155"
 
 from typing import Tuple, Optional
 import numpy as np
@@ -32,7 +32,6 @@ def build_split_figures(raw_ticker: str,
     full_ticker = k_res[1]
     shares_outstanding = k_res[2] if len(k_res) >= 3 else None
 
-    # 名稱與市場別判定
     c_name = fetch_stock_name(raw_ticker)
     if str(raw_ticker).startswith("^"):
         market_label = "指數"
@@ -226,7 +225,9 @@ def build_split_figures(raw_ticker: str,
 
     fig_top.update_xaxes(type='category', range=[start_idx - 0.5, end_idx + 0.5], domain=[0, 1], showspikes=False, tickfont=dict(size=11), row=1, col=1)
     fig_top.update_xaxes(type='category', range=[start_idx - 0.5, end_idx + 0.5], domain=[0, 1], showticklabels=True, tickvals=month_ticks_vals, ticktext=month_ticks_text, showspikes=False, tickfont=dict(size=11), row=2, col=1)
-    fig_top.update_yaxes(title_text='', range=[p_min - (p_max - p_min) * 0.08, p_max + p_pad], fixedrange=True, showspikes=False, tickfont=dict(size=11), row=1, col=1)
+    
+    # 關鍵修改：取消價格主圖 yaxis 的 fixedrange 鎖定，允許前端動態適應
+    fig_top.update_yaxes(title_text='', range=[p_min - (p_max - p_min) * 0.08, p_max + p_pad], fixedrange=False, showspikes=False, tickfont=dict(size=11), row=1, col=1)
     fig_top.update_yaxes(title_text='', range=[0, vol_upper], fixedrange=True, showspikes=False, tickfont=dict(size=11), row=2, col=1)
 
     # ===== 下半部副圖 =====
@@ -250,7 +251,6 @@ def build_split_figures(raw_ticker: str,
     fig_btm.add_trace(go.Scatter(x=date_str_list, y=df['OBV'], line=dict(color='#16a085', width=1.2), hoverinfo='none'), row=3, col=1)
     fig_btm.add_trace(go.Scatter(x=date_str_list, y=df['OBV_MA20'], line=dict(color='#8e44ad', width=1.1, dash='dash'), hoverinfo='none'), row=3, col=1)
 
-    # 籌碼軌道（若為指數標的，df 中的籌碼為全 0 或 NaN，線條留白）
     is_index = str(raw_ticker).startswith("^")
 
     if not is_index:
