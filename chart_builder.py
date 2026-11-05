@@ -1,10 +1,10 @@
 """
 chart_builder.py - Plotly 圖表建置模組 (純淨無原生 hover/spikes)
-版本: 202611052200
+版本: 202611052245
 """
 
 MODULE_NAME = "chart_builder"
-MODULE_VERSION = "202611052200"
+MODULE_VERSION = "202611052245"
 
 from typing import Tuple, Optional
 import numpy as np
@@ -49,7 +49,8 @@ def build_split_figures(raw_ticker: str,
         major1_thresh=major1_thresh,
         major2_thresh=major2_thresh,
         shares_outstanding=shares_outstanding,
-        status_placeholder=status_placeholder
+        status_placeholder=status_placeholder,
+        force_refresh=force_refresh
     )
 
     date_str_list = [d.strftime('%Y-%m-%d') for d in df.index]
