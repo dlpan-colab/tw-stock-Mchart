@@ -1,6 +1,6 @@
 """
 app.py - 主應用程式介面與生命週期控制
-版本: 202611052130
+版本: 202611052200
 """
 
 import time
@@ -9,7 +9,7 @@ import streamlit as st
 import streamlit.components.v1 as components
 import cloud_sync
 
-MODULE_VERSION = "202611052130"
+MODULE_VERSION = "202611052200"
 
 from storage import (
     load_stock_history,
@@ -47,6 +47,19 @@ def resolve_ticker_code(raw_input: str) -> str:
     if upper in INDEX_MAP:
         return INDEX_MAP[upper]
     return cleaned
+
+@st.cache_data(ttl=180, show_spinner=False)
+def get_cached_figures(stock_id, period, disp_days, target_date_val, m1_thresh, m2_thresh, is_mobile, force_refresh):
+    return build_split_figures(
+        raw_ticker=stock_id,
+        period=period,
+        display_days=disp_days,
+        base_date=target_date_val,
+        major1_thresh=m1_thresh,
+        major2_thresh=m2_thresh,
+        is_mobile=is_mobile,
+        force_refresh=force_refresh
+    )
 
 st.set_page_config(
     page_title="台股多指標+籌碼技術分析",
@@ -89,7 +102,6 @@ footer {visibility: hidden;}
 </style>
 """, unsafe_allow_html=True)
 
-# 載入歷史清單並判定股票代號預設值（優先取第一項，若清單為空則為 2330）
 initial_history = load_stock_history()
 default_code = "2330"
 if initial_history:
@@ -125,7 +137,6 @@ def on_index_select_change():
             idx_code = m.group(1)
             st.session_state.stock_id = idx_code
             save_stock_history(idx_code)
-        # 選完後重置回預設提示文字，避免霸佔狀態
         st.session_state.index_select_box = "選擇主要市場指數..."
 
 with st.sidebar:
@@ -241,6 +252,9 @@ with st.sidebar:
     m1_thresh = st.number_input("大戶門檻1 (張)", min_value=100, max_value=2000, value=1000, step=100)
     m2_thresh = st.number_input("大戶門檻2 (張)", min_value=100, max_value=1000, value=400, step=100)
 
+    # 效能優化控制項：強制更新籌碼資訊
+    force_refresh = st.checkbox("⚡ 強制更新籌碼資訊", value=False, help="勾選後將穿透本地快取，強制發動網路爬蟲重新更新法人、資券與大戶資料。")
+
     if st.button("查詢", use_container_width=True):
         input_code = st.session_state.stock_input_box.strip()
         if input_code:
@@ -301,14 +315,15 @@ with top_c2:
             st.session_state.stock_id = active_nav_codes[next_idx]
             st.rerun()
 
-fig_top, fig_btm, df, c_name, end_idx, disp_n = build_split_figures(
-    raw_ticker=stock_id,
+fig_top, fig_btm, df, c_name, end_idx, disp_n = get_cached_figures(
+    stock_id=stock_id,
     period=st.session_state.period,
-    display_days=st.session_state.disp_days,
-    base_date=target_date_val,
-    major1_thresh=m1_thresh,
-    major2_thresh=m2_thresh,
-    is_mobile=is_mobile
+    disp_days=st.session_state.disp_days,
+    target_date_val=target_date_val,
+    m1_thresh=m1_thresh,
+    m2_thresh=m2_thresh,
+    is_mobile=is_mobile,
+    force_refresh=force_refresh
 )
 
 if fig_top is None or fig_btm is None or df is None or df.empty:
