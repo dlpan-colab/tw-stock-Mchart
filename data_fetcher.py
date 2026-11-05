@@ -1,10 +1,10 @@
 """
 data_fetcher.py - 外部資料抓取與增量同步模組
-版本: 202611032230
+版本: 202611052115
 """
 
 MODULE_NAME = "data_fetcher"
-MODULE_VERSION = "202611032230"
+MODULE_VERSION = "202611052115"
 
 import os
 import re
@@ -21,16 +21,43 @@ from storage import StockChipStorage, get_stock_chinese_name
 
 FINMIND_TOKEN = ""
 
+INDEX_MAP = {
+    # 台股
+    "TWII": "^TWII", "加權": "^TWII", "大盤": "^TWII", "^TWII": "^TWII",
+    "TWOII": "^TWOII", "OTC": "^TWOII", "櫃買": "^TWOII", "^TWOII": "^TWOII",
+    # 美股
+    "DJI": "^DJI", "道瓊": "^DJI", "^DJI": "^DJI",
+    "IXIC": "^IXIC", "COMP": "^IXIC", "那指": "^IXIC", "那斯達克": "^IXIC", "^IXIC": "^IXIC",
+    "SOX": "^SOX", "費半": "^SOX", "半導體": "^SOX", "^SOX": "^SOX",
+    "GSPC": "^GSPC", "SP500": "^GSPC", "標普": "^GSPC", "^GSPC": "^GSPC",
+    # 亞股
+    "N225": "^N225", "NIKKEI": "^N225", "日經": "^N225", "^N225": "^N225",
+    "KS11": "^KS11", "KOSPI": "^KS11", "韓綜": "^KS11", "^KS11": "^KS11",
+    # 歐股
+    "FTSE": "^FTSE", "富時": "^FTSE", "英國": "^FTSE", "^FTSE": "^FTSE",
+    "GDAXI": "^GDAXI", "DAX": "^GDAXI", "德國": "^GDAXI", "^GDAXI": "^GDAXI",
+    "FCHI": "^FCHI", "CAC": "^FCHI", "法國": "^FCHI", "^FCHI": "^FCHI",
+}
+
+def resolve_ticker_code(raw_input: str) -> str:
+    cleaned = str(raw_input).strip()
+    upper = cleaned.upper()
+    if upper in INDEX_MAP:
+        return INDEX_MAP[upper]
+    return cleaned
 
 def fetch_stock_name(pure_code: str) -> str:
     return get_stock_chinese_name(pure_code)
 
-
 def _detect_market_suffix(pure_code: str, raw_ticker: str) -> list:
     """
-    依據輸入後綴或台股名稱快取字典 (tw_stock_names.json) 鎖定市場別 (.TW 或 .TWO)。
-    若無明確快取，則預設優先查詢上市 (.TW)，再備援查詢上櫃 (.TWO)。
+    若為指數（以 ^ 開頭），不補任何市場後綴。
+    若明確指定 .TW 或 .TWO 則直接採用。
+    其餘台股純代號依字典或預設依序嘗試 [.TW, .TWO]。
     """
+    if str(pure_code).startswith("^") or str(raw_ticker).startswith("^"):
+        return [""]
+
     raw_upper = str(raw_ticker).strip().upper()
     if raw_upper.endswith(".TW"):
         return ['.TW']
@@ -57,12 +84,16 @@ def _detect_market_suffix(pure_code: str, raw_ticker: str) -> list:
 
     return ['.TW', '.TWO']
 
-
 def fetch_stock_daily_k(raw_ticker: str, period: str = "1y", base_date: str = None):
     import yfinance as yf
-    raw_str = str(raw_ticker).strip().upper()
-    match = re.search(r'\d+', raw_str)
-    pure_code = match.group(0) if match else raw_str.split('.')[0]
+    resolved_ticker = resolve_ticker_code(raw_ticker)
+    raw_str = resolved_ticker.strip().upper()
+
+    if raw_str.startswith("^"):
+        pure_code = raw_str
+    else:
+        match = re.search(r'\d+', raw_str)
+        pure_code = match.group(0) if match else raw_str.split('.')[0]
 
     ticker_obj = None
     df = pd.DataFrame()
@@ -107,7 +138,7 @@ def fetch_stock_daily_k(raw_ticker: str, period: str = "1y", base_date: str = No
             fast_info = ticker_obj.fast_info
             cur_price = fast_info.last_price
             v_val = fast_info.last_volume if fast_info.last_volume else 0
-            if cur_price is not None and not np.isnan(cur_price) and cur_price > 0 and v_val > 0:
+            if cur_price is not None and not np.isnan(cur_price) and cur_price > 0:
                 o_val = fast_info.open if fast_info.open and fast_info.open > 0 else cur_price
                 h_val = fast_info.day_high if fast_info.day_high and fast_info.day_high > 0 else cur_price
                 l_val = fast_info.day_low if fast_info.day_low and fast_info.day_low > 0 else cur_price
@@ -122,11 +153,17 @@ def fetch_stock_daily_k(raw_ticker: str, period: str = "1y", base_date: str = No
         except Exception:
             pass
 
-    df = df[df['Volume'] > 0]
+    # 成交量過濾：個股需 > 0，但國際指數若為 0 亦允許保留，避免整張圖被過濾掉
+    if not pure_code.startswith("^"):
+        df = df[df['Volume'] > 0]
     return df, ticker_obj.ticker, shares_outstanding
 
-
 def sync_chip_data(pure_code: str, df_dates, status_placeholder=None):
+    pure_code = str(pure_code).strip()
+    # 指數不抓取個股三大法人、資券與集保
+    if pure_code.startswith("^"):
+        return pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
+
     storage = StockChipStorage(pure_code)
     headers = {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
@@ -139,7 +176,6 @@ def sync_chip_data(pure_code: str, df_dates, status_placeholder=None):
     target_start_date = (df_dates[0] - timedelta(days=5)).strftime('%Y-%m-%d')
     inst_query_start = (pd.to_datetime(last_inst_date) + timedelta(days=1)).strftime('%Y-%m-%d') if last_inst_date else target_start_date
     margin_query_start = (pd.to_datetime(last_margin_date) + timedelta(days=1)).strftime('%Y-%m-%d') if last_margin_date else target_start_date
-
     latest_trade_date_str = df_dates[-1].strftime('%Y-%m-%d')
 
     # 1. 法人買賣超同步
@@ -242,7 +278,6 @@ def sync_chip_data(pure_code: str, df_dates, status_placeholder=None):
     # 3. 集保大戶持股同步
     holding_df = storage.load_holding_df()
     existing_weeks = set(holding_df['date'].dt.strftime('%Y%m%d')) if not holding_df.empty else set()
-
     try:
         session_tdcc = requests.Session()
         url_home = "https://www.tdcc.com.tw/portal/zh/smWeb/qryStock"
@@ -252,7 +287,6 @@ def sync_chip_data(pure_code: str, df_dates, status_placeholder=None):
             form = soup_home.find('form')
             action = form.get('action', '') if form else ''
             target_url = f"https://www.tdcc.com.tw{action}" if action.startswith('/') else (action if action.startswith('http') else f"https://www.tdcc.com.tw/portal/zh/smWeb/{action}")
-
             available_dates = [
                 o.get('value').strip() for o in soup_home.find_all('option')
                 if o.get('value') and o.get('value').strip().isdigit() and len(o.get('value').strip()) == 8 and o.get('value').strip().startswith('20')
@@ -263,7 +297,6 @@ def sync_chip_data(pure_code: str, df_dates, status_placeholder=None):
                 d = today - timedelta(days=today.weekday() + 7 * i)
                 target_dates.append((d + timedelta(days=4)).strftime('%Y%m%d'))
                 target_dates.append((d + timedelta(days=3)).strftime('%Y%m%d'))
-
             target_dates = sorted(list(set(target_dates)), reverse=True)
             missing_dates = [d for d in target_dates if d not in existing_weeks][:20]
 
@@ -294,12 +327,11 @@ def sync_chip_data(pure_code: str, df_dates, status_placeholder=None):
                                     h_rec.append((d_fmt, int(row[lvl_col]), float(str(row[pct_col]).replace('%', '').replace(',', ''))))
                                 except ValueError:
                                     pass
-                            break
+                        break
                     except Exception:
                         time.sleep(0.3)
                         continue
                 time.sleep(0.15)
-
             if h_rec:
                 storage.save_holding_data(h_rec)
     except Exception:
