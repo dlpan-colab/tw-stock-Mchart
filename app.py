@@ -1,14 +1,15 @@
 """
 app.py - 主應用程式介面與生命週期控制
-版本: 202611052115
+版本: 202611052125
 """
 
 import time
+import re
 import streamlit as st
 import streamlit.components.v1 as components
 import cloud_sync
 
-MODULE_VERSION = "202611052115"
+MODULE_VERSION = "202611052125"
 
 from storage import (
     load_stock_history,
@@ -21,7 +22,31 @@ from storage import (
 )
 from chart_builder import build_split_figures
 from frontend import get_legend_html, get_component_html
-from data_fetcher import resolve_ticker_code
+
+INDEX_MAP = {
+    # 台股
+    "TWII": "^TWII", "加權": "^TWII", "大盤": "^TWII", "^TWII": "^TWII",
+    "TWOII": "^TWOII", "OTC": "^TWOII", "櫃買": "^TWOII", "^TWOII": "^TWOII",
+    # 美股
+    "DJI": "^DJI", "道瓊": "^DJI", "^DJI": "^DJI",
+    "IXIC": "^IXIC", "COMP": "^IXIC", "那指": "^IXIC", "那斯達克": "^IXIC", "^IXIC": "^IXIC",
+    "SOX": "^SOX", "費半": "^SOX", "半導體": "^SOX", "^SOX": "^SOX",
+    "GSPC": "^GSPC", "SP500": "^GSPC", "標普": "^GSPC", "^GSPC": "^GSPC",
+    # 亞股
+    "N225": "^N225", "NIKKEI": "^N225", "日經": "^N225", "^N225": "^N225",
+    "KS11": "^KS11", "KOSPI": "^KS11", "韓綜": "^KS11", "^KS11": "^KS11",
+    # 歐股
+    "FTSE": "^FTSE", "富時": "^FTSE", "英國": "^FTSE", "^FTSE": "^FTSE",
+    "GDAXI": "^GDAXI", "DAX": "^GDAXI", "德國": "^GDAXI", "^GDAXI": "^GDAXI",
+    "FCHI": "^FCHI", "CAC": "^FCHI", "法國": "^FCHI", "^FCHI": "^FCHI",
+}
+
+def resolve_ticker_code(raw_input: str) -> str:
+    cleaned = str(raw_input).strip()
+    upper = cleaned.upper()
+    if upper in INDEX_MAP:
+        return INDEX_MAP[upper]
+    return cleaned
 
 st.set_page_config(
     page_title="台股多指標+籌碼技術分析",
@@ -110,7 +135,6 @@ with st.sidebar:
     ]
     selected_index = st.selectbox("主要市場指數", INDEX_CHOICES, index=0)
     if selected_index != "選擇主要市場指數...":
-        import re
         m = re.search(r'\((.*?)\)', selected_index)
         if m:
             idx_code = m.group(1)
