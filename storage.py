@@ -1,10 +1,10 @@
 """
-storage.py - 本地 SQLite 資料庫與股票歷史紀錄管理器
-版本: 202611052200
+storage.py - 本地 SQLite 資料庫與股票歷史紀錄管理器 (非同步雲端同步版)
+版本: 202611052300
 """
 
 MODULE_NAME = "storage"
-MODULE_VERSION = "202611052200"
+MODULE_VERSION = "202611052300"
 
 import os
 import io
@@ -12,6 +12,7 @@ import json
 import glob
 import sqlite3
 import time
+import threading
 import requests
 from bs4 import BeautifulSoup
 from datetime import datetime, timedelta
@@ -48,7 +49,12 @@ COMMON_STOCK_NAMES = {
     "6456": "GIS-KY", "6505": "台塑化", "8111": "立碁", "8131": "福懋科"
 }
 
-def _sync_cloud_pull():
+def _async_run(func, *args, **kwargs):
+    """將耗時的網路同步作業丟入背景執行緒，絕不卡死前端主頁面"""
+    t = threading.Thread(target=func, args=args, kwargs=kwargs, daemon=True)
+    t.start()
+
+def _do_sync_cloud_pull():
     try:
         from cloud_sync import pull_file
         pull_file("stock_history.json", HISTORY_FILE)
@@ -56,7 +62,12 @@ def _sync_cloud_pull():
     except Exception as e:
         print(f"[CloudSync] Pull warning: {e}")
 
-def _sync_cloud_push(allow_empty_history: bool = False):
+def _sync_cloud_pull():
+    # 歷史紀錄與中文檔名，若本地已存在則優先使用本地，不重複同步拉取
+    if not os.path.exists(HISTORY_FILE) or not os.path.exists(NAMES_CACHE_FILE):
+        _do_sync_cloud_pull()
+
+def _do_sync_cloud_push(allow_empty_history: bool = False):
     try:
         from cloud_sync import push_file
         if os.path.exists(HISTORY_FILE):
@@ -67,7 +78,6 @@ def _sync_cloud_push(allow_empty_history: bool = False):
                         chk_data = json.load(f)
                     if not chk_data or len(chk_data) == 0:
                         can_push = False
-                        print("[CloudSync] 偵測到歷史紀錄為空陣列，觸發防空覆寫保護，取消推播。")
                 except Exception:
                     can_push = False
             if can_push:
@@ -77,7 +87,10 @@ def _sync_cloud_push(allow_empty_history: bool = False):
     except Exception as e:
         print(f"[CloudSync] Push warning: {e}")
 
-def sync_db_pull(pure_code: str):
+def _sync_cloud_push(allow_empty_history: bool = False):
+    _async_run(_do_sync_cloud_push, allow_empty_history=allow_empty_history)
+
+def _do_sync_db_pull(pure_code: str):
     try:
         from cloud_sync import pull_file
         db_name = f"data_{pure_code}.db"
@@ -86,7 +99,15 @@ def sync_db_pull(pure_code: str):
     except Exception as e:
         print(f"[CloudSync] DB pull warning for {pure_code}: {e}")
 
-def sync_db_push(pure_code: str):
+def sync_db_pull(pure_code: str):
+    db_name = f"data_{pure_code}.db"
+    local_path = os.path.join(STORAGE_DIR, db_name)
+    # 本地優先：本地若已有檔案且非空，跳過 Google Drive Pull (立省 2~3 秒)
+    if os.path.exists(local_path) and os.path.getsize(local_path) > 0:
+        return
+    _do_sync_db_pull(pure_code)
+
+def _do_sync_db_push(pure_code: str):
     try:
         from cloud_sync import push_file
         db_name = f"data_{pure_code}.db"
@@ -95,6 +116,10 @@ def sync_db_push(pure_code: str):
             push_file(local_path, db_name)
     except Exception as e:
         print(f"[CloudSync] DB push warning for {pure_code}: {e}")
+
+def sync_db_push(pure_code: str):
+    # 背景非同步推播：主畫面 0 秒通過，背景上傳 Google Drive (立省 3~4 秒)
+    _async_run(_do_sync_db_push, pure_code)
 
 def _load_name_cache() -> dict:
     try:
@@ -149,7 +174,7 @@ def get_stock_chinese_name(pure_code: str) -> str:
     url_twse = f"https://isin.twse.com.tw/isin/single_main.jsp?owncode={pure_code}&stockname="
     for attempt in range(2):
         try:
-            res = requests.get(url_twse, headers=headers, timeout=5)
+            res = requests.get(url_twse, headers=headers, timeout=3)
             if res.status_code == 200:
                 soup = BeautifulSoup(res.text, "html.parser")
                 for r in soup.find_all("tr"):
@@ -162,12 +187,12 @@ def get_stock_chinese_name(pure_code: str) -> str:
         except Exception:
             pass
         if attempt == 0:
-            time.sleep(0.3)
+            time.sleep(0.2)
 
     # 2. TWSE 官方 OpenAPI 清單比對備援
     try:
         url_openapi = "https://openapi.twse.com.tw/v1/exchangeReport/BWIBBU_ALL"
-        res_o = requests.get(url_openapi, headers=headers, timeout=5)
+        res_o = requests.get(url_openapi, headers=headers, timeout=3)
         if res_o.status_code == 200:
             data = res_o.json()
             if isinstance(data, list):
@@ -185,7 +210,7 @@ def get_stock_chinese_name(pure_code: str) -> str:
     # 3. TPEx 櫃買中心 API (上櫃股票)
     try:
         url_tpex = f"https://www.tpex.org.tw/web/stock/aftertrading/otc_quotes_no1430/stk_wn1430_result.php?l=zh-tw&stkno={pure_code}"
-        res_t = requests.get(url_tpex, headers=headers, timeout=5)
+        res_t = requests.get(url_tpex, headers=headers, timeout=3)
         if res_t.status_code == 200:
             data = res_t.json()
             if "aaData" in data and len(data["aaData"]) > 0:
@@ -200,7 +225,7 @@ def get_stock_chinese_name(pure_code: str) -> str:
     try:
         for suffix in [".TW", ".TWO"]:
             y_url = f"https://query2.finance.yahoo.com/v1/finance/search?q={pure_code}{suffix}"
-            y_res = requests.get(y_url, headers=headers, timeout=4)
+            y_res = requests.get(y_url, headers=headers, timeout=3)
             if y_res.status_code == 200:
                 quotes = y_res.json().get("quotes", [])
                 if quotes:
@@ -254,7 +279,6 @@ def _recover_history_from_databases() -> list:
             with open(HISTORY_FILE, "w", encoding="utf-8") as f:
                 json.dump(recovered[:30], f, ensure_ascii=False, indent=2)
             _sync_cloud_push(allow_empty_history=False)
-            print(f"[Storage] 已自動由資料庫還原 {len(recovered)} 筆歷史紀錄！")
         except Exception:
             pass
     return recovered[:30]
@@ -378,7 +402,6 @@ class StockChipStorage:
     def _init_db(self):
         with sqlite3.connect(self.db_path) as conn:
             cur = conn.cursor()
-            # 建立日 K 線歷史資料表 (供增量複用)
             cur.execute("""
                 CREATE TABLE IF NOT EXISTS daily_k (
                     date TEXT PRIMARY KEY,
@@ -474,7 +497,6 @@ class StockChipStorage:
 
     def save_institutional_data(self, records):
         if not records:
-            sync_db_push(self.pure_code)
             return
         with sqlite3.connect(self.db_path) as conn:
             cur = conn.cursor()
@@ -484,7 +506,6 @@ class StockChipStorage:
 
     def save_margin_data(self, records):
         if not records:
-            sync_db_push(self.pure_code)
             return
         with sqlite3.connect(self.db_path) as conn:
             cur = conn.cursor()
@@ -494,7 +515,6 @@ class StockChipStorage:
 
     def save_holding_data(self, records):
         if not records:
-            sync_db_push(self.pure_code)
             return
         with sqlite3.connect(self.db_path) as conn:
             cur = conn.cursor()
