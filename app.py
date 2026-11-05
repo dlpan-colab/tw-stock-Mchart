@@ -1,6 +1,6 @@
 """
 app.py - 主應用程式介面與生命週期控制
-版本: 202611052230
+版本: 202611052240
 """
 
 import time
@@ -9,7 +9,7 @@ import streamlit as st
 import streamlit.components.v1 as components
 import cloud_sync
 
-MODULE_VERSION = "202611052230"
+MODULE_VERSION = "202611052240"
 
 from storage import (
     load_stock_history,
@@ -67,13 +67,11 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# 徹底鎖死手機直向並排，並將按鈕寬度縮為原本 1/3 (約 65px)
 st.markdown("""
 <style>
 .block-container {padding-top: 3.5rem; padding-bottom: 0rem; padding-left: 1rem; padding-right: 1rem;}
 footer {visibility: hidden;}
 
-/* 強制所有水平區塊絕不折行、橫向置中 */
 [data-testid="stHorizontalBlock"] {
     display: flex !important;
     flex-direction: row !important;
@@ -83,7 +81,6 @@ footer {visibility: hidden;}
     gap: 8px !important;
 }
 
-/* 包含按鈕的欄位寬度鎖死為 65px (原寬度的 1/3) */
 [data-testid="stHorizontalBlock"] > div {
     flex: 0 0 65px !important;
     width: 65px !important;
@@ -91,7 +88,6 @@ footer {visibility: hidden;}
     max-width: 65px !important;
 }
 
-/* 按鈕本體樣式收縮為緊湊膠囊型 */
 [data-testid="stHorizontalBlock"] button {
     width: 100% !important;
     min-width: 65px !important;
@@ -119,6 +115,10 @@ if "confirm_clear_all" not in st.session_state:
     st.session_state.confirm_clear_all = False
 if "index_select_box" not in st.session_state:
     st.session_state.index_select_box = "選擇主要市場指數..."
+if "ms_counter" not in st.session_state:
+    st.session_state.ms_counter = 0
+if "history_multiselect_prev" not in st.session_state:
+    st.session_state.history_multiselect_prev = []
 
 def on_stock_input_change():
     val = st.session_state.stock_input_box.strip()
@@ -136,14 +136,6 @@ def on_index_select_change():
             st.session_state.stock_id = idx_code
             save_stock_history(idx_code)
         st.session_state.index_select_box = "選擇主要市場指數..."
-
-def on_history_multiselect_change():
-    selected = st.session_state.history_multiselect
-    if selected:
-        codes = [item.split()[0] for item in selected]
-        for c in codes:
-            save_stock_history(c)
-        st.session_state.stock_id = codes[-1]
 
 with st.sidebar:
     st.header("參數設定")
@@ -176,20 +168,40 @@ with st.sidebar:
         if history_codes:
             history_display = [f"{h.get('code')} {h.get('name', '')}".strip() for h in history_records]
             
+            current_ms_key = f"history_multiselect_{st.session_state.ms_counter}"
             selected_history = st.multiselect(
                 "點擊展開並勾選標的...",
                 options=history_display,
                 default=[],
-                key="history_multiselect",
-                on_change=on_history_multiselect_change
+                key=current_ms_key
             )
 
-            # 清除按鈕單獨佔一列
+            # 偵測到有新勾選項目時，精準比對出最後點擊的項目並依序置頂
+            newly_selected = [item for item in selected_history if item not in st.session_state.history_multiselect_prev]
+            if newly_selected:
+                latest_clicked_code = newly_selected[-1].split()[0]
+                
+                # 先置頂其他選取的標的，最後置頂最新點選者
+                all_codes = [item.split()[0] for item in selected_history]
+                other_codes = [c for c in all_codes if c != latest_clicked_code]
+                for c in other_codes:
+                    save_stock_history(c)
+                save_stock_history(latest_clicked_code)
+
+                st.session_state.stock_id = latest_clicked_code
+                st.session_state.history_multiselect_prev = []
+                st.session_state.ms_counter += 1
+                st.rerun()
+
+            st.session_state.history_multiselect_prev = selected_history
+
             if st.button("清除歷史記錄", use_container_width=True):
                 if selected_history:
                     target_codes = [item.split()[0] for item in selected_history]
                     remove_stocks_from_history(target_codes)
                     st.session_state.confirm_clear_all = False
+                    st.session_state.history_multiselect_prev = []
+                    st.session_state.ms_counter += 1
                     st.rerun()
                 else:
                     st.session_state.confirm_clear_all = True
@@ -205,6 +217,8 @@ with st.sidebar:
                 clear_stock_history()
                 st.session_state.stock_id = "2330"
                 st.session_state.confirm_clear_all = False
+                st.session_state.history_multiselect_prev = []
+                st.session_state.ms_counter += 1
                 st.rerun()
         with c_del2:
             if st.button("取消", key="btn_cancel_delete_all", use_container_width=True):
@@ -248,7 +262,6 @@ with st.sidebar:
     m1_thresh = st.number_input("大戶門檻1 (張)", min_value=100, max_value=2000, value=1000, step=100)
     m2_thresh = st.number_input("大戶門檻2 (張)", min_value=100, max_value=1000, value=400, step=100)
 
-    # 效能優化控制項：強制更新籌碼資訊
     force_refresh = st.checkbox("⚡ 強制更新籌碼資訊", value=False, help="勾選後將穿透本地快取，強制發動網路爬蟲重新更新法人、資券與大戶資料。")
 
     if st.button("查詢", use_container_width=True):
