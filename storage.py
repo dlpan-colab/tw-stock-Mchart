@@ -1,10 +1,10 @@
 """
 storage.py - 本地 SQLite 資料庫與股票歷史紀錄管理器
-版本: 202611042150
+版本: 202611052115
 """
 
 MODULE_NAME = "storage"
-MODULE_VERSION = "202611042150"
+MODULE_VERSION = "202611052115"
 
 import os
 import io
@@ -22,18 +22,31 @@ HISTORY_FILE = os.path.join(STORAGE_DIR, "stock_history.json")
 NAMES_CACHE_FILE = os.path.join(STORAGE_DIR, "tw_stock_names.json")
 
 COMMON_STOCK_NAMES = {
-    "1101": "台泥", "1102": "亞泥", "1104": "環泥", "1216": "統一", "1301": "台塑",
-    "1303": "南亞", "1312": "國喬", "1326": "台化", "1504": "東元", "2002": "中鋼",
-    "2105": "正新", "2303": "聯電", "2308": "台達電", "2312": "金寶", "2317": "鴻海",
-    "2324": "仁寶", "2327": "國巨", "2330": "台積電", "2374": "佳能", "2382": "廣達",
-    "2454": "聯發科", "2478": "大毅", "2492": "華新科", "2609": "陽明", "2615": "萬海",
-    "3008": "大立光", "3022": "威強電", "3088": "艾訊", "3231": "緯創", "3481": "群創",
-    "3653": "健策", "3661": "世芯-KY", "3718": "中光電投控", "4526": "東台",
-    "4991": "環宇-KY", "5439": "高技", "6191": "精成科", "6217": "中探針",
-    "6234": "高僑", "6425": "易發", "6456": "GIS-KY", "6505": "台塑化",
-    "8111": "立碁", "8131": "福懋科"
+    # 主要市場指數
+    "^TWII": "加權指數",
+    "^TWOII": "櫃買指數",
+    "^DJI": "道瓊指數",
+    "^IXIC": "那斯達克",
+    "^SOX": "費城半導體",
+    "^GSPC": "標普500",
+    "^N225": "日經225",
+    "^KS11": "韓國綜合",
+    "^FTSE": "英國富時100",
+    "^GDAXI": "德國DAX",
+    "^FCHI": "法國CAC40",
+    # 常用個股
+    "1101": "台泥", "1102": "亞泥", "1104": "環泥", "1216": "統一",
+    "1301": "台塑", "1303": "南亞", "1312": "國喬", "1326": "台化",
+    "1504": "東元", "2002": "中鋼", "2105": "正新", "2303": "聯電",
+    "2308": "台達電", "2312": "金寶", "2317": "鴻海", "2324": "仁寶",
+    "2327": "國巨", "2330": "台積電", "2374": "佳能", "2382": "廣達",
+    "2454": "聯發科", "2478": "大毅", "2492": "華新科", "2609": "陽明",
+    "2615": "萬海", "3008": "大立光", "3022": "威強電", "3088": "艾訊",
+    "3231": "緯創", "3481": "群創", "3653": "健策", "3661": "世芯-KY",
+    "3718": "中光電投控", "4526": "東台", "4991": "環宇-KY", "5439": "高技",
+    "6191": "精成科", "6217": "中探針", "6234": "高僑", "6425": "易發",
+    "6456": "GIS-KY", "6505": "台塑化", "8111": "立碁", "8131": "福懋科"
 }
-
 
 def _sync_cloud_pull():
     try:
@@ -42,7 +55,6 @@ def _sync_cloud_pull():
         pull_file("tw_stock_names.json", NAMES_CACHE_FILE)
     except Exception as e:
         print(f"[CloudSync] Pull warning: {e}")
-
 
 def _sync_cloud_push(allow_empty_history: bool = False):
     """
@@ -65,12 +77,10 @@ def _sync_cloud_push(allow_empty_history: bool = False):
                     can_push = False
             if can_push:
                 push_file(HISTORY_FILE, "stock_history.json")
-
         if os.path.exists(NAMES_CACHE_FILE):
             push_file(NAMES_CACHE_FILE, "tw_stock_names.json")
     except Exception as e:
         print(f"[CloudSync] Push warning: {e}")
-
 
 def sync_db_pull(pure_code: str):
     try:
@@ -80,7 +90,6 @@ def sync_db_pull(pure_code: str):
         pull_file(db_name, local_path)
     except Exception as e:
         print(f"[CloudSync] DB pull warning for {pure_code}: {e}")
-
 
 def sync_db_push(pure_code: str):
     try:
@@ -92,7 +101,6 @@ def sync_db_push(pure_code: str):
     except Exception as e:
         print(f"[CloudSync] DB push warning for {pure_code}: {e}")
 
-
 def _load_name_cache() -> dict:
     try:
         if os.path.exists(NAMES_CACHE_FILE):
@@ -101,7 +109,6 @@ def _load_name_cache() -> dict:
     except Exception:
         pass
     return {}
-
 
 def _save_name_cache(code: str, name: str):
     code = str(code).strip()
@@ -118,7 +125,6 @@ def _save_name_cache(code: str, name: str):
     except Exception:
         pass
 
-
 def load_stock_names_dict() -> dict:
     cache = _load_name_cache()
     if not cache:
@@ -126,7 +132,6 @@ def load_stock_names_dict() -> dict:
     merged = COMMON_STOCK_NAMES.copy()
     merged.update(cache)
     return merged
-
 
 def get_stock_chinese_name(pure_code: str) -> str:
     pure_code = str(pure_code).strip()
@@ -138,7 +143,12 @@ def get_stock_chinese_name(pure_code: str) -> str:
     if pure_code in cache and cache[pure_code] and cache[pure_code] != pure_code:
         return cache[pure_code]
 
-    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"}
+    if pure_code.startswith("^"):
+        return pure_code
+
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+    }
 
     # 1. TWSE ISIN 單筆查詢
     url_twse = f"https://isin.twse.com.tw/isin/single_main.jsp?owncode={pure_code}&stockname="
@@ -210,7 +220,6 @@ def get_stock_chinese_name(pure_code: str) -> str:
 
     return pure_code
 
-
 def _recover_history_from_databases() -> list:
     """若歷史紀錄遺失或為空，自動透過現存的資料庫檔案修復重組"""
     recovered = []
@@ -232,7 +241,7 @@ def _recover_history_from_databases() -> list:
             for f in files:
                 fname = f.get("name", "")
                 pure = fname.replace("data_", "").replace(".db", "").strip()
-                if pure.isdigit() and pure not in seen:
+                if (pure.isdigit() or pure.startswith("^")) and pure not in seen:
                     seen.add(pure)
                     recovered.append({"code": pure, "name": get_stock_chinese_name(pure)})
     except Exception as e:
@@ -244,7 +253,7 @@ def _recover_history_from_databases() -> list:
     for p in local_files:
         base = os.path.basename(p)
         pure = base.replace("data_", "").replace(".db", "").strip()
-        if pure.isdigit() and pure not in seen:
+        if (pure.isdigit() or pure.startswith("^")) and pure not in seen:
             seen.add(pure)
             recovered.append({"code": pure, "name": get_stock_chinese_name(pure)})
 
@@ -258,7 +267,6 @@ def _recover_history_from_databases() -> list:
             pass
     return recovered[:30]
 
-
 def load_stock_history():
     _sync_cloud_pull()
     data = []
@@ -268,6 +276,7 @@ def load_stock_history():
                 data = json.load(f)
         except Exception:
             data = []
+
     if not isinstance(data, list):
         data = []
 
@@ -282,12 +291,10 @@ def load_stock_history():
             item["name"] = get_stock_chinese_name(code)
     return data
 
-
 def save_stock_history(code: str, name: str = None):
     code = str(code).strip()
     if not code:
         return load_stock_history()
-
     c_name = name.strip() if name and name.strip() != code else get_stock_chinese_name(code)
     history = load_stock_history()
     new_hist = [h for h in history if str(h.get("code")).strip() != code]
@@ -300,7 +307,6 @@ def save_stock_history(code: str, name: str = None):
     except Exception:
         pass
     return new_hist
-
 
 def update_stock_name_only(code: str, name: str):
     code = str(code).strip()
@@ -322,7 +328,6 @@ def update_stock_name_only(code: str, name: str):
         except Exception:
             pass
 
-
 def clear_stock_history():
     """使用者點擊確認全刪時，才允許強制將空陣列推播覆寫雲端"""
     try:
@@ -335,7 +340,6 @@ def clear_stock_history():
         pass
     return []
 
-
 def remove_stocks_from_history(target_codes: list) -> list:
     history = load_stock_history()
     target_set = set(str(c).strip() for c in target_codes)
@@ -347,7 +351,6 @@ def remove_stocks_from_history(target_codes: list) -> list:
     except Exception:
         pass
     return new_history
-
 
 def clear_recent_margin_data(pure_code: str, weeks: int = 2) -> str:
     """
@@ -373,12 +376,10 @@ def clear_recent_margin_data(pure_code: str, weeks: int = 2) -> str:
             cur.execute("DELETE FROM margin_short WHERE date >= ?", (cutoff_date,))
             deleted_rows = cur.rowcount
             conn.commit()
-
         sync_db_push(pure_code)
         return f"已成功清除 {pure_code} 自 {cutoff_date} 起（近 {weeks} 週）共 {deleted_rows} 筆資券資料，重新載入將自動重抓。"
     except Exception as e:
         return f"清除資券資料失敗: {e}"
-
 
 class StockChipStorage:
     def __init__(self, pure_code: str):
