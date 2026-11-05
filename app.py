@@ -1,6 +1,6 @@
 """
 app.py - 主應用程式介面與生命週期控制
-版本: 202611052240
+版本: 202611052300
 """
 
 import time
@@ -9,7 +9,7 @@ import streamlit as st
 import streamlit.components.v1 as components
 import cloud_sync
 
-MODULE_VERSION = "202611052240"
+MODULE_VERSION = "202611052300"
 
 from storage import (
     load_stock_history,
@@ -176,12 +176,10 @@ with st.sidebar:
                 key=current_ms_key
             )
 
-            # 偵測到有新勾選項目時，精準比對出最後點擊的項目並依序置頂
             newly_selected = [item for item in selected_history if item not in st.session_state.history_multiselect_prev]
             if newly_selected:
                 latest_clicked_code = newly_selected[-1].split()[0]
                 
-                # 先置頂其他選取的標的，最後置頂最新點選者
                 all_codes = [item.split()[0] for item in selected_history]
                 other_codes = [c for c in all_codes if c != latest_clicked_code]
                 for c in other_codes:
@@ -339,7 +337,9 @@ if fig_top is None or fig_btm is None or df is None or df.empty:
     st.error(f"無法取得代號 {stock_id} 之歷史行情資料，請確認網路連線或稍後點擊查詢重試。")
     st.stop()
 
-update_stock_name_only(stock_id, c_name)
+# 背景靜態比對中文名稱，不觸發重複推播重繪
+if c_name and c_name != stock_id:
+    update_stock_name_only(stock_id, c_name)
 
 top_height = 420 if is_mobile else 460
 btm_height = 1180 if is_mobile else 1220
