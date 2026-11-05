@@ -1,10 +1,10 @@
 """
 frontend.py - 前端 HTML/CSS 渲染與手勢/游標跨圖同步模組
-版本: 202611052140
+版本: 202611052150
 """
 
 MODULE_NAME = "frontend"
-MODULE_VERSION = "202611052140"
+MODULE_VERSION = "202611052150"
 
 import os
 import re
@@ -227,6 +227,41 @@ js_template = """
       '≥' + m2_thresh + '張: ' + fmtNum(m2_pcts[idx], 2) + '%';
   }
 
+  // 根據可視索引計算適應的 Y 軸價格與量能範圍
+  function calcVisibleRanges(r0, r1) {
+    var vStart = Math.max(0, Math.floor(r0));
+    var vEnd = Math.min(totalPoints - 1, Math.ceil(r1));
+    if (vStart > vEnd) return null;
+
+    var minP = Infinity, maxP = -Infinity;
+    var maxVol = 0;
+
+    for (var i = vStart; i <= vEnd; i++) {
+      if (highs[i] !== null && highs[i] > maxP) maxP = highs[i];
+      if (lows[i] !== null && lows[i] < minP) minP = lows[i];
+
+      // 均線亦納入考量，確保均線不被裁切
+      if (ma5s[i] !== null && ma5s[i] > maxP) maxP = ma5s[i];
+      if (ma5s[i] !== null && ma5s[i] < minP && ma5s[i] > 0) minP = ma5s[i];
+      if (ma20s[i] !== null && ma20s[i] > maxP) maxP = ma20s[i];
+      if (ma20s[i] !== null && ma20s[i] < minP && ma20s[i] > 0) minP = ma20s[i];
+      if (ma60s[i] !== null && ma60s[i] > maxP) maxP = ma60s[i];
+      if (ma60s[i] !== null && ma60s[i] < minP && ma60s[i] > 0) minP = ma60s[i];
+
+      if (vols[i] !== null && vols[i] > maxVol) maxVol = vols[i];
+    }
+
+    if (minP === Infinity || maxP === -Infinity) return null;
+    var pDiff = maxP - minP;
+    var padTop = pDiff > 0 ? pDiff * 0.12 : 2.0;
+    var padBtm = pDiff > 0 ? pDiff * 0.08 : 2.0;
+
+    return {
+      priceRange: [Math.max(0, minP - padBtm), maxP + padTop],
+      volRange: [0, (maxVol > 0 ? maxVol * 1.25 : 1000.0) / 1000.0]
+    };
+  }
+
   var cfg = { responsive: true, displayModeBar: false, scrollZoom: false };
 
   Plotly.newPlot(elTop, pTop.data, pTop.layout, cfg).then(function() {
@@ -250,27 +285,49 @@ js_template = """
           if (r1 > maxBound) {
             r1 = maxBound;
             r0 = r1 - span;
-            var selfUpd = {};
-            for (var s = 1; s <= 9; s++) {
-              var sAx = (s === 1) ? 'xaxis' : 'xaxis' + s;
-              if (srcEl.layout[sAx]) {
-                selfUpd[sAx + '.range'] = [r0, r1];
-              }
-            }
-            Plotly.relayout(srcEl, selfUpd).catch(function() {});
           }
 
-          var upd = {};
-          for (var i = 1; i <= 9; i++) {
-            var ax = (i === 1) ? 'xaxis' : 'xaxis' + i;
-            if (destEl.layout[ax]) {
-              upd[ax + '.range'] = [r0, r1];
-              upd[ax + '.autorange'] = false;
+          var visibleBounds = calcVisibleRanges(r0, r1);
+
+          // 更新主圖自身 (X 軸與自適應 Y 軸)
+          var selfUpd = {};
+          if (srcEl === elTop) {
+            selfUpd['xaxis.range'] = [r0, r1];
+            if (srcEl.layout.xaxis2) selfUpd['xaxis2.range'] = [r0, r1];
+            if (visibleBounds) {
+              selfUpd['yaxis.range'] = visibleBounds.priceRange;
+            }
+          } else {
+            for (var s = 1; s <= 9; s++) {
+              var sAx = (s === 1) ? 'xaxis' : 'xaxis' + s;
+              if (srcEl.layout[sAx]) selfUpd[sAx + '.range'] = [r0, r1];
             }
           }
-          Plotly.relayout(destEl, upd).then(function() {
+          Plotly.relayout(srcEl, selfUpd).catch(function() {});
+
+          // 更新目標圖 (X 軸與自適應 Y 軸)
+          var destUpd = {};
+          if (destEl === elTop) {
+            destUpd['xaxis.range'] = [r0, r1];
+            destUpd['xaxis.autorange'] = false;
+            if (destEl.layout.xaxis2) destUpd['xaxis2.range'] = [r0, r1];
+            if (visibleBounds) {
+              destUpd['yaxis.range'] = visibleBounds.priceRange;
+            }
+          } else {
+            for (var i = 1; i <= 9; i++) {
+              var ax = (i === 1) ? 'xaxis' : 'xaxis' + i;
+              if (destEl.layout[ax]) {
+                destUpd[ax + '.range'] = [r0, r1];
+                destUpd[ax + '.autorange'] = false;
+              }
+            }
+          }
+
+          Plotly.relayout(destEl, destUpd).then(function() {
             isUpdating = false;
           }).catch(function() { isUpdating = false; });
+
         } else if (auto) {
           isUpdating = true;
           var updAuto = {};
@@ -295,12 +352,10 @@ js_template = """
       var yaxis = elTop._fullLayout ? elTop._fullLayout.yaxis : null;
       if (!xaxis || typeof xaxis.p2c !== 'function') return;
 
-      // === 議題 2 核心防呆：繪圖區邊界限制 ===
       var plotLeft = (xaxis._offset !== undefined) ? xaxis._offset : 80;
       var plotLength = (xaxis._length !== undefined) ? xaxis._length : (rect.width - plotLeft - 15);
       var plotRight = plotLeft + plotLength;
 
-      // 手指或游標滑出繪圖區邊界（如左側 Y 軸或右側空白），直接阻擋，不觸發更新
       if (relX < plotLeft || relX > plotRight) {
         return;
       }
