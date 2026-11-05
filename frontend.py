@@ -430,7 +430,7 @@ def render_interactive_chart_html(
     highs_list = df['High'].tolist()
     lows_list = df['Low'].tolist()
     closes_list = df['Close'].tolist()
-    vols_list = df['Volume'].tolist()
+    vols_list = df['Volume_Sheets'].tolist() if 'Volume_Sheets' in df.columns else (df['Volume'] / 1000.0).tolist()
 
     ma5_list = df['MA5'].fillna(0).tolist() if 'MA5' in df.columns else [0] * n_pts
     ma20_list = df['MA20'].fillna(0).tolist() if 'MA20' in df.columns else [0] * n_pts
