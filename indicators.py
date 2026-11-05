@@ -1,10 +1,13 @@
 """
 indicators.py - 技術指標與籌碼計算模組
-版本: 202610302000
+版本: 202611052245
 """
 
 import numpy as np
 import pandas as pd
+
+MODULE_NAME = "indicators"
+MODULE_VERSION = "202611052245"
 
 HOLDING_LEVEL_MAP = {
     100: [8, 9, 10, 11, 12, 13, 14, 15],
@@ -15,7 +18,7 @@ HOLDING_LEVEL_MAP = {
     1000: [15]
 }
 
-def calculate_all_indicators(df, pure_code, major1_thresh, major2_thresh, shares_outstanding=None, status_placeholder=None):
+def calculate_all_indicators(df, pure_code, major1_thresh, major2_thresh, shares_outstanding=None, status_placeholder=None, force_refresh: bool = False):
     if df is None or df.empty:
         return df
 
@@ -68,7 +71,6 @@ def calculate_all_indicators(df, pure_code, major1_thresh, major2_thresh, shares
     total_rows = len(df)
     is_head, is_bottom = [False] * total_rows, [False] * total_rows
     valid_idx = [i for i in range(total_rows) if not pd.isna(df['MA5'].iloc[i])]
-
     if len(valid_idx) >= 2:
         curr_state = bool(df['Close'].iloc[valid_idx[0]] >= df['MA5'].iloc[valid_idx[0]])
         seg_indices = [valid_idx[0]]
@@ -92,11 +94,7 @@ def calculate_all_indicators(df, pure_code, major1_thresh, major2_thresh, shares
     inst_df, margin_df, holding_df = pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
     try:
         from data_fetcher import sync_chip_data
-        try:
-            chip_res = sync_chip_data(pure_code, df.index, status_placeholder)
-        except TypeError:
-            chip_res = sync_chip_data(pure_code, df.index)
-
+        chip_res = sync_chip_data(pure_code, df.index, status_placeholder=status_placeholder, force_refresh=force_refresh)
         if isinstance(chip_res, tuple):
             if len(chip_res) == 3:
                 inst_df, margin_df, holding_df = chip_res
@@ -161,7 +159,6 @@ def calculate_all_indicators(df, pure_code, major1_thresh, major2_thresh, shares
             weekly_sum = sub_sorted.groupby('norm_date')['percent'].sum().reset_index()
             weekly_sum['iso_year'] = weekly_sum['norm_date'].dt.isocalendar().year
             weekly_sum['iso_week'] = weekly_sum['norm_date'].dt.isocalendar().week
-            
             last_in_week = weekly_sum.groupby(['iso_year', 'iso_week']).last().reset_index()
             return {(int(row['iso_year']), int(row['iso_week'])): float(row['percent']) for _, row in last_in_week.iterrows()}
 
