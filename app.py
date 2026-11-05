@@ -1,6 +1,6 @@
 """
 app.py - 主應用程式介面與生命週期控制
-版本: 202611042245
+版本: 202611052115
 """
 
 import time
@@ -8,7 +8,7 @@ import streamlit as st
 import streamlit.components.v1 as components
 import cloud_sync
 
-MODULE_VERSION = "202611042245"
+MODULE_VERSION = "202611052115"
 
 from storage import (
     load_stock_history,
@@ -21,6 +21,7 @@ from storage import (
 )
 from chart_builder import build_split_figures
 from frontend import get_legend_html, get_component_html
+from data_fetcher import resolve_ticker_code
 
 st.set_page_config(
     page_title="台股多指標+籌碼技術分析",
@@ -82,16 +83,42 @@ if "confirm_clear_all" not in st.session_state:
 if "prev_selected_history" not in st.session_state:
     st.session_state.prev_selected_history = []
 
-
 def on_stock_input_change():
     val = st.session_state.stock_input_box.strip()
     if val:
-        st.session_state.stock_id = val
-        save_stock_history(val)
-
+        resolved = resolve_ticker_code(val)
+        st.session_state.stock_id = resolved
+        save_stock_history(resolved)
 
 with st.sidebar:
     st.header("參數設定")
+
+    # 主要市場指數選單
+    INDEX_CHOICES = [
+        "選擇主要市場指數...",
+        "加權指數 (^TWII)",
+        "櫃買指數 (^TWOII)",
+        "那斯達克 (^IXIC)",
+        "費城半導體 (^SOX)",
+        "道瓊工業 (^DJI)",
+        "標普500 (^GSPC)",
+        "日經225 (^N225)",
+        "韓國綜合 (^KS11)",
+        "英國富時100 (^FTSE)",
+        "德國DAX (^GDAXI)",
+        "法國CAC40 (^FCHI)"
+    ]
+    selected_index = st.selectbox("主要市場指數", INDEX_CHOICES, index=0)
+    if selected_index != "選擇主要市場指數...":
+        import re
+        m = re.search(r'\((.*?)\)', selected_index)
+        if m:
+            idx_code = m.group(1)
+            if idx_code != st.session_state.stock_id:
+                st.session_state.stock_id = idx_code
+                save_stock_history(idx_code)
+                st.rerun()
+
     history_records = load_stock_history()
     history_codes = [str(item.get("code")).strip() for item in history_records if item.get("code")]
 
@@ -114,6 +141,7 @@ with st.sidebar:
                     st.session_state.prev_selected_history = selected_history
                     save_stock_history(latest_sel_code)
                     st.rerun()
+
             st.session_state.prev_selected_history = selected_history
 
             # 清除按鈕邏輯
@@ -187,8 +215,9 @@ with st.sidebar:
     if st.button("查詢", use_container_width=True):
         input_code = st.session_state.stock_input_box.strip()
         if input_code:
-            st.session_state.stock_id = input_code
-            save_stock_history(input_code)
+            resolved = resolve_ticker_code(input_code)
+            st.session_state.stock_id = resolved
+            save_stock_history(resolved)
             st.rerun()
 
     st.markdown("---")
@@ -196,12 +225,14 @@ with st.sidebar:
     refetch_weeks = st.number_input("重抓週數", min_value=1, max_value=24, value=6, step=1)
     if st.button("🛠️ 清除並重抓近N週資券", use_container_width=True):
         cur_code = str(st.session_state.stock_id).strip()
-        with st.spinner(f"正在清除 {cur_code} 近 {refetch_weeks} 週資券紀錄..."):
-            clear_msg = clear_recent_margin_data(cur_code, weeks=int(refetch_weeks))
-        st.sidebar.success(clear_msg)
-        time.sleep(1.0)
-        st.rerun()
-
+        if cur_code.startswith("^"):
+            st.sidebar.warning("指數標的無資券資料。")
+        else:
+            with st.spinner(f"正在清除 {cur_code} 近 {refetch_weeks} 週資券紀錄..."):
+                clear_msg = clear_recent_margin_data(cur_code, weeks=int(refetch_weeks))
+                st.sidebar.success(clear_msg)
+                time.sleep(1.0)
+                st.rerun()
 
 # 取得金鑰與連線狀態燈號 (0: ⚪灰燈, 1: 🔵藍燈, 2: 🟡黃燈)
 auth_status = cloud_sync.get_auth_status()
@@ -228,7 +259,7 @@ else:
 
 curr_idx = active_nav_codes.index(stock_id) if stock_id in active_nav_codes else 0
 
-# 頂部：上一檔 / 下一檔 功能列（維持雙欄並透過 CSS 鎖死並排＋1/3寬度）
+# 頂部：上一檔 / 下一檔 功能列
 top_c1, top_c2 = st.columns(2)
 with top_c1:
     if st.button("◀ 上一檔", key="btn_top_prev"):
@@ -254,7 +285,7 @@ fig_top, fig_btm, df, c_name, end_idx, disp_n = build_split_figures(
 )
 
 if fig_top is None or fig_btm is None or df is None or df.empty:
-    st.error(f"無法取得股票代號 {stock_id} 之歷史行情資料，請確認網路連線或稍後點擊查詢重試。")
+    st.error(f"無法取得代號 {stock_id} 之歷史行情資料，請確認網路連線或稍後點擊查詢重試。")
     st.stop()
 
 # 繪圖成功後僅針對目前標的更新中文名稱，不更動由切換觸發的清單順序
@@ -278,7 +309,7 @@ html_content = get_component_html(
 total_h = 1980 if is_mobile else 1880
 components.html(html_content, height=total_h, scrolling=False)
 
-# 底部：上一檔 / 下一檔 功能列（維持雙欄並透過 CSS 鎖死並排＋1/3寬度）
+# 底部：上一檔 / 下一檔 功能列
 btm_c1, btm_c2 = st.columns(2)
 with btm_c1:
     if st.button("◀ 上一檔", key="btn_btm_prev"):
