@@ -266,7 +266,7 @@ def build_split_figures(
 
     fig_btm.add_trace(go.Scatter(x=date_str_list, y=df['OBV'], line=dict(color='#16a085', width=1.2), hoverinfo='none'), row=3, col=1)
     fig_btm.add_trace(go.Scatter(x=date_str_list, y=df['OBV_MA20'], line=dict(color='#8e44ad', width=1.1, dash='dash'), hoverinfo='none'), row=3, col=1)
-
+    ## 避免右側出現未來空白區
     is_index = str(raw_ticker).startswith("^")
     if not is_index:
         f_colors = ['#eb4d4b' if x >= 0 else '#2ecc71' for x in df['Foreign_Net'].fillna(0)]
@@ -300,7 +300,7 @@ def build_split_figures(
         margin=dict(l=80, r=15, t=10, b=30, autoexpand=False),
         xaxis_rangeslider_visible=False
     )
-
+    ## 避免右側出現未來空白區
     for r in range(1, 10):
         fig_btm.update_xaxes(type='category', range=[start_idx - 0.5, end_idx + 0.5], domain=[0, 1], showspikes=False, tickfont=dict(size=11), row=r, col=1)
     
