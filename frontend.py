@@ -1,10 +1,10 @@
 """
 frontend.py - 前端 HTML/CSS 渲染與手勢/游標跨圖同步模組
-版本: 202611062235
+版本: 202611062250
 """
 
 MODULE_NAME = "frontend"
-MODULE_VERSION = "202611062235"
+MODULE_VERSION = "202611062250"
 
 import os
 import re
@@ -260,9 +260,25 @@ js_template = """
         function syncXAxis(srcEl, destEl) {
             srcEl.on('plotly_relayout', function(ed) {
                 if (isUpdating) return;
-                var r0 = ed['xaxis.range[0]'] !== undefined ? ed['xaxis.range[0]'] : (ed['xaxis.range'] ? ed['xaxis.range'][0] : null);
-                var r1 = ed['xaxis.range[1]'] !== undefined ? ed['xaxis.range[1]'] : (ed['xaxis.range'] ? ed['xaxis.range'][1] : null);
-                var auto = ed['xaxis.autorange'];
+
+                // 容錯提取 X 軸範圍 (同時支援主圖 xaxis 與成交量 xaxis2)
+                var r0 = ed['xaxis.range[0]'] !== undefined ? ed['xaxis.range[0]'] :
+                         (ed['xaxis2.range[0]'] !== undefined ? ed['xaxis2.range[0]'] :
+                         (ed['xaxis.range'] ? ed['xaxis.range'][0] : null));
+
+                var r1 = ed['xaxis.range[1]'] !== undefined ? ed['xaxis.range[1]'] :
+                         (ed['xaxis2.range[1]'] !== undefined ? ed['xaxis2.range[1]'] :
+                         (ed['xaxis.range'] ? ed['xaxis.range'][1] : null));
+
+                var auto = ed['xaxis.autorange'] || ed['xaxis2.autorange'];
+
+                // 備援：若事件物件為偏微分更新，直接向圖表實體獲取當前 X 軸範圍
+                if ((r0 === null || r1 === null) && !auto) {
+                    if (srcEl._fullLayout && srcEl._fullLayout.xaxis && srcEl._fullLayout.xaxis.range) {
+                        r0 = srcEl._fullLayout.xaxis.range[0];
+                        r1 = srcEl._fullLayout.xaxis.range[1];
+                    }
+                }
 
                 if (r0 !== null && r1 !== null) {
                     isUpdating = true;
