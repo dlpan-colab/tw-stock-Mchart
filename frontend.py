@@ -1,9 +1,9 @@
 """
-frontend.py - 前端 HTML/CSS 渲染與手勢/游標跨圖同步模組
-版本: 202611062350
+frontend.py - 前端 HTML/CSS 渲染與手勢/游標跨圖同步模組 (完美解決右側空白與上下同步)
+版本: 202611062400
 """
 MODULE_NAME = "frontend"
-MODULE_VERSION = "202611062350"
+MODULE_VERSION = "202611062400"
 
 import os
 import re
@@ -170,13 +170,14 @@ js_template = """
     var initEnd = __INITIAL_END_IDX__;
     var initStart = Math.max(0, initEnd - targetDays + 1);
     
-    pTop.layout.xaxis.range = [initStart - 0.5, initEnd + 0.5];
-    if (pTop.layout.xaxis2) pTop.layout.xaxis2.range = [initStart - 0.5, initEnd + 0.5];
+    # 確保前端初始化右界嚴格鎖定於 initEnd (無 +0.5 空白)
+    pTop.layout.xaxis.range = [initStart - 0.5, initEnd];
+    if (pTop.layout.xaxis2) pTop.layout.xaxis2.range = [initStart - 0.5, initEnd];
     
     for (var r = 1; r <= 9; r++) {
         var k = (r === 1) ? 'xaxis' : 'xaxis' + r;
         if (pBtm.layout[k]) {
-            pBtm.layout[k].range = [initStart - 0.5, initEnd + 0.5];
+            pBtm.layout[k].range = [initStart - 0.5, initEnd];
         }
     }
     
@@ -256,7 +257,6 @@ js_template = """
             if (ma20s[i] !== null && ma20s[i] < minP && ma20s[i] > 0) minP = ma20s[i];
             if (ma60s[i] !== null && ma60s[i] > maxP) maxP = ma60s[i];
             if (ma60s[i] !== null && ma60s[i] < minP && ma60s[i] > 0) minP = ma60s[i];
-            
             if (vols[i] !== null && vols[i] > maxVol) maxVol = vols[i];
         }
         if (minP === Infinity || maxP === -Infinity) return null;
@@ -280,12 +280,22 @@ js_template = """
             srcEl.on('plotly_relayout', function(ed) {
                 if (isUpdating) return;
                 
-                // 容錯提取 X 軸範圍 (同時支援主圖 xaxis 與成交量 xaxis2，並補齊陣列型態防呆)
-                var r0 = ed['xaxis.range[0]'] !== undefined ? ed['xaxis.range[0]'] : (ed['xaxis2.range[0]'] !== undefined ? ed['xaxis2.range[0]'] : (ed['xaxis.range'] ? ed['xaxis.range'][0] : (ed['xaxis2.range'] ? ed['xaxis2.range'][0] : null)));
-                var r1 = ed['xaxis.range[1]'] !== undefined ? ed['xaxis.range[1]'] : (ed['xaxis2.range[1]'] !== undefined ? ed['xaxis2.range[1]'] : (ed['xaxis.range'] ? ed['xaxis.range'][1] : (ed['xaxis2.range'] ? ed['xaxis2.range'][1] : null)));
+                // 完整擷取所有可能的 X 軸事件與複合子圖範圍
+                var r0 = null, r1 = null;
+                var keys = Object.keys(ed);
+                for (var i = 0; i < keys.length; i++) {
+                    var k = keys[i];
+                    if (k.indexOf('xaxis') !== -1 && k.indexOf('range[0]') !== -1) r0 = ed[k];
+                    if (k.indexOf('xaxis') !== -1 && k.indexOf('range[1]') !== -1) r1 = ed[k];
+                }
+                
+                if (r0 === null || r1 === null) {
+                    if (ed['xaxis.range']) { r0 = ed['xaxis.range'][0]; r1 = ed['xaxis.range'][1]; }
+                    else if (ed['xaxis2.range']) { r0 = ed['xaxis2.range'][0]; r1 = ed['xaxis2.range'][1]; }
+                }
+                
                 var auto = ed['xaxis.autorange'] || ed['xaxis2.autorange'];
                 
-                // 備援：若事件物件為偏微分更新，直接向圖表實體獲取當前 X 軸範圍
                 if ((r0 === null || r1 === null) && !auto) {
                     if (srcEl._fullLayout && srcEl._fullLayout.xaxis && srcEl._fullLayout.xaxis.range) {
                         r0 = srcEl._fullLayout.xaxis.range[0];
@@ -294,18 +304,19 @@ js_template = """
                 }
                 
                 if (r0 !== null && r1 !== null) {
-                    // --- 【核心修訂】右側邊界鎖定，防止向左拖曳時露出未來空白 ---
-                    var maxRight = totalPoints - 0.5;
+                    // --- 右側邊界防呆鎖定 (極限右界為 totalPoints - 1) ---
+                    var maxRight = totalPoints - 1;
                     if (r1 > maxRight) {
                         var span = r1 - r0;
                         r1 = maxRight;
                         r0 = r1 - span;
                     }
-                    // --------------------------------------------------------
-
+                    // ----------------------------------------------------
+                    
                     isUpdating = true;
                     var visibleBounds = calcVisibleRanges(r0, r1);
                     var destUpd = {};
+                    
                     if (destEl === elTop) {
                         destUpd['xaxis.range'] = [r0, r1];
                         destUpd['xaxis.autorange'] = false;
@@ -314,22 +325,24 @@ js_template = """
                             destUpd['yaxis.range'] = visibleBounds.priceRange;
                         }
                     } else {
-                        for (var i = 1; i <= 9; i++) {
-                            var ax = (i === 1) ? 'xaxis' : 'xaxis' + i;
+                        for (var j = 1; j <= 9; j++) {
+                            var ax = (j === 1) ? 'xaxis' : 'xaxis' + j;
                             if (destEl.layout[ax]) {
                                 destUpd[ax + '.range'] = [r0, r1];
                                 destUpd[ax + '.autorange'] = false;
                             }
                         }
                     }
+                    
                     Plotly.relayout(destEl, destUpd).then(function() {
                         isUpdating = false;
                     }).catch(function() { isUpdating = false; });
+                    
                 } else if (auto) {
                     isUpdating = true;
                     var updAuto = {};
-                    for (var j = 1; j <= 9; j++) {
-                        var axAuto = (j === 1) ? 'xaxis' : 'xaxis' + j;
+                    for (var x = 1; x <= 9; x++) {
+                        var axAuto = (x === 1) ? 'xaxis' : 'xaxis' + x;
                         if (destEl.layout[axAuto]) updAuto[axAuto + '.autorange'] = true;
                     }
                     Plotly.relayout(destEl, updAuto).then(function() {
@@ -354,9 +367,7 @@ js_template = """
             var plotLength = (xaxis._length !== undefined) ? xaxis._length : (rect.width - plotLeft - 15);
             var plotRight = plotLeft + plotLength;
             
-            if (relX < plotLeft || relX > plotRight) {
-                return;
-            }
+            if (relX < plotLeft || relX > plotRight) return;
             
             var coord = xaxis.p2c(relX - plotLeft);
             var idx = Math.round(coord);
@@ -381,9 +392,7 @@ js_template = """
             if (e.touches && e.touches.length > 0) {
                 clientX = e.touches[0].clientX;
             }
-            if (clientX !== undefined) {
-                processPointer(clientX);
-            }
+            if (clientX !== undefined) processPointer(clientX);
         }
         
         function onPointerLeave() {
