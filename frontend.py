@@ -1,10 +1,10 @@
 """
 frontend.py - 前端 HTML/CSS 渲染與手勢/游標跨圖同步模組
-版本: 202611062025
+版本: 202611062035
 """
 
 MODULE_NAME = "frontend"
-MODULE_VERSION = "202611062025"
+MODULE_VERSION = "202611062035"
 
 import os
 import re
@@ -265,20 +265,6 @@ js_template = """
                 var auto = ed['xaxis.autorange'];
 
                 if (r0 !== null && r1 !== null) {
-                    var span = r1 - r0;
-                    var maxBound = (totalPoints - 1) + 0.5;
-                    var minBound = -0.5;
-
-                    // 僅當向左拖曳且超過最新交易日（露白）時才限制右界
-                    if (r1 > maxBound) {
-                        r1 = maxBound;
-                        r0 = r1 - span;
-                    }
-                    if (r0 < minBound) {
-                        r0 = minBound;
-                        r1 = r0 + span;
-                    }
-
                     var visibleBounds = calcVisibleRanges(r0, r1);
                     isUpdating = true;
 
@@ -300,7 +286,6 @@ js_template = """
                         }
                     }
 
-                    // 只更新對向元件，絕不反向干擾目前正被拖曳的手勢元件
                     Plotly.relayout(destEl, destUpd).then(function() {
                         isUpdating = false;
                     }).catch(function() {
