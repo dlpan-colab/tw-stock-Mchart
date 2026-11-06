@@ -1,6 +1,6 @@
 """
 app.py - 主應用程式介面與生命週期控制
-版本: 202611052310
+版本: 202611062000
 """
 
 import time
@@ -9,7 +9,7 @@ import streamlit as st
 import streamlit.components.v1 as components
 import cloud_sync
 
-MODULE_VERSION = "202611052310"
+MODULE_VERSION = "202611062000"
 
 from storage import (
     load_stock_history,
@@ -21,7 +21,7 @@ from storage import (
     clear_recent_margin_data
 )
 from chart_builder import build_split_figures
-from frontend import get_legend_html, get_component_html
+from frontend import get_legend_html, get_component_html, SYSTEM_VERSION
 
 INDEX_MAP = {
     # 台股
@@ -296,7 +296,8 @@ elif auth_status == 1:
 else:
     status_light = "⚪"
 
-st.markdown(f"## 台股技術與籌碼分析 v{MODULE_VERSION} {status_light}")
+# 動態使用各模組版號之最大值 SYSTEM_VERSION
+st.markdown(f"## 台股技術與籌碼分析 v{SYSTEM_VERSION} {status_light}")
 
 stock_id = str(st.session_state.stock_id).strip()
 if not stock_id:
