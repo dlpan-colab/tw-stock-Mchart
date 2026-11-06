@@ -1,10 +1,10 @@
 """
 frontend.py - 前端 HTML/CSS 渲染與手勢/游標跨圖同步模組
-版本: 202611062045
+版本: 202611062235
 """
 
 MODULE_NAME = "frontend"
-MODULE_VERSION = "202611062045"
+MODULE_VERSION = "202611062235"
 
 import os
 import re
@@ -265,18 +265,8 @@ js_template = """
                 var auto = ed['xaxis.autorange'];
 
                 if (r0 !== null && r1 !== null) {
-                    var span = r1 - r0;
-                    var maxBound = (totalPoints - 1) + 0.5;
-
-                    // 若平移涵蓋最後交易日且超出，強制將右側邊界綁定在最後交易日
-                    var isRightExceeded = (r1 > maxBound);
-                    if (isRightExceeded) {
-                        r1 = maxBound;
-                        r0 = r1 - span;
-                    }
-
-                    var visibleBounds = calcVisibleRanges(r0, r1);
                     isUpdating = true;
+                    var visibleBounds = calcVisibleRanges(r0, r1);
 
                     var destUpd = {};
                     if (destEl === elTop) {
@@ -296,36 +286,11 @@ js_template = """
                         }
                     }
 
-                    var pDest = Plotly.relayout(destEl, destUpd);
-
-                    // 若超出右界，同步將 srcEl 的範圍拉回綁定點，避免座標污染
-                    if (isRightExceeded) {
-                        var srcUpd = {};
-                        if (srcEl === elTop) {
-                            srcUpd['xaxis.range'] = [r0, r1];
-                            if (srcEl.layout.xaxis2) srcUpd['xaxis2.range'] = [r0, r1];
-                            if (visibleBounds) {
-                                srcUpd['yaxis.range'] = visibleBounds.priceRange;
-                            }
-                        } else {
-                            for (var s = 1; s <= 9; s++) {
-                                var sAx = (s === 1) ? 'xaxis' : 'xaxis' + s;
-                                if (srcEl.layout[sAx]) srcUpd[sAx + '.range'] = [r0, r1];
-                            }
-                        }
-                        var pSrc = Plotly.relayout(srcEl, srcUpd);
-                        Promise.all([pDest, pSrc]).then(function() {
-                            isUpdating = false;
-                        }).catch(function() {
-                            isUpdating = false;
-                        });
-                    } else {
-                        pDest.then(function() {
-                            isUpdating = false;
-                        }).catch(function() {
-                            isUpdating = false;
-                        });
-                    }
+                    Plotly.relayout(destEl, destUpd).then(function() {
+                        isUpdating = false;
+                    }).catch(function() {
+                        isUpdating = false;
+                    });
                 } else if (auto) {
                     isUpdating = true;
                     var updAuto = {};
