@@ -4,7 +4,7 @@ chart_builder.py - Plotly 圖表建置模組 (純淨無原生 hover/spikes)
 """
 
 MODULE_NAME = "chart_builder"
-MODULE_VERSION = "202611062015"
+MODULE_VERSION = "202611070001"
 
 from typing import Tuple, Optional
 import numpy as np
