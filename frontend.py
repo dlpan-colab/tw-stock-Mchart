@@ -1,10 +1,10 @@
 """
 frontend.py - 前端 HTML/CSS 渲染與手勢/游標跨圖同步模組
-版本: 202611062020
+版本: 202611062025
 """
 
 MODULE_NAME = "frontend"
-MODULE_VERSION = "202611062020"
+MODULE_VERSION = "202611062025"
 
 import os
 import re
@@ -223,7 +223,6 @@ js_template = """
             '≥' + m2_thresh + '張: ' + fmtNum(m2_pcts[idx], 2) + '%';
     }
 
-    // 根據可視索引計算自適應 Y 軸價格與成交量範圍
     function calcVisibleRanges(r0, r1) {
         var vStart = Math.max(0, Math.floor(r0));
         var vEnd = Math.min(totalPoints - 1, Math.ceil(r1));
@@ -266,38 +265,22 @@ js_template = """
                 var auto = ed['xaxis.autorange'];
 
                 if (r0 !== null && r1 !== null) {
-                    isUpdating = true;
                     var span = r1 - r0;
                     var maxBound = (totalPoints - 1) + 0.5;
                     var minBound = -0.5;
 
-                    // 1. 右邊界鎖定：若拖曳導致最右側超過最後一個交易日，強制綁定右端
+                    // 僅當向左拖曳且超過最新交易日（露白）時才限制右界
                     if (r1 > maxBound) {
                         r1 = maxBound;
                         r0 = r1 - span;
                     }
-                    // 2. 左邊界鎖定：若最左側超出第一筆交易日，強制綁定左端
                     if (r0 < minBound) {
                         r0 = minBound;
                         r1 = r0 + span;
                     }
 
                     var visibleBounds = calcVisibleRanges(r0, r1);
-
-                    var selfUpd = {};
-                    if (srcEl === elTop) {
-                        selfUpd['xaxis.range'] = [r0, r1];
-                        if (srcEl.layout.xaxis2) selfUpd['xaxis2.range'] = [r0, r1];
-                        if (visibleBounds) {
-                            selfUpd['yaxis.range'] = visibleBounds.priceRange;
-                        }
-                    } else {
-                        for (var s = 1; s <= 9; s++) {
-                            var sAx = (s === 1) ? 'xaxis' : 'xaxis' + s;
-                            if (srcEl.layout[sAx]) selfUpd[sAx + '.range'] = [r0, r1];
-                        }
-                    }
-                    Plotly.relayout(srcEl, selfUpd).catch(function() {});
+                    isUpdating = true;
 
                     var destUpd = {};
                     if (destEl === elTop) {
@@ -317,6 +300,7 @@ js_template = """
                         }
                     }
 
+                    // 只更新對向元件，絕不反向干擾目前正被拖曳的手勢元件
                     Plotly.relayout(destEl, destUpd).then(function() {
                         isUpdating = false;
                     }).catch(function() {
