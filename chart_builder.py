@@ -1,9 +1,9 @@
 """
-chart_builder.py - Plotly 圖表建置模組 (純淨無原生 hover/spikes)
-版本: 202611072102
+chart_builder.py - Plotly 圖表建置模組 (純淨無原生 hover/spikes，開放程式動態更新高低點，前端攔截垂直手勢)
+版本: 202611072255
 """
 MODULE_NAME = "chart_builder"
-MODULE_VERSION = "202611072102"
+MODULE_VERSION = "202611072255"
 
 from typing import Tuple, Optional
 import numpy as np
@@ -13,6 +13,7 @@ from plotly.subplots import make_subplots
 
 from data_fetcher import fetch_stock_daily_k, fetch_stock_name
 from indicators import calculate_all_indicators
+
 
 def build_split_figures(
     raw_ticker: str,
@@ -25,18 +26,15 @@ def build_split_figures(
     status_placeholder=None,
     force_refresh: bool = False
 ) -> Tuple[Optional[go.Figure], Optional[go.Figure], Optional[pd.DataFrame], str, int, int]:
-    k_res = fetch_stock_daily_k(
-        raw_ticker,
-        period=period,
-        base_date=str(base_date) if base_date else None,
-        force_refresh=force_refresh
-    )
+
+    k_res = fetch_stock_daily_k(raw_ticker, period=period, base_date=str(base_date) if base_date else None, force_refresh=force_refresh)
     if k_res is None or k_res[0] is None or k_res[0].empty:
         return None, None, None, "", 0, 0
 
     df_raw = k_res[0]
     full_ticker = k_res[1]
     shares_outstanding = k_res[2] if len(k_res) >= 3 else None
+
     c_name = fetch_stock_name(raw_ticker)
 
     if str(raw_ticker).startswith("^"):
@@ -162,11 +160,13 @@ def build_split_figures(
         line=dict(color='#f1c40f', width=1.2),
         hoverinfo='none', name='MA5'
     ), row=1, col=1)
+
     fig_top.add_trace(go.Scatter(
         x=date_str_list, y=df['MA20'],
         line=dict(color='#e67e22', width=1.2),
         hoverinfo='none', name='MA20'
     ), row=1, col=1)
+
     fig_top.add_trace(go.Scatter(
         x=date_str_list, y=df['MA60'],
         line=dict(color='#9b59b6', width=1.2),
@@ -199,33 +199,32 @@ def build_split_figures(
 
     fig_top.add_trace(go.Bar(
         x=date_str_list, y=df['Volume_Sheets'],
-        marker_color=vol_colors, hoverinfo='none', name='成交量'
+        marker_color=vol_colors,
+        hoverinfo='none', name='成交量'
     ), row=2, col=1)
 
     to_series = df['Turnover_Rate']
     to_10_mask = (to_series >= 10.0) & (to_series < 20.0)
     to_20_mask = (to_series >= 20.0)
+
     if to_10_mask.any():
         fig_top.add_trace(go.Scatter(
             x=[date_str_list[i] for i in range(total_len) if to_10_mask.iloc[i]],
             y=df.loc[to_10_mask, 'Volume_Sheets'] * 1.06,
-            mode='text',
-            text=['▲' for _ in range(to_10_mask.sum())],
+            mode='text', text=['▲' for _ in range(to_10_mask.sum())],
             textposition='top center',
             textfont=dict(family='Arial Black, sans-serif', size=14, color='#1e3799'),
-            showlegend=False,
-            hoverinfo='none'
+            showlegend=False, hoverinfo='none'
         ), row=2, col=1)
+
     if to_20_mask.any():
         fig_top.add_trace(go.Scatter(
             x=[date_str_list[i] for i in range(total_len) if to_20_mask.iloc[i]],
             y=df.loc[to_20_mask, 'Volume_Sheets'] * 1.06,
-            mode='text',
-            text=['▼' for _ in range(to_20_mask.sum())],
+            mode='text', text=['▼' for _ in range(to_20_mask.sum())],
             textposition='top center',
             textfont=dict(family='Arial Black, sans-serif', size=14, color='#f1c40f'),
-            showlegend=False,
-            hoverinfo='none'
+            showlegend=False, hoverinfo='none'
         ), row=2, col=1)
 
     fig_top.update_layout(
@@ -239,12 +238,15 @@ def build_split_figures(
         margin=dict(l=80, r=15, t=35, b=20, autoexpand=False),
         xaxis_rangeslider_visible=False
     )
+
     fig_top.update_xaxes(type='category', range=[start_idx - 0.5, end_idx + 0.5], domain=[0, 1], showspikes=False, tickfont=dict(size=11), row=1, col=1)
     fig_top.update_xaxes(type='category', range=[start_idx - 0.5, end_idx + 0.5], domain=[0, 1], showticklabels=True, tickvals=month_ticks_vals, ticktext=month_ticks_text, showspikes=False, tickfont=dict(size=11), row=2, col=1)
-    
-    # 【防呆防錯備註 2026-11-07】：鎖死主圖 Y 軸垂直移動 (fixedrange=True)，避免滑鼠上下拖曳造成走位
-    fig_top.update_yaxes(title_text='', range=[p_min - (p_max - p_min) * 0.08, p_max + p_pad], fixedrange=True, showspikes=False, tickfont=dict(size=11), row=1, col=1)
-    fig_top.update_yaxes(title_text='', range=[0, vol_upper], fixedrange=True, showspikes=False, tickfont=dict(size=11), row=2, col=1)
+
+    # 【防呆防錯備註 2026-11-07】：
+    # 價格與量能 Y 軸設為 fixedrange=False，允許前端 relayout 即時動態調整最適可視高低價；
+    # 垂直拖拉位移之鎖死完全由 frontend.py 中的事件攔截層負責，維持手勢無法上下位移。
+    fig_top.update_yaxes(title_text='', range=[p_min - (p_max - p_min) * 0.08, p_max + p_pad], fixedrange=False, showspikes=False, tickfont=dict(size=11), row=1, col=1)
+    fig_top.update_yaxes(title_text='', range=[0, vol_upper], fixedrange=False, showspikes=False, tickfont=dict(size=11), row=2, col=1)
 
     # ===== 下半部副圖 =====
     fig_btm = make_subplots(
