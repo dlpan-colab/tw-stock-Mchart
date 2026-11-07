@@ -1,10 +1,9 @@
 """
 storage.py - 本地 SQLite 資料庫與股票歷史紀錄管理器 (非同步雲端同步版)
-版本: 202611052300
+版本: 202611071230
 """
-
 MODULE_NAME = "storage"
-MODULE_VERSION = "202611052300"
+MODULE_VERSION = "202611071230"
 
 import os
 import io
@@ -36,17 +35,50 @@ COMMON_STOCK_NAMES = {
     "^GDAXI": "德國DAX",
     "^FCHI": "法國CAC40",
     # 常用個股
-    "1101": "台泥", "1102": "亞泥", "1104": "環泥", "1216": "統一",
-    "1301": "台塑", "1303": "南亞", "1312": "國喬", "1326": "台化",
-    "1504": "東元", "2002": "中鋼", "2105": "正新", "2303": "聯電",
-    "2308": "台達電", "2312": "金寶", "2317": "鴻海", "2324": "仁寶",
-    "2327": "國巨", "2330": "台積電", "2374": "佳能", "2382": "廣達",
-    "2454": "聯發科", "2478": "大毅", "2492": "華新科", "2609": "陽明",
-    "2615": "萬海", "3008": "大立光", "3022": "威強電", "3088": "艾訊",
-    "3231": "緯創", "3481": "群創", "3653": "健策", "3661": "世芯-KY",
-    "3718": "中光電投控", "4526": "東台", "4991": "環宇-KY", "5439": "高技",
-    "6191": "精成科", "6217": "中探針", "6234": "高僑", "6425": "易發",
-    "6456": "GIS-KY", "6505": "台塑化", "8111": "立碁", "8131": "福懋科"
+    "1101": "台泥",
+    "1102": "亞泥",
+    "1104": "環泥",
+    "1216": "統一",
+    "1301": "台塑",
+    "1303": "南亞",
+    "1312": "國喬",
+    "1326": "台化",
+    "1504": "東元",
+    "2002": "中鋼",
+    "2105": "正新",
+    "2303": "聯電",
+    "2308": "台達電",
+    "2312": "金寶",
+    "2317": "鴻海",
+    "2324": "仁寶",
+    "2327": "國巨",
+    "2330": "台積電",
+    "2374": "佳能",
+    "2382": "廣達",
+    "2454": "聯發科",
+    "2478": "大毅",
+    "2492": "華新科",
+    "2609": "陽明",
+    "2615": "萬海",
+    "3008": "大立光",
+    "3022": "威強電",
+    "3088": "艾訊",
+    "3231": "緯創",
+    "3481": "群創",
+    "3653": "健策",
+    "3661": "世芯-KY",
+    "3718": "中光電投控",
+    "4526": "東台",
+    "4991": "環宇-KY",
+    "5439": "高技",
+    "6191": "精成科",
+    "6217": "中探針",
+    "6234": "高僑",
+    "6425": "易發",
+    "6456": "GIS-KY",
+    "6505": "台塑化",
+    "8111": "立碁",
+    "8131": "福懋科"
 }
 
 def _async_run(func, *args, **kwargs):
@@ -76,12 +108,13 @@ def _do_sync_cloud_push(allow_empty_history: bool = False):
                 try:
                     with open(HISTORY_FILE, "r", encoding="utf-8") as f:
                         chk_data = json.load(f)
-                    if not chk_data or len(chk_data) == 0:
-                        can_push = False
+                        if not chk_data or len(chk_data) == 0:
+                            can_push = False
                 except Exception:
                     can_push = False
             if can_push:
                 push_file(HISTORY_FILE, "stock_history.json")
+                
         if os.path.exists(NAMES_CACHE_FILE):
             push_file(NAMES_CACHE_FILE, "tw_stock_names.json")
     except Exception as e:
@@ -162,14 +195,13 @@ def get_stock_chinese_name(pure_code: str) -> str:
     cache = _load_name_cache()
     if pure_code in cache and cache[pure_code] and cache[pure_code] != pure_code:
         return cache[pure_code]
-
     if pure_code.startswith("^"):
         return pure_code
 
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
     }
-
+    
     # 1. TWSE ISIN 單筆查詢
     url_twse = f"https://isin.twse.com.tw/isin/single_main.jsp?owncode={pure_code}&stockname="
     for attempt in range(2):
@@ -243,7 +275,6 @@ def get_stock_chinese_name(pure_code: str) -> str:
 def _recover_history_from_databases() -> list:
     recovered = []
     seen = set()
-
     try:
         from cloud_sync import GoogleDriveSync
         sync_client = GoogleDriveSync()
@@ -281,6 +312,7 @@ def _recover_history_from_databases() -> list:
             _sync_cloud_push(allow_empty_history=False)
         except Exception:
             pass
+
     return recovered[:30]
 
 def load_stock_history():
@@ -292,7 +324,6 @@ def load_stock_history():
                 data = json.load(f)
         except Exception:
             data = []
-
     if not isinstance(data, list):
         data = []
 
@@ -371,10 +402,9 @@ def clear_recent_margin_data(pure_code: str, weeks: int = 2) -> str:
     db_name = f"data_{pure_code}.db"
     db_path = os.path.join(STORAGE_DIR, db_name)
     sync_db_pull(pure_code)
-
     if not os.path.exists(db_path):
         return f"查無代號 {pure_code} 之本地資料庫。"
-
+    
     cutoff_date = (datetime.now() - timedelta(days=weeks * 7)).strftime('%Y-%m-%d')
     deleted_rows = 0
     try:
@@ -442,7 +472,8 @@ class StockChipStorage:
     def get_latest_daily_k_date(self):
         with sqlite3.connect(self.db_path) as conn:
             cur = conn.cursor()
-            cur.execute("SELECT MAX(date) FROM daily_k")
+            # 【防呆防錯備註 2026-11-07】：排除 volume <= 0，確保抓取最新日期不被非交易日空資料干擾
+            cur.execute("SELECT MAX(date) FROM daily_k WHERE volume > 0")
             row = cur.fetchone()
             return row[0] if row and row[0] else None
 
@@ -489,7 +520,17 @@ class StockChipStorage:
 
     def load_daily_k_df(self) -> pd.DataFrame:
         with sqlite3.connect(self.db_path) as conn:
-            df = pd.read_sql("SELECT date, open as Open, high as High, low as Low, close as Close, volume as Volume FROM daily_k ORDER BY date", conn)
+            # 【防呆防錯備註 2026-11-07】：查詢時強制排除 volume <= 0 或四價為空的非交易日（直接剔除資料庫既有的 10/23 等空量幽靈資料）
+            df = pd.read_sql("""
+                SELECT date, open as Open, high as High, low as Low, close as Close, volume as Volume 
+                FROM daily_k 
+                WHERE volume > 0 
+                  AND open IS NOT NULL 
+                  AND high IS NOT NULL 
+                  AND low IS NOT NULL 
+                  AND close IS NOT NULL 
+                ORDER BY date
+            """, conn)
             if not df.empty:
                 df['date'] = pd.to_datetime(df['date'])
                 df = df.set_index('date')
