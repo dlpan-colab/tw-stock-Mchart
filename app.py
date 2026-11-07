@@ -1,15 +1,14 @@
 """
 app.py - 主應用程式介面與生命週期控制
-版本: 202611062000
+版本: 202611071315
 """
-
 import time
 import re
 import streamlit as st
 import streamlit.components.v1 as components
 import cloud_sync
 
-MODULE_VERSION = "202611062000"
+MODULE_VERSION = "202611071315"
 
 from storage import (
     load_stock_history,
@@ -71,7 +70,6 @@ st.markdown("""
 <style>
 .block-container {padding-top: 3.5rem; padding-bottom: 0rem; padding-left: 1rem; padding-right: 1rem;}
 footer {visibility: hidden;}
-
 [data-testid="stHorizontalBlock"] {
     display: flex !important;
     flex-direction: row !important;
@@ -80,14 +78,12 @@ footer {visibility: hidden;}
     align-items: center !important;
     gap: 8px !important;
 }
-
 [data-testid="stHorizontalBlock"] > div {
     flex: 0 0 65px !important;
     width: 65px !important;
     min-width: 65px !important;
     max-width: 65px !important;
 }
-
 [data-testid="stHorizontalBlock"] button {
     width: 100% !important;
     min-width: 65px !important;
@@ -125,7 +121,6 @@ def on_stock_input_change():
     if val:
         resolved = resolve_ticker_code(val)
         st.session_state.stock_id = resolved
-        # 僅個股列入查詢歷史紀錄，指數不列入
         if not resolved.startswith("^"):
             save_stock_history(resolved)
 
@@ -136,12 +131,10 @@ def on_index_select_change():
         if m:
             idx_code = m.group(1)
             st.session_state.stock_id = idx_code
-            # 指數不列入查詢歷史紀錄
-        st.session_state.index_select_box = "選擇主要市場指數..."
+            st.session_state.index_select_box = "選擇主要市場指數..."
 
 with st.sidebar:
     st.header("參數設定")
-
     INDEX_CHOICES = [
         "選擇主要市場指數...",
         "加權指數 (^TWII)",
@@ -156,20 +149,13 @@ with st.sidebar:
         "德國DAX (^GDAXI)",
         "法國CAC40 (^FCHI)"
     ]
-    st.selectbox(
-        "主要市場指數",
-        INDEX_CHOICES,
-        key="index_select_box",
-        on_change=on_index_select_change
-    )
+    st.selectbox("主要市場指數", INDEX_CHOICES, key="index_select_box", on_change=on_index_select_change)
 
     history_records = load_stock_history()
     history_codes = [str(item.get("code")).strip() for item in history_records if item.get("code")]
-
     with st.expander("查詢歷史紀錄", expanded=False):
         if history_codes:
             history_display = [f"{h.get('code')} {h.get('name', '')}".strip() for h in history_records]
-            
             current_ms_key = f"history_multiselect_{st.session_state.ms_counter}"
             selected_history = st.multiselect(
                 "點擊展開並勾選標的...",
@@ -177,17 +163,15 @@ with st.sidebar:
                 default=[],
                 key=current_ms_key
             )
-
+            
             newly_selected = [item for item in selected_history if item not in st.session_state.history_multiselect_prev]
             if newly_selected:
                 latest_clicked_code = newly_selected[-1].split()[0]
-                
                 all_codes = [item.split()[0] for item in selected_history]
                 other_codes = [c for c in all_codes if c != latest_clicked_code]
                 for c in other_codes:
                     save_stock_history(c)
                 save_stock_history(latest_clicked_code)
-
                 st.session_state.stock_id = latest_clicked_code
                 st.session_state.history_multiselect_prev = []
                 st.session_state.ms_counter += 1
@@ -227,7 +211,6 @@ with st.sidebar:
 
     if "stock_input_box" not in st.session_state or st.session_state.stock_input_box != st.session_state.stock_id:
         st.session_state.stock_input_box = st.session_state.stock_id
-
     st.text_input("股票代號 (直接鍵入)", key="stock_input_box", on_change=on_stock_input_change)
 
     st.session_state.period = st.selectbox(
@@ -262,17 +245,19 @@ with st.sidebar:
     m1_thresh = st.number_input("大戶門檻1 (張)", min_value=100, max_value=2000, value=1000, step=100)
     m2_thresh = st.number_input("大戶門檻2 (張)", min_value=100, max_value=1000, value=400, step=100)
 
-    force_refresh = st.checkbox("⚡ 強制更新籌碼資訊", value=False, help="勾選後將穿透本地快取，強制發動網路爬蟲重新更新法人、資券與大戶資料。")
+    # 【防呆防錯備註 2026-11-07】：標題正名，明確包含穿透快取 (Cache) 與重新爬取籌碼功能
+    force_refresh = st.checkbox("⚡ 強制更新（穿透快取與重抓籌碼）", value=False, help="勾選後將穿透記憶體快取 (Cache) 與本地資料庫，強制發動網路爬蟲重抓近30日籌碼資料。")
+    if force_refresh:
+        get_cached_figures.clear()
 
     if st.button("查詢", use_container_width=True):
         input_code = st.session_state.stock_input_box.strip()
         if input_code:
             resolved = resolve_ticker_code(input_code)
             st.session_state.stock_id = resolved
-            # 僅個股列入查詢歷史紀錄，指數不列入
             if not resolved.startswith("^"):
                 save_stock_history(resolved)
-            st.rerun()
+        st.rerun()
 
     st.markdown("---")
     st.subheader("資券維護")
@@ -285,6 +270,7 @@ with st.sidebar:
             with st.spinner(f"正在清除 {cur_code} 近 {refetch_weeks} 週資券紀錄..."):
                 clear_msg = clear_recent_margin_data(cur_code, weeks=int(refetch_weeks))
                 st.sidebar.success(clear_msg)
+                get_cached_figures.clear()
                 time.sleep(1.0)
                 st.rerun()
 
@@ -296,7 +282,7 @@ elif auth_status == 1:
 else:
     status_light = "⚪"
 
-# 動態使用各模組版號之最大值 SYSTEM_VERSION
+SYSTEM_VERSION = max([MODULE_VERSION, "202611071315"])
 st.markdown(f"## 台股技術與籌碼分析 v{SYSTEM_VERSION} {status_light}")
 
 stock_id = str(st.session_state.stock_id).strip()
@@ -330,7 +316,7 @@ with top_c2:
 fig_top, fig_btm, df, c_name, end_idx, disp_n = get_cached_figures(
     stock_id=stock_id,
     period=st.session_state.period,
-    disp_days=st.session_state.disp_days,
+    display_days=st.session_state.disp_days,
     target_date_val=target_date_val,
     m1_thresh=m1_thresh,
     m2_thresh=m2_thresh,
@@ -342,7 +328,6 @@ if fig_top is None or fig_btm is None or df is None or df.empty:
     st.error(f"無法取得代號 {stock_id} 之歷史行情資料，請確認網路連線或稍後點擊查詢重試。")
     st.stop()
 
-# 背景靜態比對中文名稱，僅個股執行更名推播
 if not stock_id.startswith("^") and c_name and c_name != stock_id:
     update_stock_name_only(stock_id, c_name)
 
