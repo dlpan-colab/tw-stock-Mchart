@@ -1,9 +1,9 @@
 """
 storage.py - 本地 SQLite 資料庫與股票歷史紀錄管理器 (非同步雲端同步版)
-版本: 202611071230
+版本: 202611071238
 """
 MODULE_NAME = "storage"
-MODULE_VERSION = "202611071230"
+MODULE_VERSION = "202611071238"
 
 import os
 import io
@@ -95,7 +95,6 @@ def _do_sync_cloud_pull():
         print(f"[CloudSync] Pull warning: {e}")
 
 def _sync_cloud_pull():
-    # 歷史紀錄與中文檔名，若本地已存在則優先使用本地，不重複同步拉取
     if not os.path.exists(HISTORY_FILE) or not os.path.exists(NAMES_CACHE_FILE):
         _do_sync_cloud_pull()
 
@@ -135,7 +134,6 @@ def _do_sync_db_pull(pure_code: str):
 def sync_db_pull(pure_code: str):
     db_name = f"data_{pure_code}.db"
     local_path = os.path.join(STORAGE_DIR, db_name)
-    # 本地優先：本地若已有檔案且非空，跳過 Google Drive Pull (立省 2~3 秒)
     if os.path.exists(local_path) and os.path.getsize(local_path) > 0:
         return
     _do_sync_db_pull(pure_code)
@@ -151,7 +149,6 @@ def _do_sync_db_push(pure_code: str):
         print(f"[CloudSync] DB push warning for {pure_code}: {e}")
 
 def sync_db_push(pure_code: str):
-    # 背景非同步推播：主畫面 0 秒通過，背景上傳 Google Drive (立省 3~4 秒)
     _async_run(_do_sync_db_push, pure_code)
 
 def _load_name_cache() -> dict:
@@ -202,7 +199,6 @@ def get_stock_chinese_name(pure_code: str) -> str:
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
     }
     
-    # 1. TWSE ISIN 單筆查詢
     url_twse = f"https://isin.twse.com.tw/isin/single_main.jsp?owncode={pure_code}&stockname="
     for attempt in range(2):
         try:
@@ -221,7 +217,6 @@ def get_stock_chinese_name(pure_code: str) -> str:
         if attempt == 0:
             time.sleep(0.2)
 
-    # 2. TWSE 官方 OpenAPI 清單比對備援
     try:
         url_openapi = "https://openapi.twse.com.tw/v1/exchangeReport/BWIBBU_ALL"
         res_o = requests.get(url_openapi, headers=headers, timeout=3)
@@ -239,7 +234,6 @@ def get_stock_chinese_name(pure_code: str) -> str:
     except Exception:
         pass
 
-    # 3. TPEx 櫃買中心 API (上櫃股票)
     try:
         url_tpex = f"https://www.tpex.org.tw/web/stock/aftertrading/otc_quotes_no1430/stk_wn1430_result.php?l=zh-tw&stkno={pure_code}"
         res_t = requests.get(url_tpex, headers=headers, timeout=3)
@@ -253,7 +247,6 @@ def get_stock_chinese_name(pure_code: str) -> str:
     except Exception:
         pass
 
-    # 4. Yahoo Finance API 搜尋備援
     try:
         for suffix in [".TW", ".TWO"]:
             y_url = f"https://query2.finance.yahoo.com/v1/finance/search?q={pure_code}{suffix}"
@@ -424,6 +417,7 @@ def clear_recent_margin_data(pure_code: str, weeks: int = 2) -> str:
 class StockChipStorage:
     def __init__(self, pure_code: str):
         self.pure_code = str(pure_code).strip()
+        self.is_index = self.pure_code.startswith("^")
         self.db_name = f"data_{self.pure_code}.db"
         self.db_path = os.path.join(STORAGE_DIR, self.db_name)
         sync_db_pull(self.pure_code)
@@ -472,8 +466,11 @@ class StockChipStorage:
     def get_latest_daily_k_date(self):
         with sqlite3.connect(self.db_path) as conn:
             cur = conn.cursor()
-            # 【防呆防錯備註 2026-11-07】：排除 volume <= 0，確保抓取最新日期不被非交易日空資料干擾
-            cur.execute("SELECT MAX(date) FROM daily_k WHERE volume > 0")
+            # 【防呆防錯備註 2026-11-07】：個股排除 volume <= 0；指數標的 (^ 開頭) 則不限制 volume > 0，避免誤殺
+            if self.is_index:
+                cur.execute("SELECT MAX(date) FROM daily_k WHERE open IS NOT NULL")
+            else:
+                cur.execute("SELECT MAX(date) FROM daily_k WHERE volume > 0")
             row = cur.fetchone()
             return row[0] if row and row[0] else None
 
@@ -510,7 +507,7 @@ class StockChipStorage:
                 float(row['High']),
                 float(row['Low']),
                 float(row['Close']),
-                float(row['Volume'])
+                float(row.get('Volume', 0.0))
             ))
         with sqlite3.connect(self.db_path) as conn:
             cur = conn.cursor()
@@ -520,17 +517,26 @@ class StockChipStorage:
 
     def load_daily_k_df(self) -> pd.DataFrame:
         with sqlite3.connect(self.db_path) as conn:
-            # 【防呆防錯備註 2026-11-07】：查詢時強制排除 volume <= 0 或四價為空的非交易日（直接剔除資料庫既有的 10/23 等空量幽靈資料）
-            df = pd.read_sql("""
-                SELECT date, open as Open, high as High, low as Low, close as Close, volume as Volume 
-                FROM daily_k 
-                WHERE volume > 0 
-                  AND open IS NOT NULL 
-                  AND high IS NOT NULL 
-                  AND low IS NOT NULL 
-                  AND close IS NOT NULL 
-                ORDER BY date
-            """, conn)
+            # 【防呆防錯備註 2026-11-07】：個股嚴格排除 volume <= 0 剔除幽靈K線；指數類 (^ 開頭) 僅要求四價不為空，確保加權/櫃買資料完整呈現
+            if self.is_index:
+                sql = """
+                    SELECT date, open as Open, high as High, low as Low, close as Close, volume as Volume 
+                    FROM daily_k 
+                    WHERE open IS NOT NULL AND high IS NOT NULL AND low IS NOT NULL AND close IS NOT NULL 
+                    ORDER BY date
+                """
+            else:
+                sql = """
+                    SELECT date, open as Open, high as High, low as Low, close as Close, volume as Volume 
+                    FROM daily_k 
+                    WHERE volume > 0 
+                      AND open IS NOT NULL 
+                      AND high IS NOT NULL 
+                      AND low IS NOT NULL 
+                      AND close IS NOT NULL 
+                    ORDER BY date
+                """
+            df = pd.read_sql(sql, conn)
             if not df.empty:
                 df['date'] = pd.to_datetime(df['date'])
                 df = df.set_index('date')
