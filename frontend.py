@@ -1,11 +1,11 @@
 """
-frontend.py - 前端 HTML/CSS 渲染與手勢/游標跨圖同步模組 (水平軸平移防卡死、垂直手勢防移位、標準Plotly語法解除鎖定、指數與個股全自適應高低價版)
-版本: 202611072220
+frontend.py - 前端 HTML/CSS 渲染與手勢/游標跨圖同步模組 (雙X軸平移完整捕獲、垂直手勢防移位、標準Plotly語法自適應高低價版)
+版本: 202611072250
 """
 MODULE_NAME = "frontend"
-MODULE_VERSION = "202611072220"
+MODULE_VERSION = "202611072250"
 
-def get_legend_html(version_tag: str = "202611072220") -> str:
+def get_legend_html(version_tag: str = "202611072250") -> str:
     return f"""
     <div style="font-size: 14px; margin-bottom: 4px; padding: 2px 8px; display: inline-flex; align-items: center; background: #f8fafc; border-radius: 4px; border: 1px solid #e2e8f0;">
         <span style="background:#2c3e50; color:#ffffff; padding: 2px 8px; border-radius: 4px; font-weight:bold; font-size:12px;">台股技術與籌碼分析 v{version_tag}</span>
@@ -251,10 +251,18 @@ js_template = """
                 if (isUpdating) return;
 
                 // 【防呆防錯備註 2026-11-07】【嚴禁誤刪】：
-                // 1. 攔截純 Y 軸拖動事件（若事件只包含 yaxis 變更且無 xaxis 變更，直接忽略拋棄，鎖死滑鼠上下手勢位移）。
-                var r0 = ed['xaxis.range[0]'] !== undefined ? ed['xaxis.range[0]'] : (ed['xaxis.range'] ? ed['xaxis.range'][0] : null);
-                var r1 = ed['xaxis.range[1]'] !== undefined ? ed['xaxis.range[1]'] : (ed['xaxis.range'] ? ed['xaxis.range'][1] : null);
-                var auto = ed['xaxis.autorange'];
+                // 1. 同時解析 xaxis 與 xaxis2 的 range，確保在任一子圖拖曳皆能正確捕獲 X 軸平移區間。
+                var r0 = ed['xaxis.range[0]'] !== undefined ? ed['xaxis.range[0]'] : 
+                         (ed['xaxis.range'] ? ed['xaxis.range'][0] : 
+                         (ed['xaxis2.range[0]'] !== undefined ? ed['xaxis2.range[0]'] : 
+                         (ed['xaxis2.range'] ? ed['xaxis2.range'][0] : null)));
+
+                var r1 = ed['xaxis.range[1]'] !== undefined ? ed['xaxis.range[1]'] : 
+                         (ed['xaxis.range'] ? ed['xaxis.range'][1] : 
+                         (ed['xaxis2.range[1]'] !== undefined ? ed['xaxis2.range[1]'] : 
+                         (ed['xaxis2.range'] ? ed['xaxis2.range'][1] : null)));
+
+                var auto = ed['xaxis.autorange'] || ed['xaxis2.autorange'];
 
                 if (r0 === null && r1 === null && !auto) {
                     return; // 忽略非水平平移的所有垂直拖拉事件
@@ -402,7 +410,7 @@ def render_interactive_chart_html(
     top_height=420, btm_height=1180,
     initial_disp_days=20,
     initial_end_idx=None,
-    version_tag="202611072220"
+    version_tag="202611072250"
 ) -> str:
     import json
     import uuid
