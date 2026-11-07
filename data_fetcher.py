@@ -1,6 +1,6 @@
 """
 data_fetcher.py - 整合技術與籌碼資料擷取模組 (支援台股大盤/櫃買官方直連)
-版本: 202611071238
+版本: 202611071243
 """
 import os
 import re
@@ -14,7 +14,7 @@ from bs4 import BeautifulSoup
 from datetime import datetime, timedelta
 
 MODULE_NAME = "data_fetcher"
-MODULE_VERSION = "202611071238"
+MODULE_VERSION = "202611071243"
 
 from storage import (
     StockChipStorage,
@@ -31,22 +31,19 @@ def _fetch_tw_official_index(pure_code: str, months_back: int = 12) -> pd.DataFr
     """
     【防呆防錯備註 2026-11-07】：
     自台灣官方交易所 (TWSE / TPEx) 直連擷取加權指數與櫃買指數歷史日 K 線。
-    解決 Yahoo Finance 無 ^TWOII 報價或 ^TWII 經常成交量缺失之問題。
+    補足 TPEx 櫃買中心防爬機制所需的 Referer 與 Accept 標頭，避免請求遭阻擋回傳空值。
     """
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-    }
     dfs = []
     now = datetime.now()
 
-    for m in range(months_back):
-        target_dt = now - timedelta(days=m * 30)
-        yyyymm = target_dt.strftime('%Y%m') + "01"
-        year_tw = target_dt.year - 1911
-        mm = target_dt.strftime('%m')
-
-        if pure_code == "^TWII":
-            # 台灣證交所發行量加權股價指數歷史 (FMTQIK)
+    if pure_code == "^TWII":
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "Referer": "https://www.twse.com.tw/zh/trading/historical/fmtqik.html"
+        }
+        for m in range(months_back):
+            target_dt = now - timedelta(days=m * 30)
+            yyyymm = target_dt.strftime('%Y%m') + "01"
             url = f"https://www.twse.com.tw/rwd/zh/afterTrading/FMTQIK?date={yyyymm}&response=json"
             try:
                 res = requests.get(url, headers=headers, timeout=5)
@@ -55,17 +52,15 @@ def _fetch_tw_official_index(pure_code: str, months_back: int = 12) -> pd.DataFr
                     if data.get("stat") == "OK" and "data" in data:
                         rows = []
                         for row in data["data"]:
-                            raw_date = row[0].strip()
+                            raw_date = str(row[0]).strip()
                             parts = raw_date.split('/')
                             if len(parts) == 3:
                                 y = int(parts[0]) + 1911
                                 d_str = f"{y:04d}-{int(parts[1]):02d}-{int(parts[2]):02d}"
-                                # 清洗數值
                                 def parse_val(v):
                                     return float(str(v).replace(',', '').strip())
-                                # FMTQIK 欄位: 日期(0), 成交股數(1), 成交金額(2), 成交筆數(3), 發行量加權股價指數(4)
                                 close_p = parse_val(row[4])
-                                vol = parse_val(row[1]) # 總成交股數
+                                vol = parse_val(row[1])
                                 rows.append({
                                     "Date": pd.to_datetime(d_str),
                                     "Open": close_p,
@@ -78,17 +73,28 @@ def _fetch_tw_official_index(pure_code: str, months_back: int = 12) -> pd.DataFr
                             dfs.append(pd.DataFrame(rows))
             except Exception:
                 pass
+            time.sleep(0.05)
 
-        elif pure_code == "^TWOII":
-            # 台灣櫃檯買賣中心 指數歷史行情 (櫃買指數: 01)
+    elif pure_code == "^TWOII":
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "Accept": "application/json, text/javascript, */*; q=0.01",
+            "X-Requested-With": "XMLHttpRequest",
+            "Referer": "https://www.tpex.org.tw/web/stock/aftertrading/index_history/idx_history.php?l=zh-tw"
+        }
+        for m in range(months_back):
+            target_dt = now - timedelta(days=m * 30)
+            year_tw = target_dt.year - 1911
+            mm = target_dt.strftime('%m')
             url = f"https://www.tpex.org.tw/web/stock/aftertrading/index_history/idx_history_result.php?l=zh-tw&d={year_tw}/{mm}&index=01"
             try:
                 res = requests.get(url, headers=headers, timeout=5)
                 if res.status_code == 200:
                     data = res.json()
-                    if "aaData" in data and len(data["aaData"]) > 0:
+                    rows_data = data.get("aaData", [])
+                    if rows_data:
                         rows = []
-                        for row in data["aaData"]:
+                        for row in rows_data:
                             raw_date = str(row[0]).strip()
                             parts = raw_date.split('/')
                             if len(parts) == 3:
@@ -96,7 +102,6 @@ def _fetch_tw_official_index(pure_code: str, months_back: int = 12) -> pd.DataFr
                                 d_str = f"{y:04d}-{int(parts[1]):02d}-{int(parts[2]):02d}"
                                 def parse_val(v):
                                     return float(str(v).replace(',', '').strip())
-                                # TPEx 欄位: 日期(0), 開盤(1), 最高(2), 最低(3), 收盤(4)
                                 o_val = parse_val(row[1])
                                 h_val = parse_val(row[2])
                                 l_val = parse_val(row[3])
@@ -107,13 +112,13 @@ def _fetch_tw_official_index(pure_code: str, months_back: int = 12) -> pd.DataFr
                                     "High": h_val,
                                     "Low": l_val,
                                     "Close": c_val,
-                                    "Volume": 1000.0 # 櫃買指數提供名義量
+                                    "Volume": 1000.0
                                 })
                         if rows:
                             dfs.append(pd.DataFrame(rows))
             except Exception:
                 pass
-        time.sleep(0.05)
+            time.sleep(0.05)
 
     if dfs:
         full_df = pd.concat(dfs).drop_duplicates(subset=['Date']).sort_values('Date').set_index('Date')
@@ -146,14 +151,11 @@ def fetch_stock_daily_k(raw_ticker: str, period: str = "1y", base_date: str = No
 
     # ===== 分流 1：台灣官方指數 (^TWII 與 ^TWOII) 直連擷取 =====
     if pure_code in ["^TWII", "^TWOII"]:
-        # 本地若已有足夠歷史且非強制重抓，直接使用快取
         if not force_refresh and not db_df.empty and last_k_date:
-            # 檢查快取是否為最新（近 3 日內）
             diff_days = (datetime.now() - pd.to_datetime(last_k_date)).days
             if diff_days <= 2:
                 return db_df, full_ticker, None
-        
-        # 抓取官方 API 資料
+
         m_back = 12 if (force_refresh or db_df.empty) else 2
         df_new = _fetch_tw_official_index(pure_code, months_back=m_back)
         if not df_new.empty:
@@ -181,7 +183,6 @@ def fetch_stock_daily_k(raw_ticker: str, period: str = "1y", base_date: str = No
     except Exception:
         df_new = pd.DataFrame()
 
-    # 若個股查無 .TW，自動切換至 .TWO 嘗試
     if (df_new is None or df_new.empty) and pure_code.isdigit() and full_ticker.endswith(".TW"):
         full_ticker = f"{pure_code}.TWO"
         ticker = yf.Ticker(full_ticker)
@@ -198,7 +199,7 @@ def fetch_stock_daily_k(raw_ticker: str, period: str = "1y", base_date: str = No
         if df_new.index.tz is not None:
             df_new.index = df_new.index.tz_localize(None)
 
-        # 【防呆防錯備註 2026-11-07】：個股嚴格排除 Volume <= 0 或缺價的非交易日；海外指數不卡 Volume
+        # 【防呆防錯備註 2026-11-07】：個股排除 Volume <= 0 或缺價之非交易日；海外指數不卡 Volume
         valid_cols = [c for c in ['Open', 'High', 'Low', 'Close'] if c in df_new.columns]
         if valid_cols:
             df_new = df_new.dropna(subset=valid_cols)
@@ -219,9 +220,7 @@ def fetch_stock_daily_k(raw_ticker: str, period: str = "1y", base_date: str = No
     return None
 
 def sync_chip_data(pure_code: str, df_dates: pd.DatetimeIndex, status_placeholder=None, force_refresh: bool = False):
-    """
-    同步並補齊法人、資券與大戶籌碼資料。
-    """
+    """同步並補齊法人、資券與大戶籌碼資料。"""
     pure_code = str(pure_code).strip()
     storage = StockChipStorage(pure_code)
 
@@ -239,7 +238,6 @@ def sync_chip_data(pure_code: str, df_dates: pd.DatetimeIndex, status_placeholde
     now = datetime.now()
     now_date_str = now.strftime('%Y-%m-%d')
 
-    # 短路判斷 1：三大法人與資券
     should_fetch_inst = force_refresh
     if not should_fetch_inst:
         if not last_inst_date:
@@ -260,7 +258,6 @@ def sync_chip_data(pure_code: str, df_dates: pd.DatetimeIndex, status_placeholde
             else:
                 should_fetch_margin = True
 
-    # 短路判斷 2：集保大戶
     should_fetch_holding = force_refresh
     if not should_fetch_holding:
         if not last_holding_date:
@@ -273,7 +270,6 @@ def sync_chip_data(pure_code: str, df_dates: pd.DatetimeIndex, status_placeholde
             elif now.weekday() == 4 and now.hour >= 20 and diff_days >= 1:
                 should_fetch_holding = True
 
-    # 執行網路抓取
     if should_fetch_inst:
         if status_placeholder:
             status_placeholder.info(f"正在更新 {pure_code} 三大法人買賣超...")
@@ -316,7 +312,6 @@ def fetch_institutional_investors(pure_code: str, df_dates: pd.DatetimeIndex) ->
         date_twse = dt.strftime('%Y%m%d')
         date_str = dt.strftime('%Y-%m-%d')
 
-        # 1. 嘗試上市 TWSE
         url_twse = f"https://www.twse.com.tw/rwd/zh/fund/T86?date={date_twse}&selectType=ALLBUT0999&response=json"
         try:
             res = requests.get(url_twse, headers=headers, timeout=3)
@@ -336,7 +331,6 @@ def fetch_institutional_investors(pure_code: str, df_dates: pd.DatetimeIndex) ->
         except Exception:
             pass
 
-        # 2. 嘗試上櫃 TPEx
         try:
             year_tw = dt.year - 1911
             date_tpex = f"{year_tw}/{dt.strftime('%m/%d')}"
@@ -372,7 +366,6 @@ def fetch_margin_short_data(pure_code: str, df_dates: pd.DatetimeIndex) -> list:
         date_twse = dt.strftime('%Y%m%d')
         date_str = dt.strftime('%Y-%m-%d')
 
-        # 1. 嘗試上市 TWSE
         url_twse = f"https://www.twse.com.tw/rwd/zh/marginTrading/MI_MARGN?date={date_twse}&selectType=ALL&response=json"
         try:
             res = requests.get(url_twse, headers=headers, timeout=3)
@@ -394,7 +387,6 @@ def fetch_margin_short_data(pure_code: str, df_dates: pd.DatetimeIndex) -> list:
         except Exception:
             pass
 
-        # 2. 嘗試上櫃 TPEx
         try:
             year_tw = dt.year - 1911
             date_tpex = f"{year_tw}/{dt.strftime('%m/%d')}"
