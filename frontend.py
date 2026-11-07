@@ -1,11 +1,11 @@
 """
 frontend.py - 前端 HTML/CSS 渲染與手勢/游標跨圖同步模組 (水平軸平移防卡死與垂直防移位修訂版)
-版本: 202611072054
+版本: 202611072124
 """
 MODULE_NAME = "frontend"
-MODULE_VERSION = "202611072054"
+MODULE_VERSION = "202611072124"
 
-def get_legend_html(version_tag: str = "202611072054") -> str:
+def get_legend_html(version_tag: str = "202611072124") -> str:
     return f"""
     <div style="font-size: 14px; margin-bottom: 4px; padding: 2px 8px; display: inline-flex; align-items: center; background: #f8fafc; border-radius: 4px; border: 1px solid #e2e8f0;">
         <span style="background:#2c3e50; color:#ffffff; padding: 2px 8px; border-radius: 4px; font-weight:bold; font-size:12px;">台股技術與籌碼分析 v{version_tag}</span>
@@ -209,6 +209,7 @@ js_template = """
             srcEl.on('plotly_relayout', function(ed) {
                 if (isUpdating) return;
 
+                // 【防呆防錯備註 2026-11-07】：徹底過濾並丟棄任何 yaxis 位移，杜絕上下垂直拖曳
                 var r0 = ed['xaxis.range[0]'] !== undefined ? ed['xaxis.range[0]'] : (ed['xaxis.range'] ? ed['xaxis.range'][0] : null);
                 var r1 = ed['xaxis.range[1]'] !== undefined ? ed['xaxis.range[1]'] : (ed['xaxis.range'] ? ed['xaxis.range'][1] : null);
                 var auto = ed['xaxis.autorange'];
@@ -226,7 +227,6 @@ js_template = """
                         didClamp = true;
                     }
 
-                    // 【防呆防錯備註 2026-11-07】：嚴格僅更新 X 軸水平範圍，絕不動 yaxis.range，杜絕上下垂直拖曳位移
                     var selfUpd = {};
                     if (didClamp) {
                         if (srcEl === elTop) {
@@ -255,7 +255,7 @@ js_template = """
                         }
                     }
 
-                    // 【防呆防錯備註 2026-11-07】：雙向非同步同步與旗標絕對釋放，保證每次拖曳均不卡死
+                    // 【防呆防錯備註 2026-11-07】：嚴格僅更新 X 軸，不允許任何 yaxis 變更傳遞
                     var p1 = Object.keys(selfUpd).length > 0 ? Plotly.relayout(srcEl, selfUpd) : Promise.resolve();
                     var p2 = Plotly.relayout(destEl, destUpd);
 
@@ -347,7 +347,7 @@ def render_interactive_chart_html(
     top_height=420, btm_height=1180,
     initial_disp_days=20,
     initial_end_idx=None,
-    version_tag="202611072054"
+    version_tag="202611072124"
 ) -> str:
     import json
     import uuid
