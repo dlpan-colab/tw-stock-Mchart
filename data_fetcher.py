@@ -1,113 +1,42 @@
-""" 
-data_fetcher.py - 資料抓取模組 (支援 Yahoo Finance、TPEx 官方指數備援與 FinMind 籌碼)
-版本: 202611060900
 """
-
-MODULE_NAME = "data_fetcher"
-MODULE_VERSION = "202611060900"
-
-from typing import Tuple, Optional, List
+data_fetcher.py - 整合技術與籌碼資料擷取模組
+版本: 202611071200
+"""
+import os
+import re
+import json
+import time
+import requests
+import numpy as np
 import pandas as pd
 import yfinance as yf
-import requests
-import time
+from bs4 import BeautifulSoup
 from datetime import datetime, timedelta
-from storage import StockChipStorage, get_stock_chinese_name
 
-FINMIND_TOKEN = ""
-FINMIND_API_URL = "https://api.finmindtrade.com/api/v4/data"
+MODULE_NAME = "data_fetcher"
+MODULE_VERSION = "202611071200"
 
-def fetch_stock_name(raw_ticker: str) -> str:
-    return get_stock_chinese_name(raw_ticker)
+from storage import (
+    StockChipStorage, 
+    COMMON_STOCK_NAMES, 
+    load_stock_names_dict, 
+    get_stock_chinese_name
+)
 
-def _fetch_tpex_index_k() -> pd.DataFrame:
-    """自櫃買中心 (TPEx) 官方端點抓取櫃買指數歷史日 K 線"""
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-    }
-    today = datetime.now()
-    records = []
-    
-    # 抓取最近 4 個月份之櫃買指數月報
-    for i in range(4):
-        target_m = today - timedelta(days=i * 28)
-        roc_year = target_m.year - 1911
-        m_str = f"{target_m.month:02d}"
-        url = f"https://www.tpex.org.tw/web/stock/aftertrading/index_info/index_info_result.php?l=zh-tw&d={roc_year}/{m_str}&_="
-        try:
-            res = requests.get(url, headers=headers, timeout=5)
-            if res.status_code == 200:
-                data = res.json()
-                rows = data.get("aaData", [])
-                for r in rows:
-                    # 格式: [民國日期, 開盤, 最高, 最低, 收盤, 漲跌, 成交量(千股), 成交金額(千元), ...]
-                    if len(r) >= 5:
-                        date_parts = r[0].strip().split('/')
-                        if len(date_parts) == 3:
-                            ad_year = int(date_parts[0]) + 1911
-                            d_str = f"{ad_year}-{int(date_parts[1]):02d}-{int(date_parts[2]):02d}"
-                            
-                            def parse_val(v):
-                                return float(str(v).replace(',', '').strip())
+def fetch_stock_name(pure_code: str) -> str:
+    """取得股票中文名稱 (優先查字典/快取，無則爬蟲)"""
+    return get_stock_chinese_name(pure_code)
 
-                            try:
-                                close_p = parse_val(r[4])
-                                open_p = parse_val(r[1]) if r[1] != '--' else close_p
-                                high_p = parse_val(r[2]) if r[2] != '--' else max(open_p, close_p)
-                                low_p = parse_val(r[3]) if r[3] != '--' else min(open_p, close_p)
-                                vol = parse_val(r[6]) * 1000 if len(r) >= 7 and r[6] != '--' else 0.0
-                                records.append({
-                                    "date": d_str,
-                                    "Open": open_p,
-                                    "High": high_p,
-                                    "Low": low_p,
-                                    "Close": close_p,
-                                    "Volume": vol
-                                })
-                            except Exception:
-                                continue
-        except Exception:
-            pass
-
-    if not records:
-        return pd.DataFrame()
-
-    df = pd.DataFrame(records)
-    df['date'] = pd.to_datetime(df['date'])
-    df = df.drop_duplicates(subset=['date']).sort_values('date').set_index('date')
-    return df
-
-def fetch_stock_daily_k(raw_ticker: str, period: str = "1y", base_date: Optional[str] = None, force_refresh: bool = False):
-    pure_code = str(raw_ticker).strip()
-    storage = StockChipStorage(pure_code)
-    last_k_date = storage.get_latest_daily_k_date()
-    db_df = storage.load_daily_k_df()
-
-    # 1. 處理櫃買指數 (^TWOII)
-    if pure_code.upper() in ["^TWOII", "TWOII"]:
-        full_ticker = "^TWOII"
-        shares_outstanding = 0
-        if not db_df.empty and not force_refresh and last_k_date:
-            latest_db_dt = pd.to_datetime(last_k_date)
-            now = datetime.now()
-            # 若已有當週或昨日資料且未到強制更新
-            if (now - latest_db_dt).days <= 1:
-                return db_df, full_ticker, shares_outstanding
-        
-        tpex_df = _fetch_tpex_index_k()
-        if not tpex_df.empty:
-            if not db_df.empty:
-                combined = pd.concat([db_df, tpex_df])
-                combined = combined[~combined.index.duplicated(keep='last')].sort_index()
-            else:
-                combined = tpex_df
-            storage.save_daily_k_df(combined)
-            return combined, full_ticker, shares_outstanding
-        elif not db_df.empty:
-            return db_df, full_ticker, shares_outstanding
+def fetch_stock_daily_k(raw_ticker: str, period: str = "1y", base_date: str = None, force_refresh: bool = False):
+    """
+    自本地 SQLite 或 Yahoo Finance 擷取歷史日 K 線資料。
+    若本地已存在歷史，則抓取最新資料進行增量合併。
+    """
+    raw_str = str(raw_ticker).strip()
+    if not raw_str:
         return None
-
-    # 2. 處理加權指數 (^TWII) 與一般個股 / 海外市場指數
+        
+    pure_code = raw_str.upper()
     if pure_code.startswith("^"):
         full_ticker = pure_code
     elif pure_code.isdigit():
@@ -115,12 +44,19 @@ def fetch_stock_daily_k(raw_ticker: str, period: str = "1y", base_date: Optional
     else:
         full_ticker = pure_code
 
-    ticker = yf.Ticker(full_ticker)
+    storage = StockChipStorage(pure_code)
+    db_df = storage.load_daily_k_df()
+    last_k_date = storage.get_latest_daily_k_date()
+
     shares_outstanding = None
-    try:
-        shares_outstanding = ticker.info.get("sharesOutstanding")
-    except Exception:
-        pass
+    ticker = yf.Ticker(full_ticker)
+    
+    # 嘗試取得在外流通股數
+    if pure_code.isdigit():
+        try:
+            shares_outstanding = ticker.info.get("sharesOutstanding")
+        except Exception:
+            pass
 
     fetch_period = period if force_refresh or db_df.empty or not last_k_date else "5d"
 
@@ -147,12 +83,18 @@ def fetch_stock_daily_k(raw_ticker: str, period: str = "1y", base_date: Optional
         if df_new.index.tz is not None:
             df_new.index = df_new.index.tz_localize(None)
 
+        # 【防呆防錯備註 2026-11-07】：過濾 Volume <= 0 或四價包含空值的非交易日（避免 10/23 等空量出現在 K 線，並防止盤後缺價過渡資料污染）
+        valid_cols = [c for c in ['Open', 'High', 'Low', 'Close'] if c in df_new.columns]
+        if valid_cols and 'Volume' in df_new.columns:
+            df_new = df_new.dropna(subset=valid_cols)
+            df_new = df_new[df_new['Volume'] > 0]
+
         if not db_df.empty and not force_refresh:
             combined = pd.concat([db_df, df_new])
             combined = combined[~combined.index.duplicated(keep='last')].sort_index()
         else:
             combined = df_new.sort_index()
-
+            
         storage.save_daily_k_df(combined)
         return combined, full_ticker, shares_outstanding
     elif not db_df.empty:
@@ -161,6 +103,9 @@ def fetch_stock_daily_k(raw_ticker: str, period: str = "1y", base_date: Optional
     return None
 
 def sync_chip_data(pure_code: str, df_dates: pd.DatetimeIndex, status_placeholder=None, force_refresh: bool = False):
+    """
+    同步並補齊法人、資券與大戶籌碼資料。
+    """
     pure_code = str(pure_code).strip()
     storage = StockChipStorage(pure_code)
 
@@ -205,107 +150,186 @@ def sync_chip_data(pure_code: str, df_dates: pd.DatetimeIndex, status_placeholde
         if not last_holding_date:
             should_fetch_holding = True
         else:
-            days_since_holding = (now - pd.to_datetime(last_holding_date)).days
-            if days_since_holding >= 6:
-                if now.weekday() == 4 and now.hour < 19:
-                    should_fetch_holding = False
-                elif now.weekday() < 4:
-                    should_fetch_holding = False
-                else:
-                    should_fetch_holding = True
+            last_dt = pd.to_datetime(last_holding_date)
+            diff_days = (now - last_dt).days
+            if diff_days >= 7:
+                should_fetch_holding = True
+            elif now.weekday() == 4 and now.hour >= 20 and diff_days >= 1:
+                should_fetch_holding = True
 
-    target_start_date = (df_dates[0] - timedelta(days=5)).strftime('%Y-%m-%d')
-    inst_query_start = (pd.to_datetime(last_inst_date) + timedelta(days=1)).strftime('%Y-%m-%d') if last_inst_date and not force_refresh else target_start_date
-    margin_query_start = (pd.to_datetime(last_margin_date) + timedelta(days=1)).strftime('%Y-%m-%d') if last_margin_date and not force_refresh else target_start_date
-
-    # 1. 抓取三大法人
+    # 執行網路抓取
     if should_fetch_inst:
-        try:
-            params = {
-                "dataset": "TaiwanStockInstitutionalInvestorsBuySell",
-                "data_id": pure_code,
-                "start_date": inst_query_start,
-                "token": FINMIND_TOKEN
-            }
-            res = requests.get(FINMIND_API_URL, params=params, timeout=5)
-            if res.status_code == 200:
-                data = res.json().get("data", [])
-                if data:
-                    inst_dict = {}
-                    for item in data:
-                        d = item.get("date")
-                        name = item.get("name")
-                        buy = item.get("buy", 0)
-                        sell = item.get("sell", 0)
-                        diff_sheets = (buy - sell) / 1000.0
-                        if d not in inst_dict:
-                            inst_dict[d] = {"Foreign_Net": 0.0, "Trust_Net": 0.0, "Dealer_Net": 0.0}
-                        if name in ["Foreign_Investor", "外資及陸資"]:
-                            inst_dict[d]["Foreign_Net"] += diff_sheets
-                        elif name in ["Investment_Trust", "投信"]:
-                            inst_dict[d]["Trust_Net"] += diff_sheets
-                        elif name in ["Dealer", "自營商", "Dealer_self", "Dealer_Hedging"]:
-                            inst_dict[d]["Dealer_Net"] += diff_sheets
-                    
-                    records = []
-                    for d, vals in inst_dict.items():
-                        records.append((d, vals["Foreign_Net"], vals["Trust_Net"], vals["Dealer_Net"]))
-                    storage.save_institutional_data(records)
-        except Exception:
-            pass
+        if status_placeholder:
+            status_placeholder.info(f"正在更新 {pure_code} 三大法人買賣超...")
+        inst_records = fetch_institutional_investors(pure_code, df_dates)
+        if inst_records:
+            storage.save_institutional_data(inst_records)
 
-    # 2. 抓取資券
     if should_fetch_margin:
-        try:
-            params = {
-                "dataset": "TaiwanStockMarginPurchaseShortSale",
-                "data_id": pure_code,
-                "start_date": margin_query_start,
-                "token": FINMIND_TOKEN
-            }
-            res = requests.get(FINMIND_API_URL, params=params, timeout=5)
-            if res.status_code == 200:
-                data = res.json().get("data", [])
-                if data:
-                    margin_records = []
-                    for item in data:
-                        d = item.get("date")
-                        mbuy = item.get("MarginPurchaseBuy", 0)
-                        msell = item.get("MarginPurchaseSell", 0)
-                        mbal = item.get("MarginPurchaseTodayBalance", 0)
-                        sbuy = item.get("ShortSaleBuy", 0)
-                        ssell = item.get("ShortSaleSell", 0)
-                        sbal = item.get("ShortSaleTodayBalance", 0)
-                        margin_diff = mbuy - msell
-                        short_diff = ssell - sbuy
-                        margin_records.append((d, float(margin_diff), float(short_diff), float(mbal), float(sbal)))
-                    storage.save_margin_data(margin_records)
-        except Exception:
-            pass
+        if status_placeholder:
+            status_placeholder.info(f"正在更新 {pure_code} 融資融券資訊...")
+        margin_records = fetch_margin_short_data(pure_code, df_dates)
+        if margin_records:
+            storage.save_margin_data(margin_records)
 
-    # 3. 抓取集保大戶
     if should_fetch_holding:
+        if status_placeholder:
+            status_placeholder.info(f"正在更新 {pure_code} 集保大戶股權分散表...")
+        holding_records = fetch_tdcc_holding_data(pure_code)
+        if holding_records:
+            storage.save_holding_data(holding_records)
+
+    if status_placeholder:
+        status_placeholder.empty()
+
+    return (
+        storage.load_institutional_df(),
+        storage.load_margin_df(),
+        storage.load_holding_df()
+    )
+
+def fetch_institutional_investors(pure_code: str, df_dates: pd.DatetimeIndex) -> list:
+    """擷取三大法人買賣超資料 (單位：張)"""
+    records = []
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+    }
+    
+    # 擷取近 30 個交易日
+    sample_dates = df_dates[-30:]
+    for dt in sample_dates:
+        date_twse = dt.strftime('%Y%m%d')
+        date_str = dt.strftime('%Y-%m-%d')
+        
+        # 1. 嘗試上市 TWSE
+        url_twse = f"https://www.twse.com.tw/rwd/zh/fund/T86?date={date_twse}&selectType=ALLBUT0999&response=json"
         try:
-            holding_query_start = (pd.to_datetime(last_holding_date) + timedelta(days=1)).strftime('%Y-%m-%d') if last_holding_date and not force_refresh else target_start_date
-            params = {
-                "dataset": "TaiwanStockHoldingSharesPer",
-                "data_id": pure_code,
-                "start_date": holding_query_start,
-                "token": FINMIND_TOKEN
-            }
-            res = requests.get(FINMIND_API_URL, params=params, timeout=5)
+            res = requests.get(url_twse, headers=headers, timeout=3)
             if res.status_code == 200:
-                data = res.json().get("data", [])
-                if data:
-                    holding_records = []
-                    for item in data:
-                        d = item.get("date")
-                        lvl = item.get("HoldingSharesLevel")
-                        pct = item.get("percent", 0.0)
-                        if lvl is not None:
-                            holding_records.append((d, int(lvl), float(pct)))
-                    storage.save_holding_data(holding_records)
+                data = res.json()
+                if data.get("stat") == "OK" and "data" in data:
+                    for row in data["data"]:
+                        if row[0].strip() == pure_code:
+                            def clean_val(v):
+                                return float(str(v).replace(",", "").strip()) / 1000.0
+                            f_net = clean_val(row[4])
+                            t_net = clean_val(row[10])
+                            d_net = clean_val(row[11])
+                            records.append((date_str, f_net, t_net, d_net))
+                            break
+                    continue
         except Exception:
             pass
 
-    return (storage.load_institutional_df(), storage.load_margin_df(), storage.load_holding_df())
+        # 2. 嘗試上櫃 TPEx
+        try:
+            year_tw = dt.year - 1911
+            date_tpex = f"{year_tw}/{dt.strftime('%m/%d')}"
+            url_tpex = f"https://www.tpex.org.tw/web/stock/3insti/daily_trade/3itrade_hedge_result.php?l=zh-tw&se=EW&t=D&d={date_tpex}"
+            res = requests.get(url_tpex, headers=headers, timeout=3)
+            if res.status_code == 200:
+                data = res.json()
+                if "aaData" in data:
+                    for row in data["aaData"]:
+                        if row[0].strip() == pure_code:
+                            def clean_val(v):
+                                return float(str(v).replace(",", "").strip()) / 1000.0
+                            f_net = clean_val(row[7])
+                            t_net = clean_val(row[8])
+                            d_net = clean_val(row[9])
+                            records.append((date_str, f_net, t_net, d_net))
+                            break
+        except Exception:
+            pass
+
+        time.sleep(0.05)
+
+    return records
+
+def fetch_margin_short_data(pure_code: str, df_dates: pd.DatetimeIndex) -> list:
+    """擷取融資融券買賣增減與餘額 (單位：張)"""
+    records = []
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+    }
+
+    sample_dates = df_dates[-30:]
+    for dt in sample_dates:
+        date_twse = dt.strftime('%Y%m%d')
+        date_str = dt.strftime('%Y-%m-%d')
+
+        # 1. 嘗試上市 TWSE
+        url_twse = f"https://www.twse.com.tw/rwd/zh/marginTrading/MI_MARGN?date={date_twse}&selectType=ALL&response=json"
+        try:
+            res = requests.get(url_twse, headers=headers, timeout=3)
+            if res.status_code == 200:
+                data = res.json()
+                if data.get("stat") == "OK" and "tables" in data:
+                    table = data["tables"][0]
+                    for row in table.get("data", []):
+                        if row[0].strip() == pure_code:
+                            def clean_val(v):
+                                return float(str(v).replace(",", "").strip())
+                            m_diff = clean_val(row[5])
+                            m_bal = clean_val(row[6])
+                            s_diff = clean_val(row[11])
+                            s_bal = clean_val(row[12])
+                            records.append((date_str, m_diff, s_diff, m_bal, s_bal))
+                            break
+                    continue
+        except Exception:
+            pass
+
+        # 2. 嘗試上櫃 TPEx
+        try:
+            year_tw = dt.year - 1911
+            date_tpex = f"{year_tw}/{dt.strftime('%m/%d')}"
+            url_tpex = f"https://www.tpex.org.tw/web/stock/margin_trading/margin_balance/margin_bal_result.php?l=zh-tw&d={date_tpex}"
+            res = requests.get(url_tpex, headers=headers, timeout=3)
+            if res.status_code == 200:
+                data = res.json()
+                if "aaData" in data:
+                    for row in data["aaData"]:
+                        if row[0].strip() == pure_code:
+                            def clean_val(v):
+                                return float(str(v).replace(",", "").strip())
+                            m_diff = clean_val(row[4])
+                            m_bal = clean_val(row[5])
+                            s_diff = clean_val(row[10])
+                            s_bal = clean_val(row[11])
+                            records.append((date_str, m_diff, s_diff, m_bal, s_bal))
+                            break
+        except Exception:
+            pass
+
+        time.sleep(0.05)
+
+    return records
+
+def fetch_tdcc_holding_data(pure_code: str) -> list:
+    """擷取集保大戶持股分級資料 (集保結算所 TDCC 官方來源)"""
+    records = []
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+    }
+    
+    url = "https://smart.tdcc.com.tw/opendata/getOD.ashx?id=1-5"
+    try:
+        res = requests.get(url, headers=headers, timeout=10)
+        if res.status_code == 200:
+            lines = res.text.splitlines()
+            for line in lines:
+                parts = line.strip().split(",")
+                if len(parts) >= 6 and parts[1].strip() == pure_code:
+                    d_raw = parts[0].strip()
+                    try:
+                        d_str = datetime.strptime(d_raw, '%Y%m%d').strftime('%Y-%m-%d')
+                        level = int(parts[2].strip())
+                        percent = float(parts[5].strip())
+                        records.append((d_str, level, percent))
+                    except Exception:
+                        pass
+    except Exception:
+        pass
+
+    return records
