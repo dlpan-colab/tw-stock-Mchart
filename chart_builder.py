@@ -1,9 +1,9 @@
 """
-chart_builder.py - Plotly 圖表建置模組 (純淨無原生 hover/spikes，開放程式動態更新高低點，前端攔截垂直手勢)
-版本: 202611072255
+chart_builder.py - Plotly 圖表建置模組 (Y軸物理鎖死 fixedrange=True 杜絕位移回彈，開放程式重算最適高低價)
+版本: 202611072305
 """
 MODULE_NAME = "chart_builder"
-MODULE_VERSION = "202611072255"
+MODULE_VERSION = "202611072305"
 
 from typing import Tuple, Optional
 import numpy as np
@@ -242,11 +242,9 @@ def build_split_figures(
     fig_top.update_xaxes(type='category', range=[start_idx - 0.5, end_idx + 0.5], domain=[0, 1], showspikes=False, tickfont=dict(size=11), row=1, col=1)
     fig_top.update_xaxes(type='category', range=[start_idx - 0.5, end_idx + 0.5], domain=[0, 1], showticklabels=True, tickvals=month_ticks_vals, ticktext=month_ticks_text, showspikes=False, tickfont=dict(size=11), row=2, col=1)
 
-    # 【防呆防錯備註 2026-11-07】：
-    # 價格與量能 Y 軸設為 fixedrange=False，允許前端 relayout 即時動態調整最適可視高低價；
-    # 垂直拖拉位移之鎖死完全由 frontend.py 中的事件攔截層負責，維持手勢無法上下位移。
-    fig_top.update_yaxes(title_text='', range=[p_min - (p_max - p_min) * 0.08, p_max + p_pad], fixedrange=False, showspikes=False, tickfont=dict(size=11), row=1, col=1)
-    fig_top.update_yaxes(title_text='', range=[0, vol_upper], fixedrange=False, showspikes=False, tickfont=dict(size=11), row=2, col=1)
+    # 【防呆防錯備註 2026-11-07】：恢復原生 fixedrange=True 物理鎖死手勢拖動，杜絕垂直移位與回彈
+    fig_top.update_yaxes(title_text='', range=[p_min - (p_max - p_min) * 0.08, p_max + p_pad], fixedrange=True, showspikes=False, tickfont=dict(size=11), row=1, col=1)
+    fig_top.update_yaxes(title_text='', range=[0, vol_upper], fixedrange=True, showspikes=False, tickfont=dict(size=11), row=2, col=1)
 
     # ===== 下半部副圖 =====
     fig_btm = make_subplots(
