@@ -1,11 +1,11 @@
 """
-frontend.py - 前端 HTML/CSS 渲染與手勢/游標跨圖同步模組 (水平軸平移防卡死、垂直手勢防移位、指數與個股可視區間動態高低價自適應強化版)
-版本: 202611072145
+frontend.py - 前端 HTML/CSS 渲染與手勢/游標跨圖同步模組 (水平軸平移防卡死、垂直手勢防移位、非同步生命週期解除鎖定、指數與個股全自適應高低價版)
+版本: 202611072200
 """
 MODULE_NAME = "frontend"
-MODULE_VERSION = "202611072145"
+MODULE_VERSION = "202611072200"
 
-def get_legend_html(version_tag: str = "202611072145") -> str:
+def get_legend_html(version_tag: str = "202611072200") -> str:
     return f"""
     <div style="font-size: 14px; margin-bottom: 4px; padding: 2px 8px; display: inline-flex; align-items: center; background: #f8fafc; border-radius: 4px; border: 1px solid #e2e8f0;">
         <span style="background:#2c3e50; color:#ffffff; padding: 2px 8px; border-radius: 4px; font-weight:bold; font-size:12px;">台股技術與籌碼分析 v{version_tag}</span>
@@ -266,11 +266,9 @@ js_template = """
                     var maxBound = (totalPoints - 1) + 0.5;
 
                     // 向左平移超界吸附防護，右端不留白
-                    var didClamp = false;
                     if (r1 > maxBound) {
                         r1 = maxBound;
                         r0 = r1 - span;
-                        didClamp = true;
                     }
 
                     // 【防呆防錯備註 2026-11-07】【嚴禁誤刪】：
@@ -301,15 +299,19 @@ js_template = """
                         }
                     }
 
-                    // 【核心修復 2026-11-07】：主圖 elTop 的 Y 軸自適應永遠獨立執行，副圖安全相容防呆
-                    var p1 = Plotly.relayout(elTop, topUpd);
-                    var p2 = (Object.keys(btmUpd).length > 0) ? Plotly.relayout(elBtm, btmUpd) : Promise.resolve();
+                    // 【核心修復 2026-11-07】：使用 setTimeout(..., 0) 脫離當前事件佇列，解除 Plotly 同源 relayout 鎖定，
+                    // 確保無論在主圖還是副圖平移，主圖的 Y 軸最大最小值百分之百強制重算貼合
+                    setTimeout(function() {
+                        var p1 = Plotly.relayout(elTop, topUpd);
+                        var p2 = (Object.keys(btmUpd).length > 0) ? Plotly.relayout(elBtm, btmUpd) : Promise.resolve();
 
-                    Promise.all([p1, p2]).finally(function() {
-                        setTimeout(function() {
-                            isUpdating = false;
-                        }, 50);
-                    });
+                        Promise.all([p1, p2]).finally(function() {
+                            setTimeout(function() {
+                                isUpdating = false;
+                            }, 30);
+                        });
+                    }, 0);
+
                 } else if (auto) {
                     isUpdating = true;
                     var updTopAuto = { 'xaxis.autorange': true };
@@ -320,14 +322,16 @@ js_template = """
                             if (elBtm.layout[axAuto]) updBtmAuto[axAuto + '.autorange'] = true;
                         }
                     }
-                    var pa1 = Plotly.relayout(elTop, updTopAuto);
-                    var pa2 = (Object.keys(updBtmAuto).length > 0) ? Plotly.relayout(elBtm, updBtmAuto) : Promise.resolve();
+                    setTimeout(function() {
+                        var pa1 = Plotly.relayout(elTop, updTopAuto);
+                        var pa2 = (Object.keys(updBtmAuto).length > 0) ? Plotly.relayout(elBtm, updBtmAuto) : Promise.resolve();
 
-                    Promise.all([pa1, pa2]).finally(function() {
-                        setTimeout(function() {
-                            isUpdating = false;
-                        }, 50);
-                    });
+                        Promise.all([pa1, pa2]).finally(function() {
+                            setTimeout(function() {
+                                isUpdating = false;
+                            }, 30);
+                        });
+                    }, 0);
                 }
             });
         }
@@ -399,7 +403,7 @@ def render_interactive_chart_html(
     top_height=420, btm_height=1180,
     initial_disp_days=20,
     initial_end_idx=None,
-    version_tag="202611072145"
+    version_tag="202611072200"
 ) -> str:
     import json
     import uuid
