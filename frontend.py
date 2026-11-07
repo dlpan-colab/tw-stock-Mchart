@@ -1,11 +1,11 @@
 """
-frontend.py - 前端 HTML/CSS 渲染與手勢/游標跨圖同步模組 (精準水平平移捕獲、免JS壓制、標準Plotly語法自適應高低價版)
-版本: 202611072305
+frontend.py - 前端 HTML/CSS 渲染與手勢/游標跨圖同步模組 (分步微任務結算、標準Plotly語法自適應高低價版)
+版本: 202611072315
 """
 MODULE_NAME = "frontend"
-MODULE_VERSION = "202611072305"
+MODULE_VERSION = "202611072315"
 
-def get_legend_html(version_tag: str = "202611072305") -> str:
+def get_legend_html(version_tag: str = "202611072315") -> str:
     return f"""
     <div style="font-size: 14px; margin-bottom: 4px; padding: 2px 8px; display: inline-flex; align-items: center; background: #f8fafc; border-radius: 4px; border: 1px solid #e2e8f0;">
         <span style="background:#2c3e50; color:#ffffff; padding: 2px 8px; border-radius: 4px; font-weight:bold; font-size:12px;">台股技術與籌碼分析 v{version_tag}</span>
@@ -270,7 +270,7 @@ js_template = """
 
                 var auto = ed['xaxis.autorange'] || ed['xaxis2.autorange'];
 
-                // fixedrange=True 已在底層物理鎖死垂直手勢，非水平事件直接丟棄即可
+                // 忽略非水平平移的所有垂直拖拉事件
                 if (r0 === null && r1 === null && !auto) {
                     return;
                 }
@@ -295,17 +295,14 @@ js_template = """
                     currentPriceRange = visibleBounds.priceRange;
                     currentVolRange = visibleBounds.volRange;
 
-                    var topUpd = {
+                    // 階段一：水平 X 軸同步
+                    var topXUpd = {
                         'xaxis.range': [r0, r1],
-                        'xaxis.autorange': false,
-                        'yaxis.range': currentPriceRange,
-                        'yaxis.autorange': false,
-                        'yaxis2.range': currentVolRange,
-                        'yaxis2.autorange': false
+                        'xaxis.autorange': false
                     };
                     if (elTop.layout && elTop.layout.xaxis2) {
-                        topUpd['xaxis2.range'] = [r0, r1];
-                        topUpd['xaxis2.autorange'] = false;
+                        topXUpd['xaxis2.range'] = [r0, r1];
+                        topXUpd['xaxis2.autorange'] = false;
                     }
 
                     var btmUpd = {};
@@ -320,10 +317,20 @@ js_template = """
                     }
 
                     setTimeout(function() {
-                        var p1 = Plotly.relayout(elTop, topUpd);
+                        var p1 = Plotly.relayout(elTop, topXUpd);
                         var p2 = (Object.keys(btmUpd).length > 0) ? Plotly.relayout(elBtm, btmUpd) : Promise.resolve();
 
-                        Promise.all([p1, p2]).finally(function() {
+                        Promise.all([p1, p2]).then(function() {
+                            // 【關鍵修復 2026-11-07】：手勢結算後，於獨立微任務對 elTop 發出 Y 軸重算，徹底避開 Plotly 拖曳互斥忽略
+                            return requestAnimationFrame(function() {
+                                Plotly.relayout(elTop, {
+                                    'yaxis.range': currentPriceRange,
+                                    'yaxis.autorange': false,
+                                    'yaxis2.range': currentVolRange,
+                                    'yaxis2.autorange': false
+                                });
+                            });
+                        }).finally(function() {
                             setTimeout(function() {
                                 isUpdating = false;
                             }, 30);
@@ -421,7 +428,7 @@ def render_interactive_chart_html(
     top_height=420, btm_height=1180,
     initial_disp_days=20,
     initial_end_idx=None,
-    version_tag="202611072305"
+    version_tag="202611072315"
 ) -> str:
     import json
     import uuid
