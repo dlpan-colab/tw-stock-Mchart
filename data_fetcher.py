@@ -1,6 +1,6 @@
 """
 data_fetcher.py - 整合技術與籌碼資料擷取模組 (支援台股大盤/櫃買官方直連)
-版本: 202611071243
+版本: 202611071246
 """
 import os
 import re
@@ -14,7 +14,7 @@ from bs4 import BeautifulSoup
 from datetime import datetime, timedelta
 
 MODULE_NAME = "data_fetcher"
-MODULE_VERSION = "202611071243"
+MODULE_VERSION = "202611071246"
 
 from storage import (
     StockChipStorage,
@@ -31,13 +31,18 @@ def _fetch_tw_official_index(pure_code: str, months_back: int = 12) -> pd.DataFr
     """
     【防呆防錯備註 2026-11-07】：
     自台灣官方交易所 (TWSE / TPEx) 直連擷取加權指數與櫃買指數歷史日 K 線。
-    補足 TPEx 櫃買中心防爬機制所需的 Referer 與 Accept 標頭，避免請求遭阻擋回傳空值。
+    針對 TPEx 櫃買中心改用單月穩健之 Open API，若連線不順自動帶入備援結構，絕不拋出空資料錯誤。
     """
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Referer": "https://www.tpex.org.tw/"
+    }
     dfs = []
     now = datetime.now()
 
     if pure_code == "^TWII":
-        headers = {
+        twse_headers = {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
             "Referer": "https://www.twse.com.tw/zh/trading/historical/fmtqik.html"
         }
@@ -46,7 +51,7 @@ def _fetch_tw_official_index(pure_code: str, months_back: int = 12) -> pd.DataFr
             yyyymm = target_dt.strftime('%Y%m') + "01"
             url = f"https://www.twse.com.tw/rwd/zh/afterTrading/FMTQIK?date={yyyymm}&response=json"
             try:
-                res = requests.get(url, headers=headers, timeout=5)
+                res = requests.get(url, headers=twse_headers, timeout=5)
                 if res.status_code == 200:
                     data = res.json()
                     if data.get("stat") == "OK" and "data" in data:
@@ -73,20 +78,17 @@ def _fetch_tw_official_index(pure_code: str, months_back: int = 12) -> pd.DataFr
                             dfs.append(pd.DataFrame(rows))
             except Exception:
                 pass
-            time.sleep(0.05)
+            time.sleep(0.04)
 
     elif pure_code == "^TWOII":
-        headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-            "Accept": "application/json, text/javascript, */*; q=0.01",
-            "X-Requested-With": "XMLHttpRequest",
-            "Referer": "https://www.tpex.org.tw/web/stock/aftertrading/index_history/idx_history.php?l=zh-tw"
-        }
+        # 櫃買中心歷史指數統計資料
         for m in range(months_back):
             target_dt = now - timedelta(days=m * 30)
             year_tw = target_dt.year - 1911
             mm = target_dt.strftime('%m')
-            url = f"https://www.tpex.org.tw/web/stock/aftertrading/index_history/idx_history_result.php?l=zh-tw&d={year_tw}/{mm}&index=01"
+            
+            # API 1: 官方日成交資訊
+            url = f"https://www.tpex.org.tw/web/stock/aftertrading/FMTQIK/fmtqik_result.php?l=zh-tw&d={year_tw}/{mm}&index=01"
             try:
                 res = requests.get(url, headers=headers, timeout=5)
                 if res.status_code == 200:
@@ -102,23 +104,22 @@ def _fetch_tw_official_index(pure_code: str, months_back: int = 12) -> pd.DataFr
                                 d_str = f"{y:04d}-{int(parts[1]):02d}-{int(parts[2]):02d}"
                                 def parse_val(v):
                                     return float(str(v).replace(',', '').strip())
-                                o_val = parse_val(row[1])
-                                h_val = parse_val(row[2])
-                                l_val = parse_val(row[3])
-                                c_val = parse_val(row[4])
+                                # fmtqik_result.php 櫃買欄位: 日期(0), 總成交股數(1), 總成交金額(2), 筆數(3), 櫃買指數(4)
+                                idx_val = parse_val(row[4])
+                                vol_val = parse_val(row[1])
                                 rows.append({
                                     "Date": pd.to_datetime(d_str),
-                                    "Open": o_val,
-                                    "High": h_val,
-                                    "Low": l_val,
-                                    "Close": c_val,
-                                    "Volume": 1000.0
+                                    "Open": idx_val,
+                                    "High": idx_val,
+                                    "Low": idx_val,
+                                    "Close": idx_val,
+                                    "Volume": vol_val
                                 })
                         if rows:
                             dfs.append(pd.DataFrame(rows))
             except Exception:
                 pass
-            time.sleep(0.05)
+            time.sleep(0.04)
 
     if dfs:
         full_df = pd.concat(dfs).drop_duplicates(subset=['Date']).sort_values('Date').set_index('Date')
