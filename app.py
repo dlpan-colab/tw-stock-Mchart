@@ -1,14 +1,39 @@
-""" 
-app.py - 主應用程式介面與生命週期控制
-版本: 202611071325
 """
+app.py - 主應用程式介面與生命週期控制
+版本: 202611072054
+"""
+import os
 import time
 import re
 import streamlit as st
 import streamlit.components.v1 as components
 import cloud_sync
 
-MODULE_VERSION = "202611071325"
+MODULE_NAME = "app"
+MODULE_VERSION = "202611072054"
+
+# 【防呆防錯備註 2026-11-07】：版本控制權由 app.py 作為唯一權威源，動態掃描所有模組最大版本號，杜絕多頭覆寫與重工
+def get_system_version() -> str:
+    versions = [MODULE_VERSION]
+    module_names = [
+        "frontend", "chart_builder", "indicators",
+        "data_fetcher", "storage", "config", "cloud_sync"
+    ]
+    base_dir = os.path.dirname(os.path.abspath(__file__))
+    for mod_name in module_names:
+        try:
+            mod_file = os.path.join(base_dir, f"{mod_name}.py")
+            if os.path.exists(mod_file):
+                with open(mod_file, "r", encoding="utf-8") as f:
+                    content = f.read(500)
+                    m = re.search(r'MODULE_VERSION\s*=\s*["\'](\d{12})["\']', content)
+                    if m:
+                        versions.append(m.group(1))
+        except Exception:
+            pass
+    return max(versions)
+
+SYSTEM_VERSION = get_system_version()
 
 from storage import (
     load_stock_history,
@@ -20,7 +45,7 @@ from storage import (
     clear_recent_margin_data
 )
 from chart_builder import build_split_figures
-from frontend import get_legend_html, get_component_html, SYSTEM_VERSION
+from frontend import get_legend_html, get_component_html
 
 INDEX_MAP = {
     # 台股
@@ -284,7 +309,7 @@ elif auth_status == 1:
 else:
     status_light = "⚪"
 
-SYSTEM_VERSION = max([MODULE_VERSION, "202611071325"])
+# 【防呆防錯備註 2026-11-07】：由 get_system_version() 唯一計算，絕不在模組內硬編碼覆寫
 st.markdown(f"## 台股技術與籌碼分析 v{SYSTEM_VERSION} {status_light}")
 
 stock_id = str(st.session_state.stock_id).strip()
@@ -315,7 +340,7 @@ with top_c2:
             st.session_state.stock_id = active_nav_codes[next_idx]
             st.rerun()
 
-# 【防呆防錯備註 2026-11-07】：改採位置引數呼叫，避免關鍵字名稱錯位引發 TypeError
+# 【防呆防錯備註 2026-11-07】：位置引數完整傳遞，避免關鍵字名稱衝突
 fig_top, fig_btm, df, c_name, end_idx, disp_n = get_cached_figures(
     stock_id,
     st.session_state.period,
@@ -346,7 +371,8 @@ html_content = get_component_html(
     top_height=top_height,
     btm_height=btm_height,
     initial_disp_days=disp_n,
-    initial_end_idx=end_idx
+    initial_end_idx=end_idx,
+    version_tag=SYSTEM_VERSION
 )
 
 total_h = 1980 if is_mobile else 1880
