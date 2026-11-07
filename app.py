@@ -1,6 +1,6 @@
 """
 app.py - 主應用程式介面與生命週期控制
-版本: 202611071320
+版本: 202611071325
 """
 import time
 import re
@@ -8,7 +8,7 @@ import streamlit as st
 import streamlit.components.v1 as components
 import cloud_sync
 
-MODULE_VERSION = "202611071320"
+MODULE_VERSION = "202611071325"
 
 from storage import (
     load_stock_history,
@@ -47,18 +47,19 @@ def resolve_ticker_code(raw_input: str) -> str:
         return INDEX_MAP[upper]
     return cleaned
 
-# 【防呆防錯備註 2026-11-07】：參數簽名與呼叫點精確統一為 base_date，解決 TypeError 引數名稱不一致問題
+# 【防呆防錯備註 2026-11-07】：完整對齊 chart_builder.py 之 build_split_figures 參數簽名，避免 TypeError
 @st.cache_data(ttl=180, show_spinner=False)
 def get_cached_figures(stock_id, period, disp_days, base_date, m1_thresh, m2_thresh, is_mobile, force_refresh):
     return build_split_figures(
-        raw_ticker=stock_id,
-        period=period,
-        display_days=disp_days,
-        base_date=base_date,
-        major1_thresh=m1_thresh,
-        major2_thresh=m2_thresh,
-        is_mobile=is_mobile,
-        force_refresh=force_refresh
+        stock_id,
+        period,
+        disp_days,
+        base_date,
+        m1_thresh,
+        m2_thresh,
+        is_mobile,
+        None,
+        force_refresh
     )
 
 st.set_page_config(
@@ -283,7 +284,7 @@ elif auth_status == 1:
 else:
     status_light = "⚪"
 
-SYSTEM_VERSION = max([MODULE_VERSION, "202611071320"])
+SYSTEM_VERSION = max([MODULE_VERSION, "202611071325"])
 st.markdown(f"## 台股技術與籌碼分析 v{SYSTEM_VERSION} {status_light}")
 
 stock_id = str(st.session_state.stock_id).strip()
@@ -314,16 +315,16 @@ with top_c2:
             st.session_state.stock_id = active_nav_codes[next_idx]
             st.rerun()
 
-# 【防呆防錯備註 2026-11-07】：呼叫引數與函式定義完全一致 (base_date=target_date_val)
+# 【防呆防錯備註 2026-11-07】：改採位置引數呼叫，避免關鍵字名稱錯位引發 TypeError
 fig_top, fig_btm, df, c_name, end_idx, disp_n = get_cached_figures(
-    stock_id=stock_id,
-    period=st.session_state.period,
-    display_days=st.session_state.disp_days,
-    base_date=target_date_val,
-    m1_thresh=m1_thresh,
-    m2_thresh=m2_thresh,
-    is_mobile=is_mobile,
-    force_refresh=force_refresh
+    stock_id,
+    st.session_state.period,
+    st.session_state.disp_days,
+    target_date_val,
+    m1_thresh,
+    m2_thresh,
+    is_mobile,
+    force_refresh
 )
 
 if fig_top is None or fig_btm is None or df is None or df.empty:
