@@ -1,6 +1,6 @@
 """
-data_fetcher.py - 整合技術與籌碼資料擷取模組 (上市加權與上櫃指數修訂版)
-版本: 202611071255
+data_fetcher.py - 整合技術與籌碼資料擷取模組 (智慧增量補抓防呆版)
+版本: 202611071315
 """
 import os
 import re
@@ -14,7 +14,7 @@ from bs4 import BeautifulSoup
 from datetime import datetime, timedelta
 
 MODULE_NAME = "data_fetcher"
-MODULE_VERSION = "202611071255"
+MODULE_VERSION = "202611071315"
 
 from storage import (
     StockChipStorage,
@@ -41,8 +41,7 @@ def fetch_stock_daily_k(raw_ticker: str, period: str = "1y", base_date: str = No
 
     # 【防呆防錯備註 2026-11-07】：
     # 1. ^TWII（加權指數）：Yahoo Finance 官方支援，具備真實完整的開高低收四價與成交量，回歸 Yahoo Finance。
-    # 2. ^TWOII（櫃買指數）：Yahoo Finance 官方無 ^TWOII 報價，櫃買官方 API 易受海外雲端防護阻擋。
-    #    改以「富櫃50 (006201.TWO / 006201.TW)」作為代理來源，具備真實開高低收與成交量，確保不扁平且永不報錯。
+    # 2. ^TWOII（櫃買指數）：改以「富櫃50 (006201.TWO / 006201.TW)」作為代理來源，具備真實開高低收與成交量，確保不扁平且永不報錯。
     if pure_code == "^TWII":
         target_ticker = "^TWII"
         full_ticker = "^TWII"
@@ -64,7 +63,6 @@ def fetch_stock_daily_k(raw_ticker: str, period: str = "1y", base_date: str = No
     last_k_date = storage.get_latest_daily_k_date()
     shares_outstanding = None
 
-    # 強制重抓時，先清除記憶庫以確保不被先前扁平化的錯誤資料污染
     if force_refresh:
         db_df = pd.DataFrame()
 
@@ -123,7 +121,11 @@ def fetch_stock_daily_k(raw_ticker: str, period: str = "1y", base_date: str = No
     return None
 
 def sync_chip_data(pure_code: str, df_dates: pd.DatetimeIndex, status_placeholder=None, force_refresh: bool = False):
-    """同步並補齊法人、資券與大戶籌碼資料。"""
+    """
+    【防呆防錯備註 2026-11-07】：
+    智慧增量補抓籌碼資料。比對本地最後紀錄日期，非強制更新時僅爬取缺漏天數（1~2天），
+    避免每次皆發送 60 次 HTTP 請求導致前端卡死 20 秒。
+    """
     pure_code = str(pure_code).strip()
     storage = StockChipStorage(pure_code)
 
@@ -141,6 +143,7 @@ def sync_chip_data(pure_code: str, df_dates: pd.DatetimeIndex, status_placeholde
     now = datetime.now()
     now_date_str = now.strftime('%Y-%m-%d')
 
+    # 判斷法人是否需更新
     should_fetch_inst = force_refresh
     if not should_fetch_inst:
         if not last_inst_date:
@@ -151,6 +154,7 @@ def sync_chip_data(pure_code: str, df_dates: pd.DatetimeIndex, status_placeholde
             else:
                 should_fetch_inst = True
 
+    # 判斷資券是否需更新
     should_fetch_margin = force_refresh
     if not should_fetch_margin:
         if not last_margin_date:
@@ -161,6 +165,7 @@ def sync_chip_data(pure_code: str, df_dates: pd.DatetimeIndex, status_placeholde
             else:
                 should_fetch_margin = True
 
+    # 判斷集保大戶是否需更新
     should_fetch_holding = force_refresh
     if not should_fetch_holding:
         if not last_holding_date:
@@ -173,23 +178,20 @@ def sync_chip_data(pure_code: str, df_dates: pd.DatetimeIndex, status_placeholde
             elif now.weekday() == 4 and now.hour >= 20 and diff_days >= 1:
                 should_fetch_holding = True
 
+    # 執行增量補抓
     if should_fetch_inst:
-        if status_placeholder:
-            status_placeholder.info(f"正在更新 {pure_code} 三大法人買賣超...")
-        inst_records = fetch_institutional_investors(pure_code, df_dates)
+        start_filter = None if force_refresh else last_inst_date
+        inst_records = fetch_institutional_investors(pure_code, df_dates, start_date_exclusive=start_filter)
         if inst_records:
             storage.save_institutional_data(inst_records)
 
     if should_fetch_margin:
-        if status_placeholder:
-            status_placeholder.info(f"正在更新 {pure_code} 融資融券資訊...")
-        margin_records = fetch_margin_short_data(pure_code, df_dates)
+        start_filter = None if force_refresh else last_margin_date
+        margin_records = fetch_margin_short_data(pure_code, df_dates, start_date_exclusive=start_filter)
         if margin_records:
             storage.save_margin_data(margin_records)
 
     if should_fetch_holding:
-        if status_placeholder:
-            status_placeholder.info(f"正在更新 {pure_code} 集保大戶股權分散表...")
         holding_records = fetch_tdcc_holding_data(pure_code)
         if holding_records:
             storage.save_holding_data(holding_records)
@@ -203,14 +205,22 @@ def sync_chip_data(pure_code: str, df_dates: pd.DatetimeIndex, status_placeholde
         storage.load_holding_df()
     )
 
-def fetch_institutional_investors(pure_code: str, df_dates: pd.DatetimeIndex) -> list:
+def fetch_institutional_investors(pure_code: str, df_dates: pd.DatetimeIndex, start_date_exclusive: str = None) -> list:
     """擷取三大法人買賣超資料 (單位：張)"""
     records = []
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
     }
 
-    sample_dates = df_dates[-30:]
+    # 【防呆防錯備註 2026-11-07】：增量過濾，若指定 start_date 僅抓取之後的缺漏日期
+    if start_date_exclusive:
+        sample_dates = [d for d in df_dates if d.strftime('%Y-%m-%d') > start_date_exclusive]
+    else:
+        sample_dates = df_dates[-30:]
+
+    if not sample_dates:
+        return []
+
     for dt in sample_dates:
         date_twse = dt.strftime('%Y%m%d')
         date_str = dt.strftime('%Y-%m-%d')
@@ -254,17 +264,25 @@ def fetch_institutional_investors(pure_code: str, df_dates: pd.DatetimeIndex) ->
         except Exception:
             pass
 
-        time.sleep(0.05)
+        time.sleep(0.04)
     return records
 
-def fetch_margin_short_data(pure_code: str, df_dates: pd.DatetimeIndex) -> list:
+def fetch_margin_short_data(pure_code: str, df_dates: pd.DatetimeIndex, start_date_exclusive: str = None) -> list:
     """擷取融資融券買賣增減與餘額 (單位：張)"""
     records = []
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
     }
 
-    sample_dates = df_dates[-30:]
+    # 【防呆防錯備註 2026-11-07】：增量過濾，若指定 start_date 僅抓取之後的缺漏日期
+    if start_date_exclusive:
+        sample_dates = [d for d in df_dates if d.strftime('%Y-%m-%d') > start_date_exclusive]
+    else:
+        sample_dates = df_dates[-30:]
+
+    if not sample_dates:
+        return []
+
     for dt in sample_dates:
         date_twse = dt.strftime('%Y%m%d')
         date_str = dt.strftime('%Y-%m-%d')
@@ -311,7 +329,7 @@ def fetch_margin_short_data(pure_code: str, df_dates: pd.DatetimeIndex) -> list:
         except Exception:
             pass
 
-        time.sleep(0.05)
+        time.sleep(0.04)
     return records
 
 def fetch_tdcc_holding_data(pure_code: str) -> list:
