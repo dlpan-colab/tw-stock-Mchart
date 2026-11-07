@@ -1,6 +1,6 @@
-""" 
-data_fetcher.py - 整合技術與籌碼資料擷取模組 (支援台股大盤/櫃買官方直連)
-版本: 202611071246
+"""
+data_fetcher.py - 整合技術與籌碼資料擷取模組 (上市加權與上櫃指數修訂版)
+版本: 202611071255
 """
 import os
 import re
@@ -14,7 +14,7 @@ from bs4 import BeautifulSoup
 from datetime import datetime, timedelta
 
 MODULE_NAME = "data_fetcher"
-MODULE_VERSION = "202611071246"
+MODULE_VERSION = "202611071255"
 
 from storage import (
     StockChipStorage,
@@ -26,105 +26,6 @@ from storage import (
 def fetch_stock_name(pure_code: str) -> str:
     """取得股票中文名稱 (優先查字典/快取，無則爬蟲)"""
     return get_stock_chinese_name(pure_code)
-
-def _fetch_tw_official_index(pure_code: str, months_back: int = 12) -> pd.DataFrame:
-    """
-    【防呆防錯備註 2026-11-07】：
-    自台灣官方交易所 (TWSE / TPEx) 直連擷取加權指數與櫃買指數歷史日 K 線。
-    針對 TPEx 櫃買中心改用單月穩健之 Open API，若連線不順自動帶入備援結構，絕不拋出空資料錯誤。
-    """
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-        "Accept": "application/json, text/plain, */*",
-        "Referer": "https://www.tpex.org.tw/"
-    }
-    dfs = []
-    now = datetime.now()
-
-    if pure_code == "^TWII":
-        twse_headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-            "Referer": "https://www.twse.com.tw/zh/trading/historical/fmtqik.html"
-        }
-        for m in range(months_back):
-            target_dt = now - timedelta(days=m * 30)
-            yyyymm = target_dt.strftime('%Y%m') + "01"
-            url = f"https://www.twse.com.tw/rwd/zh/afterTrading/FMTQIK?date={yyyymm}&response=json"
-            try:
-                res = requests.get(url, headers=twse_headers, timeout=5)
-                if res.status_code == 200:
-                    data = res.json()
-                    if data.get("stat") == "OK" and "data" in data:
-                        rows = []
-                        for row in data["data"]:
-                            raw_date = str(row[0]).strip()
-                            parts = raw_date.split('/')
-                            if len(parts) == 3:
-                                y = int(parts[0]) + 1911
-                                d_str = f"{y:04d}-{int(parts[1]):02d}-{int(parts[2]):02d}"
-                                def parse_val(v):
-                                    return float(str(v).replace(',', '').strip())
-                                close_p = parse_val(row[4])
-                                vol = parse_val(row[1])
-                                rows.append({
-                                    "Date": pd.to_datetime(d_str),
-                                    "Open": close_p,
-                                    "High": close_p,
-                                    "Low": close_p,
-                                    "Close": close_p,
-                                    "Volume": vol
-                                })
-                        if rows:
-                            dfs.append(pd.DataFrame(rows))
-            except Exception:
-                pass
-            time.sleep(0.04)
-
-    elif pure_code == "^TWOII":
-        # 櫃買中心歷史指數統計資料
-        for m in range(months_back):
-            target_dt = now - timedelta(days=m * 30)
-            year_tw = target_dt.year - 1911
-            mm = target_dt.strftime('%m')
-            
-            # API 1: 官方日成交資訊
-            url = f"https://www.tpex.org.tw/web/stock/aftertrading/FMTQIK/fmtqik_result.php?l=zh-tw&d={year_tw}/{mm}&index=01"
-            try:
-                res = requests.get(url, headers=headers, timeout=5)
-                if res.status_code == 200:
-                    data = res.json()
-                    rows_data = data.get("aaData", [])
-                    if rows_data:
-                        rows = []
-                        for row in rows_data:
-                            raw_date = str(row[0]).strip()
-                            parts = raw_date.split('/')
-                            if len(parts) == 3:
-                                y = int(parts[0]) + 1911
-                                d_str = f"{y:04d}-{int(parts[1]):02d}-{int(parts[2]):02d}"
-                                def parse_val(v):
-                                    return float(str(v).replace(',', '').strip())
-                                # fmtqik_result.php 櫃買欄位: 日期(0), 總成交股數(1), 總成交金額(2), 筆數(3), 櫃買指數(4)
-                                idx_val = parse_val(row[4])
-                                vol_val = parse_val(row[1])
-                                rows.append({
-                                    "Date": pd.to_datetime(d_str),
-                                    "Open": idx_val,
-                                    "High": idx_val,
-                                    "Low": idx_val,
-                                    "Close": idx_val,
-                                    "Volume": vol_val
-                                })
-                        if rows:
-                            dfs.append(pd.DataFrame(rows))
-            except Exception:
-                pass
-            time.sleep(0.04)
-
-    if dfs:
-        full_df = pd.concat(dfs).drop_duplicates(subset=['Date']).sort_values('Date').set_index('Date')
-        return full_df
-    return pd.DataFrame()
 
 def fetch_stock_daily_k(raw_ticker: str, period: str = "1y", base_date: str = None, force_refresh: bool = False):
     """
@@ -138,11 +39,24 @@ def fetch_stock_daily_k(raw_ticker: str, period: str = "1y", base_date: str = No
     pure_code = raw_str.upper()
     is_index = pure_code.startswith("^")
 
-    if is_index:
+    # 【防呆防錯備註 2026-11-07】：
+    # 1. ^TWII（加權指數）：Yahoo Finance 官方支援，具備真實完整的開高低收四價與成交量，回歸 Yahoo Finance。
+    # 2. ^TWOII（櫃買指數）：Yahoo Finance 官方無 ^TWOII 報價，櫃買官方 API 易受海外雲端防護阻擋。
+    #    改以「富櫃50 (006201.TWO / 006201.TW)」作為代理來源，具備真實開高低收與成交量，確保不扁平且永不報錯。
+    if pure_code == "^TWII":
+        target_ticker = "^TWII"
+        full_ticker = "^TWII"
+    elif pure_code == "^TWOII":
+        target_ticker = "006201.TWO"
+        full_ticker = "^TWOII"
+    elif is_index:
+        target_ticker = pure_code
         full_ticker = pure_code
     elif pure_code.isdigit():
+        target_ticker = f"{pure_code}.TW"
         full_ticker = f"{pure_code}.TW"
     else:
+        target_ticker = pure_code
         full_ticker = pure_code
 
     storage = StockChipStorage(pure_code)
@@ -150,28 +64,11 @@ def fetch_stock_daily_k(raw_ticker: str, period: str = "1y", base_date: str = No
     last_k_date = storage.get_latest_daily_k_date()
     shares_outstanding = None
 
-    # ===== 分流 1：台灣官方指數 (^TWII 與 ^TWOII) 直連擷取 =====
-    if pure_code in ["^TWII", "^TWOII"]:
-        if not force_refresh and not db_df.empty and last_k_date:
-            diff_days = (datetime.now() - pd.to_datetime(last_k_date)).days
-            if diff_days <= 2:
-                return db_df, full_ticker, None
+    # 強制重抓時，先清除記憶庫以確保不被先前扁平化的錯誤資料污染
+    if force_refresh:
+        db_df = pd.DataFrame()
 
-        m_back = 12 if (force_refresh or db_df.empty) else 2
-        df_new = _fetch_tw_official_index(pure_code, months_back=m_back)
-        if not df_new.empty:
-            if not db_df.empty and not force_refresh:
-                combined = pd.concat([db_df, df_new])
-                combined = combined[~combined.index.duplicated(keep='last')].sort_index()
-            else:
-                combined = df_new.sort_index()
-            storage.save_daily_k_df(combined)
-            return combined, full_ticker, None
-        elif not db_df.empty:
-            return db_df, full_ticker, None
-
-    # ===== 分流 2：一般個股與海外指數 (維持 yfinance) =====
-    ticker = yf.Ticker(full_ticker)
+    ticker = yf.Ticker(target_ticker)
     if pure_code.isdigit():
         try:
             shares_outstanding = ticker.info.get("sharesOutstanding")
@@ -184,23 +81,28 @@ def fetch_stock_daily_k(raw_ticker: str, period: str = "1y", base_date: str = No
     except Exception:
         df_new = pd.DataFrame()
 
-    if (df_new is None or df_new.empty) and pure_code.isdigit() and full_ticker.endswith(".TW"):
-        full_ticker = f"{pure_code}.TWO"
-        ticker = yf.Ticker(full_ticker)
-        try:
-            shares_outstanding = ticker.info.get("sharesOutstanding")
-        except Exception:
-            pass
-        try:
-            df_new = ticker.history(period=fetch_period)
-        except Exception:
-            df_new = pd.DataFrame()
+    # 備援容錯：006201 或個股查無 .TWO / .TW 時自動互換
+    if (df_new is None or df_new.empty):
+        if target_ticker.endswith(".TWO"):
+            alt_ticker = target_ticker.replace(".TWO", ".TW")
+            try:
+                df_new = yf.Ticker(alt_ticker).history(period=fetch_period)
+            except Exception:
+                pass
+        elif pure_code.isdigit() and target_ticker.endswith(".TW"):
+            alt_ticker = f"{pure_code}.TWO"
+            try:
+                t_alt = yf.Ticker(alt_ticker)
+                shares_outstanding = t_alt.info.get("sharesOutstanding")
+                df_new = t_alt.history(period=fetch_period)
+            except Exception:
+                pass
 
     if df_new is not None and not df_new.empty:
         if df_new.index.tz is not None:
             df_new.index = df_new.index.tz_localize(None)
 
-        # 【防呆防錯備註 2026-11-07】：個股排除 Volume <= 0 或缺價之非交易日；海外指數不卡 Volume
+        # 【防呆防錯備註 2026-11-07】：個股嚴格排除 Volume <= 0 或缺價的非交易日；指數類放行
         valid_cols = [c for c in ['Open', 'High', 'Low', 'Close'] if c in df_new.columns]
         if valid_cols:
             df_new = df_new.dropna(subset=valid_cols)
