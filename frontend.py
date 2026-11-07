@@ -1,11 +1,11 @@
 """
-frontend.py - 前端 HTML/CSS 渲染與手勢/游標跨圖同步模組 (水平軸平移防卡死與垂直防移位修訂版)
-版本: 202611072124
+frontend.py - 前端 HTML/CSS 渲染與手勢/游標跨圖同步模組 (水平軸平移防卡死、垂直手勢防移位、可視區間動態高低價貼合版)
+版本: 202611072132
 """
 MODULE_NAME = "frontend"
-MODULE_VERSION = "202611072124"
+MODULE_VERSION = "202611072132"
 
-def get_legend_html(version_tag: str = "202611072124") -> str:
+def get_legend_html(version_tag: str = "202611072132") -> str:
     return f"""
     <div style="font-size: 14px; margin-bottom: 4px; padding: 2px 8px; display: inline-flex; align-items: center; background: #f8fafc; border-radius: 4px; border: 1px solid #e2e8f0;">
         <span style="background:#2c3e50; color:#ffffff; padding: 2px 8px; border-radius: 4px; font-weight:bold; font-size:12px;">台股技術與籌碼分析 v{version_tag}</span>
@@ -136,8 +136,52 @@ js_template = """
     var initEnd = __INITIAL_END_IDX__;
     var initStart = Math.max(0, initEnd - targetDays + 1);
 
+    // 【防呆防錯備註 2026-11-07】【嚴禁誤刪】：
+    // 依據目前視窗可視的 X 軸索引區間 [r0, r1]，遍歷 High、Low、MA5、MA20、MA60 算得真實最大與最小值，
+    // 自動回傳最適貼合之價格 Y 軸範圍與量能 Y 軸範圍，確保 K 線永不沉底或衝出天花板。
+    function calcVisibleBounds(r0, r1) {
+        var sIdx = Math.max(0, Math.floor(r0));
+        var eIdx = Math.min(totalPoints - 1, Math.ceil(r1));
+        var pMin = Infinity, pMax = -Infinity;
+        var vMax = 0;
+
+        for (var i = sIdx; i <= eIdx; i++) {
+            if (highs[i] !== null && !isNaN(highs[i])) pMax = Math.max(pMax, highs[i]);
+            if (lows[i] !== null && !isNaN(lows[i])) pMin = Math.min(pMin, lows[i]);
+            if (ma5s[i] !== null && !isNaN(ma5s[i]) && ma5s[i] > 0) {
+                pMax = Math.max(pMax, ma5s[i]);
+                pMin = Math.min(pMin, ma5s[i]);
+            }
+            if (ma20s[i] !== null && !isNaN(ma20s[i]) && ma20s[i] > 0) {
+                pMax = Math.max(pMax, ma20s[i]);
+                pMin = Math.min(pMin, ma20s[i]);
+            }
+            if (ma60s[i] !== null && !isNaN(ma60s[i]) && ma60s[i] > 0) {
+                pMax = Math.max(pMax, ma60s[i]);
+                pMin = Math.min(pMin, ma60s[i]);
+            }
+            if (vols[i] !== null && !isNaN(vols[i])) {
+                vMax = Math.max(vMax, vols[i]);
+            }
+        }
+
+        if (pMin === Infinity || pMax === -Infinity) {
+            pMin = 0; pMax = 100;
+        }
+        var pPad = (pMax > pMin) ? (pMax - pMin) * 0.10 : 2.0;
+        return {
+            priceRange: [pMin - pPad, pMax + pPad],
+            volRange: [0, (vMax > 0 ? vMax * 1.25 : 1000)]
+        };
+    }
+
+    // 初始化初始可視範圍
+    var initBounds = calcVisibleBounds(initStart - 0.5, initEnd + 0.5);
     pTop.layout.xaxis.range = [initStart - 0.5, initEnd + 0.5];
     if (pTop.layout.xaxis2) pTop.layout.xaxis2.range = [initStart - 0.5, initEnd + 0.5];
+    pTop.layout.yaxis.range = initBounds.priceRange;
+    if (pTop.layout.yaxis2) pTop.layout.yaxis2.range = initBounds.volRange;
+
     for (var r = 1; r <= 9; r++) {
         var k = (r === 1) ? 'xaxis' : 'xaxis' + r;
         if (pBtm.layout[k]) {
@@ -209,23 +253,32 @@ js_template = """
             srcEl.on('plotly_relayout', function(ed) {
                 if (isUpdating) return;
 
-                // 【防呆防錯備註 2026-11-07】：徹底過濾並丟棄任何 yaxis 位移，杜絕上下垂直拖曳
+                // 【防呆防錯備註 2026-11-07】【嚴禁誤刪】：
+                // 1. 攔截純 Y 軸拖動事件（若事件只包含 yaxis 變更且無 xaxis 變更，直接忽略拋棄，鎖死滑鼠上下手勢位移）。
                 var r0 = ed['xaxis.range[0]'] !== undefined ? ed['xaxis.range[0]'] : (ed['xaxis.range'] ? ed['xaxis.range'][0] : null);
                 var r1 = ed['xaxis.range[1]'] !== undefined ? ed['xaxis.range[1]'] : (ed['xaxis.range'] ? ed['xaxis.range'][1] : null);
                 var auto = ed['xaxis.autorange'];
+
+                if (r0 === null && r1 === null && !auto) {
+                    return; // 忽略非水平平移的所有垂直拖拉事件
+                }
 
                 if (r0 !== null && r1 !== null) {
                     isUpdating = true;
                     var span = r1 - r0;
                     var maxBound = (totalPoints - 1) + 0.5;
 
-                    // 【防呆防錯備註 2026-11-07】：向左平移超界吸附防護，右端不留白
+                    // 向左平移超界吸附防護，右端不留白
                     var didClamp = false;
                     if (r1 > maxBound) {
                         r1 = maxBound;
                         r0 = r1 - span;
                         didClamp = true;
                     }
+
+                    // 【防呆防錯備註 2026-11-07】【嚴禁誤刪】：
+                    // 依據當前平移後的視窗區間 [r0, r1]，重算畫面內真實最大與最小值，只由程式主動貼合更新 Y 軸
+                    var visibleBounds = calcVisibleBounds(r0, r1);
 
                     var selfUpd = {};
                     if (didClamp) {
@@ -255,7 +308,20 @@ js_template = """
                         }
                     }
 
-                    // 【防呆防錯備註 2026-11-07】：嚴格僅更新 X 軸，不允許任何 yaxis 變更傳遞
+                    // 將算得的可視高低價更新至主圖 elTop 的 Y 軸
+                    var topYUpd = {
+                        'yaxis.range': visibleBounds.priceRange,
+                        'yaxis.autorange': false,
+                        'yaxis2.range': visibleBounds.volRange,
+                        'yaxis2.autorange': false
+                    };
+
+                    if (srcEl === elTop) {
+                        Object.assign(selfUpd, topYUpd);
+                    } else {
+                        Object.assign(destUpd, topYUpd);
+                    }
+
                     var p1 = Object.keys(selfUpd).length > 0 ? Plotly.relayout(srcEl, selfUpd) : Promise.resolve();
                     var p2 = Plotly.relayout(destEl, destUpd);
 
@@ -347,7 +413,7 @@ def render_interactive_chart_html(
     top_height=420, btm_height=1180,
     initial_disp_days=20,
     initial_end_idx=None,
-    version_tag="202611072124"
+    version_tag="202611072132"
 ) -> str:
     import json
     import uuid
