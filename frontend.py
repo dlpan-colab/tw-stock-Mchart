@@ -1,11 +1,11 @@
 """
-frontend.py - 前端 HTML/CSS 渲染與手勢/游標跨圖同步模組 (雙X軸平移完整捕獲、垂直手勢防移位、標準Plotly語法自適應高低價版)
-版本: 202611072250
+frontend.py - 前端 HTML/CSS 渲染與手勢/游標跨圖同步模組 (雙X軸平移完整捕獲、主動壓制垂直位移、標準Plotly語法自適應高低價版)
+版本: 202611072300
 """
 MODULE_NAME = "frontend"
-MODULE_VERSION = "202611072250"
+MODULE_VERSION = "202611072300"
 
-def get_legend_html(version_tag: str = "202611072250") -> str:
+def get_legend_html(version_tag: str = "202611072300") -> str:
     return f"""
     <div style="font-size: 14px; margin-bottom: 4px; padding: 2px 8px; display: inline-flex; align-items: center; background: #f8fafc; border-radius: 4px; border: 1px solid #e2e8f0;">
         <span style="background:#2c3e50; color:#ffffff; padding: 2px 8px; border-radius: 4px; font-weight:bold; font-size:12px;">台股技術與籌碼分析 v{version_tag}</span>
@@ -136,6 +136,10 @@ js_template = """
     var initEnd = __INITIAL_END_IDX__;
     var initStart = Math.max(0, initEnd - targetDays + 1);
 
+    // 當前維護之視窗區間與極值快取
+    var currentR0 = initStart - 0.5;
+    var currentR1 = initEnd + 0.5;
+
     // 【防呆防錯備註 2026-11-07】【嚴禁誤刪】：
     // 依據目前視窗可視的 X 軸索引區間 [r0, r1]，遍歷 High、Low、MA5、MA20、MA60 算得真實最大與最小值，
     // 自動回傳最適貼合之價格 Y 軸範圍與量能 Y 軸範圍，確保個股與指數 K 線永不沉底或衝出天花板。
@@ -173,16 +177,19 @@ js_template = """
     }
 
     // 初始化初始可視範圍
-    var initBounds = calcVisibleBounds(initStart - 0.5, initEnd + 0.5);
-    pTop.layout.xaxis.range = [initStart - 0.5, initEnd + 0.5];
-    if (pTop.layout.xaxis2) pTop.layout.xaxis2.range = [initStart - 0.5, initEnd + 0.5];
-    pTop.layout.yaxis.range = initBounds.priceRange;
-    if (pTop.layout.yaxis2) pTop.layout.yaxis2.range = initBounds.volRange;
+    var initBounds = calcVisibleBounds(currentR0, currentR1);
+    var currentPriceRange = initBounds.priceRange;
+    var currentVolRange = initBounds.volRange;
+
+    pTop.layout.xaxis.range = [currentR0, currentR1];
+    if (pTop.layout.xaxis2) pTop.layout.xaxis2.range = [currentR0, currentR1];
+    pTop.layout.yaxis.range = currentPriceRange;
+    if (pTop.layout.yaxis2) pTop.layout.yaxis2.range = currentVolRange;
 
     for (var r = 1; r <= 9; r++) {
         var k = (r === 1) ? 'xaxis' : 'xaxis' + r;
         if (pBtm.layout && pBtm.layout[k]) {
-            pBtm.layout[k].range = [initStart - 0.5, initEnd + 0.5];
+            pBtm.layout[k].range = [currentR0, currentR1];
         }
     }
 
@@ -264,8 +271,25 @@ js_template = """
 
                 var auto = ed['xaxis.autorange'] || ed['xaxis2.autorange'];
 
+                // 【垂直手勢防移位主動壓制 2026-11-07】：
+                // 若事件只包含 Y 軸變更而無 X 軸變更（純上下拖曳手勢），立即主動壓回原計算之高低點範圍，鎖死 Y 軸
                 if (r0 === null && r1 === null && !auto) {
-                    return; // 忽略非水平平移的所有垂直拖拉事件
+                    var isYEvent = false;
+                    for (var k in ed) {
+                        if (k.indexOf('yaxis') !== -1) { isYEvent = true; break; }
+                    }
+                    if (isYEvent) {
+                        isUpdating = true;
+                        Plotly.relayout(elTop, {
+                            'yaxis.range': currentPriceRange,
+                            'yaxis.autorange': false,
+                            'yaxis2.range': currentVolRange,
+                            'yaxis2.autorange': false
+                        }).finally(function() {
+                            isUpdating = false;
+                        });
+                    }
+                    return;
                 }
 
                 if (r0 !== null && r1 !== null) {
@@ -279,17 +303,21 @@ js_template = """
                         r0 = r1 - span;
                     }
 
+                    currentR0 = r0;
+                    currentR1 = r1;
+
                     // 【防呆防錯備註 2026-11-07】【嚴禁誤刪】：
                     // 依據當前平移後的視窗區間 [r0, r1]，重算畫面內真實最大與最小值
                     var visibleBounds = calcVisibleBounds(r0, r1);
+                    currentPriceRange = visibleBounds.priceRange;
+                    currentVolRange = visibleBounds.volRange;
 
-                    // 【核心修復 2026-11-07】：使用標準 Plotly 陣列賦值語法，確保相容性與正確執行
                     var topUpd = {
                         'xaxis.range': [r0, r1],
                         'xaxis.autorange': false,
-                        'yaxis.range': visibleBounds.priceRange,
+                        'yaxis.range': currentPriceRange,
                         'yaxis.autorange': false,
-                        'yaxis2.range': visibleBounds.volRange,
+                        'yaxis2.range': currentVolRange,
                         'yaxis2.autorange': false
                     };
                     if (elTop.layout && elTop.layout.xaxis2) {
@@ -410,7 +438,7 @@ def render_interactive_chart_html(
     top_height=420, btm_height=1180,
     initial_disp_days=20,
     initial_end_idx=None,
-    version_tag="202611072250"
+    version_tag="202611072300"
 ) -> str:
     import json
     import uuid
