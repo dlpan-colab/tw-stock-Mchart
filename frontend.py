@@ -1,40 +1,14 @@
 """
-frontend.py - 前端 HTML/CSS 渲染與手勢/游標跨圖同步模組 (平移防卡死與指數自適應修訂版)
-版本: 202611072041
+frontend.py - 前端 HTML/CSS 渲染與手勢/游標跨圖同步模組 (水平軸平移防卡死與垂直防移位修訂版)
+版本: 202611072054
 """
 MODULE_NAME = "frontend"
-MODULE_VERSION = "202611072041"
+MODULE_VERSION = "202611072054"
 
-import os
-import re
-
-def get_system_version() -> str:
-    versions = [MODULE_VERSION]
-    module_names = [
-        "app", "chart_builder", "indicators",
-        "data_fetcher", "storage", "config", "cloud_sync"
-    ]
-    base_dir = os.path.dirname(os.path.abspath(__file__))
-    for mod_name in module_names:
-        try:
-            mod_file = os.path.join(base_dir, f"{mod_name}.py")
-            if os.path.exists(mod_file):
-                with open(mod_file, "r", encoding="utf-8") as f:
-                    content = f.read(500)
-                    m = re.search(r'MODULE_VERSION\s*=\s*["\'](\d{12})["\']', content)
-                    if m:
-                        versions.append(m.group(1))
-        except Exception:
-            pass
-    return max(versions)
-
-SYSTEM_VERSION = get_system_version()
-
-def get_legend_html(version_tag: str = None) -> str:
-    tag = version_tag if version_tag else SYSTEM_VERSION
+def get_legend_html(version_tag: str = "202611072054") -> str:
     return f"""
     <div style="font-size: 14px; margin-bottom: 4px; padding: 2px 8px; display: inline-flex; align-items: center; background: #f8fafc; border-radius: 4px; border: 1px solid #e2e8f0;">
-        <span style="background:#2c3e50; color:#ffffff; padding: 2px 8px; border-radius: 4px; font-weight:bold; font-size:12px;">台股技術與籌碼分析 v{tag}</span>
+        <span style="background:#2c3e50; color:#ffffff; padding: 2px 8px; border-radius: 4px; font-weight:bold; font-size:12px;">台股技術與籌碼分析 v{version_tag}</span>
     </div>
     """
 
@@ -225,41 +199,6 @@ js_template = """
             '≥' + m2_thresh + '張: ' + fmtNum(m2_pcts[idx], 2) + '%';
     }
 
-    // 根據可視索引計算適應的 Y 軸價格與量能範圍
-    function calcVisibleRanges(r0, r1) {
-        var vStart = Math.max(0, Math.floor(r0));
-        var vEnd = Math.min(totalPoints - 1, Math.ceil(r1));
-        if (vStart > vEnd) return null;
-
-        var minP = Infinity, maxP = -Infinity;
-        var maxVol = 0;
-        for (var i = vStart; i <= vEnd; i++) {
-            if (highs[i] !== null && highs[i] > maxP) maxP = highs[i];
-            if (lows[i] !== null && lows[i] < minP) minP = lows[i];
-
-            // 均線亦納入考量，確保均線不被裁切
-            if (ma5s[i] !== null && ma5s[i] > maxP) maxP = ma5s[i];
-            if (ma5s[i] !== null && ma5s[i] < minP && ma5s[i] > 0) minP = ma5s[i];
-            if (ma20s[i] !== null && ma20s[i] > maxP) maxP = ma20s[i];
-            if (ma20s[i] !== null && ma20s[i] < minP && ma20s[i] > 0) minP = ma20s[i];
-            if (ma60s[i] !== null && ma60s[i] > maxP) maxP = ma60s[i];
-            if (ma60s[i] !== null && ma60s[i] < minP && ma60s[i] > 0) minP = ma60s[i];
-
-            if (vols[i] !== null && vols[i] > maxVol) maxVol = vols[i];
-        }
-
-        if (minP === Infinity || maxP === -Infinity) return null;
-
-        var pDiff = maxP - minP;
-        var padTop = pDiff > 0 ? pDiff * 0.12 : 2.0;
-        var padBtm = pDiff > 0 ? pDiff * 0.08 : 2.0;
-
-        return {
-            priceRange: [Math.max(0, minP - padBtm), maxP + padTop],
-            volRange: [0, (maxVol > 0 ? maxVol * 1.25 : 1000.0) / 1000.0]
-        };
-    }
-
     var cfg = { responsive: true, displayModeBar: false, scrollZoom: false };
     Plotly.newPlot(elTop, pTop.data, pTop.layout, cfg).then(function() {
         return Plotly.newPlot(elBtm, pBtm.data, pBtm.layout, cfg);
@@ -279,7 +218,7 @@ js_template = """
                     var span = r1 - r0;
                     var maxBound = (totalPoints - 1) + 0.5;
 
-                    // 【防呆防錯備註 2026-11-07】：向左平移超界吸附防護
+                    // 【防呆防錯備註 2026-11-07】：向左平移超界吸附防護，右端不留白
                     var didClamp = false;
                     if (r1 > maxBound) {
                         r1 = maxBound;
@@ -287,16 +226,12 @@ js_template = """
                         didClamp = true;
                     }
 
-                    var visibleBounds = calcVisibleRanges(r0, r1);
-
+                    // 【防呆防錯備註 2026-11-07】：嚴格僅更新 X 軸水平範圍，絕不動 yaxis.range，杜絕上下垂直拖曳位移
                     var selfUpd = {};
                     if (didClamp) {
                         if (srcEl === elTop) {
                             selfUpd['xaxis.range'] = [r0, r1];
                             if (srcEl.layout.xaxis2) selfUpd['xaxis2.range'] = [r0, r1];
-                            if (visibleBounds && visibleBounds.priceRange) {
-                                selfUpd['yaxis.range'] = visibleBounds.priceRange;
-                            }
                         } else {
                             for (var s = 1; s <= 9; s++) {
                                 var sAx = (s === 1) ? 'xaxis' : 'xaxis' + s;
@@ -310,9 +245,6 @@ js_template = """
                         destUpd['xaxis.range'] = [r0, r1];
                         destUpd['xaxis.autorange'] = false;
                         if (destEl.layout.xaxis2) destUpd['xaxis2.range'] = [r0, r1];
-                        if (visibleBounds && visibleBounds.priceRange) {
-                            destUpd['yaxis.range'] = visibleBounds.priceRange;
-                        }
                     } else {
                         for (var i = 1; i <= 9; i++) {
                             var ax = (i === 1) ? 'xaxis' : 'xaxis' + i;
@@ -323,7 +255,7 @@ js_template = """
                         }
                     }
 
-                    // 【防呆防錯備註 2026-11-07】：雙向非同步同步與旗標絕對釋放，避免第二次拖曳鎖死
+                    // 【防呆防錯備註 2026-11-07】：雙向非同步同步與旗標絕對釋放，保證每次拖曳均不卡死
                     var p1 = Object.keys(selfUpd).length > 0 ? Plotly.relayout(srcEl, selfUpd) : Promise.resolve();
                     var p2 = Plotly.relayout(destEl, destUpd);
 
@@ -414,7 +346,8 @@ def render_interactive_chart_html(
     m1_thresh=1000, m2_thresh=400,
     top_height=420, btm_height=1180,
     initial_disp_days=20,
-    initial_end_idx=None
+    initial_end_idx=None,
+    version_tag="202611072054"
 ) -> str:
     import json
     import uuid
