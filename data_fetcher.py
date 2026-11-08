@@ -1,6 +1,6 @@
 """
-data_fetcher.py - 整合技術與籌碼資料擷取模組 (資券爬蟲結構自適應與非交易日過濾防呆版)
-版本: 202611081850
+data_fetcher.py - 整合技術與籌碼資料擷取模組 (精準鎖定個股資券表與非交易日過濾防呆版)
+版本: 202611081915
 """
 import os
 import re
@@ -14,7 +14,7 @@ from bs4 import BeautifulSoup
 from datetime import datetime, timedelta
 
 MODULE_NAME = "data_fetcher"
-MODULE_VERSION = "202611081850"
+MODULE_VERSION = "202611081915"
 
 from storage import (
     StockChipStorage, COMMON_STOCK_NAMES,
@@ -276,8 +276,8 @@ def fetch_margin_short_data(pure_code: str, df_dates: pd.DatetimeIndex, start_da
     【防呆防錯備註 2026-11-08】【嚴禁誤刪】：
     擷取融資融券買賣增減與餘額 (單位：張)。
     1. 過濾週六日，防範 TWSE 官方休市直接回傳查無資料。
-    2. 深入搜尋 data.get('tables') 中所有子表格，解決 TWSE MI_MARGN 包含多表格時指定索引越界或找不到個股問題。
-    3. 針對 row[0] 清除前後空白與特殊不可見字元，確保 1303 正確匹配。
+    2. 鎖定 TWSE 個股融資融券彙總表格（排除 tables[0] 大盤彙總表），防範欄位錯位與異常數值。
+    3. 嚴格對齊原始正確欄位定義：row[0] 代號、5 資增減、6 資餘、11 券增減、12 券餘。
     """
     records = []
     headers = {
@@ -306,16 +306,24 @@ def fetch_margin_short_data(pure_code: str, df_dates: pd.DatetimeIndex, start_da
             if res.status_code == 200:
                 data = res.json()
                 if data.get("stat") == "OK":
-                    all_rows = []
-                    # 容錯處理：可能在 tables 內，亦可能在 data 內
-                    if "tables" in data:
+                    stock_rows = []
+                    # 【防呆防錯】：精確鎖定個股表格。若有 tables 陣列，優先找 title 含「融資融券」且欄位>=13 之表格；
+                    # 若為單一 tables[1] 或直接 data，皆確保排除大盤彙總表。
+                    if "tables" in data and len(data["tables"]) > 1:
+                        target_tbl = None
                         for tbl in data["tables"]:
-                            all_rows.extend(tbl.get("data", []))
+                            t_title = tbl.get("title", "")
+                            if "融資融券彙總" in t_title or "個股" in t_title:
+                                target_tbl = tbl
+                                break
+                        if not target_tbl:
+                            target_tbl = data["tables"][1]
+                        stock_rows = target_tbl.get("data", [])
                     elif "data" in data:
-                        all_rows.extend(data.get("data", []))
+                        stock_rows = data.get("data", [])
 
-                    for row in all_rows:
-                        if len(row) >= 13 and str(row[0]).strip().replace("\u3000", "") == pure_code:
+                    for row in stock_rows:
+                        if len(row) >= 13 and str(row[0]).strip() == pure_code:
                             def clean_val(v):
                                 return float(str(v).replace(",", "").strip())
                             m_diff = clean_val(row[5])
@@ -342,7 +350,7 @@ def fetch_margin_short_data(pure_code: str, df_dates: pd.DatetimeIndex, start_da
                 data = res.json()
                 if "aaData" in data:
                     for row in data["aaData"]:
-                        if len(row) >= 12 and str(row[0]).strip().replace("\u3000", "") == pure_code:
+                        if len(row) >= 12 and str(row[0]).strip() == pure_code:
                             def clean_val(v):
                                 return float(str(v).replace(",", "").strip())
                             m_diff = clean_val(row[4])
