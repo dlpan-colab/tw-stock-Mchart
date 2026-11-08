@@ -1,7 +1,8 @@
 """
-data_fetcher.py - 整合技術與籌碼資料擷取模組 (完全復原 11/05 FinMind 正確資券計算結構)
-版本: 202611081950
+data_fetcher.py - 整合技術與籌碼資料擷取模組 (修訂週末集保公告觸發時段防呆版)
+版本: 202611082155
 """
+
 import os
 import re
 import json
@@ -14,11 +15,13 @@ from bs4 import BeautifulSoup
 from datetime import datetime, timedelta
 
 MODULE_NAME = "data_fetcher"
-MODULE_VERSION = "202611081950"
+MODULE_VERSION = "202611082155"
 
 from storage import (
-    StockChipStorage, COMMON_STOCK_NAMES,
-    load_stock_names_dict, get_stock_chinese_name
+    StockChipStorage,
+    COMMON_STOCK_NAMES,
+    load_stock_names_dict,
+    get_stock_chinese_name
 )
 
 FINMIND_TOKEN = ""
@@ -73,6 +76,7 @@ def fetch_stock_daily_k(raw_ticker: str, period: str = "1y", base_date: str = No
             pass
 
     fetch_period = period if force_refresh or db_df.empty or not last_k_date else "5d"
+
     try:
         df_new = ticker.history(period=fetch_period)
     except Exception:
@@ -101,6 +105,7 @@ def fetch_stock_daily_k(raw_ticker: str, period: str = "1y", base_date: str = No
         valid_cols = [c for c in ['Open', 'High', 'Low', 'Close'] if c in df_new.columns]
         if valid_cols:
             df_new = df_new.dropna(subset=valid_cols)
+
         if not is_index and 'Volume' in df_new.columns:
             df_new = df_new[df_new['Volume'] > 0]
 
@@ -139,6 +144,7 @@ def sync_chip_data(pure_code: str, df_dates: pd.DatetimeIndex, status_placeholde
     now = datetime.now()
     now_date_str = now.strftime('%Y-%m-%d')
 
+    # 1. 三大法人判斷
     should_fetch_inst = force_refresh
     if not should_fetch_inst:
         if not last_inst_date:
@@ -149,6 +155,7 @@ def sync_chip_data(pure_code: str, df_dates: pd.DatetimeIndex, status_placeholde
             else:
                 should_fetch_inst = True
 
+    # 2. 資券判斷
     should_fetch_margin = force_refresh
     if not should_fetch_margin:
         if not last_margin_date:
@@ -159,17 +166,23 @@ def sync_chip_data(pure_code: str, df_dates: pd.DatetimeIndex, status_placeholde
             else:
                 should_fetch_margin = True
 
+    # 3. 集保大戶判斷
     should_fetch_holding = force_refresh
     if not should_fetch_holding:
         if not last_holding_date:
             should_fetch_holding = True
         else:
+            # 【防呆防錯備註 2026-11-08】【修訂目的】：
+            # 修正週末集保抓取漏洞：涵蓋週五 20 點後、週六與週日全天，
+            # 杜絕官方於週六/週日公告時，因 weekday 限制導致 diff_days < 7 漏抓之嚴重缺陷。
             diff_days = (now - pd.to_datetime(last_holding_date)).days
+            is_weekend_publish = (now.weekday() == 4 and now.hour >= 20) or (now.weekday() in [5, 6])
             if diff_days >= 7:
                 should_fetch_holding = True
-            elif now.weekday() == 4 and now.hour >= 20 and diff_days >= 1:
+            elif is_weekend_publish and diff_days >= 1:
                 should_fetch_holding = True
 
+    # 執行擷取與入庫
     if should_fetch_inst:
         start_filter = None if force_refresh else last_inst_date
         inst_records = fetch_institutional_investors(pure_code, df_dates, start_date_exclusive=start_filter)
@@ -215,9 +228,9 @@ def fetch_institutional_investors(pure_code: str, df_dates: pd.DatetimeIndex, st
     for dt in sample_dates:
         if dt.weekday() >= 5:
             continue
-
         date_twse = dt.strftime('%Y%m%d')
         date_str = dt.strftime('%Y-%m-%d')
+
         url_twse = f"https://www.twse.com.tw/rwd/zh/fund/T86?date={date_twse}&selectType=ALLBUT0999&response=json"
         try:
             res = requests.get(url_twse, headers=headers, timeout=4)
@@ -310,7 +323,11 @@ def fetch_margin_short_data(pure_code: str, df_dates: pd.DatetimeIndex, start_da
                     s_bal = float(s_raw_bal)
 
                     records_ms.append((
-                        r['date'], m_diff, s_diff, m_bal, s_bal
+                        r['date'],
+                        m_diff,
+                        s_diff,
+                        m_bal,
+                        s_bal
                     ))
     except Exception:
         pass
@@ -342,4 +359,5 @@ def fetch_tdcc_holding_data(pure_code: str) -> list:
                         pass
     except Exception:
         pass
+
     return records
