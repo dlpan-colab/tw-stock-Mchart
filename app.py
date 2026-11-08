@@ -1,7 +1,8 @@
 """
-app.py - 主應用程式介面與生命週期控制
-版本: 202611081927
+app.py - 主應用程式介面與生命週期控制 (新增獨立大戶持股比例維護功能版)
+版本: 202611082230
 """
+
 import os
 import time
 import re
@@ -10,14 +11,20 @@ import streamlit.components.v1 as components
 import cloud_sync
 
 MODULE_NAME = "app"
-MODULE_VERSION = "202611082105"
+MODULE_VERSION = "202611082230"
+
 
 # 【防呆防錯備註 2026-11-07】：版本控制權由 app.py 作為唯一權威源，動態掃描所有模組最大版本號，杜絕多頭覆寫與重工
 def get_system_version() -> str:
     versions = [MODULE_VERSION]
     module_names = [
-        "frontend", "chart_builder", "indicators",
-        "data_fetcher", "storage", "config", "cloud_sync"
+        "frontend",
+        "chart_builder",
+        "indicators",
+        "data_fetcher",
+        "storage",
+        "config",
+        "cloud_sync"
     ]
     base_dir = os.path.dirname(os.path.abspath(__file__))
     for mod_name in module_names:
@@ -32,6 +39,7 @@ def get_system_version() -> str:
         except Exception:
             pass
     return max(versions)
+
 
 SYSTEM_VERSION = get_system_version()
 
@@ -65,12 +73,14 @@ INDEX_MAP = {
     "FCHI": "^FCHI", "CAC": "^FCHI", "法國": "^FCHI", "^FCHI": "^FCHI",
 }
 
+
 def resolve_ticker_code(raw_input: str) -> str:
     cleaned = str(raw_input).strip()
     upper = cleaned.upper()
     if upper in INDEX_MAP:
         return INDEX_MAP[upper]
     return cleaned
+
 
 # 【防呆防錯備註 2026-11-07】：完整對齊 chart_builder.py 之 build_split_figures 參數簽名，避免 TypeError
 @st.cache_data(ttl=180, show_spinner=False)
@@ -86,6 +96,7 @@ def get_cached_figures(stock_id, period, disp_days, base_date, m1_thresh, m2_thr
         None,
         force_refresh
     )
+
 
 st.set_page_config(
     page_title="台股多指標+籌碼技術分析",
@@ -143,6 +154,7 @@ if "ms_counter" not in st.session_state:
 if "history_multiselect_prev" not in st.session_state:
     st.session_state.history_multiselect_prev = []
 
+
 def on_stock_input_change():
     val = st.session_state.stock_input_box.strip()
     if val:
@@ -150,6 +162,7 @@ def on_stock_input_change():
         st.session_state.stock_id = resolved
         if not resolved.startswith("^"):
             save_stock_history(resolved)
+
 
 def on_index_select_change():
     sel = st.session_state.index_select_box
@@ -160,8 +173,10 @@ def on_index_select_change():
             st.session_state.stock_id = idx_code
             st.session_state.index_select_box = "選擇主要市場指數..."
 
+
 with st.sidebar:
     st.header("參數設定")
+
     INDEX_CHOICES = [
         "選擇主要市場指數...",
         "加權指數 (^TWII)",
@@ -180,6 +195,7 @@ with st.sidebar:
 
     history_records = load_stock_history()
     history_codes = [str(item.get("code")).strip() for item in history_records if item.get("code")]
+
     with st.expander("查詢歷史紀錄", expanded=False):
         if history_codes:
             history_display = [f"{h.get('code')} {h.get('name', '')}".strip() for h in history_records]
@@ -190,7 +206,7 @@ with st.sidebar:
                 default=[],
                 key=current_ms_key
             )
-            
+
             newly_selected = [item for item in selected_history if item not in st.session_state.history_multiselect_prev]
             if newly_selected:
                 latest_clicked_code = newly_selected[-1].split()[0]
@@ -199,6 +215,7 @@ with st.sidebar:
                 for c in other_codes:
                     save_stock_history(c)
                 save_stock_history(latest_clicked_code)
+
                 st.session_state.stock_id = latest_clicked_code
                 st.session_state.history_multiselect_prev = []
                 st.session_state.ms_counter += 1
@@ -220,24 +237,25 @@ with st.sidebar:
         else:
             st.caption("目前無歷史紀錄")
 
-    if st.session_state.confirm_clear_all:
-        st.warning("⚠️ 未勾選任何標的，確定要清除全部歷史紀錄嗎？")
-        c_del1, c_del2 = st.columns(2)
-        with c_del1:
-            if st.button("確認全刪", key="btn_confirm_delete_all", use_container_width=True):
-                clear_stock_history()
-                st.session_state.stock_id = "2330"
-                st.session_state.confirm_clear_all = False
-                st.session_state.history_multiselect_prev = []
-                st.session_state.ms_counter += 1
-                st.rerun()
-        with c_del2:
-            if st.button("取消", key="btn_cancel_delete_all", use_container_width=True):
-                st.session_state.confirm_clear_all = False
-                st.rerun()
+        if st.session_state.confirm_clear_all:
+            st.warning("⚠️ 未勾選任何標的，確定要清除全部歷史紀錄嗎？")
+            c_del1, c_del2 = st.columns(2)
+            with c_del1:
+                if st.button("確認全刪", key="btn_confirm_delete_all", use_container_width=True):
+                    clear_stock_history()
+                    st.session_state.stock_id = "2330"
+                    st.session_state.confirm_clear_all = False
+                    st.session_state.history_multiselect_prev = []
+                    st.session_state.ms_counter += 1
+                    st.rerun()
+            with c_del2:
+                if st.button("取消", key="btn_cancel_delete_all", use_container_width=True):
+                    st.session_state.confirm_clear_all = False
+                    st.rerun()
 
     if "stock_input_box" not in st.session_state or st.session_state.stock_input_box != st.session_state.stock_id:
         st.session_state.stock_input_box = st.session_state.stock_id
+
     st.text_input("股票代號 (直接鍵入)", key="stock_input_box", on_change=on_stock_input_change)
 
     st.session_state.period = st.selectbox(
@@ -285,7 +303,8 @@ with st.sidebar:
             if not resolved.startswith("^"):
                 save_stock_history(resolved)
         st.rerun()
-## 20261108 修訂強制更新資券資料 [開始]
+
+    ## 20261108 修訂強制更新資券資料 [開始]
     st.markdown("---")
     st.subheader("資券維護")
     refetch_weeks = st.number_input("重抓週數", min_value=1, max_value=24, value=6, step=1)
@@ -310,7 +329,6 @@ with st.sidebar:
                         sub_dates = df_k.index[df_k.index >= cutoff_dt]
                         if len(sub_dates) == 0:
                             sub_dates = df_k.index[-int(refetch_weeks * 5):]
-
                         margin_records = fetch_margin_short_data(cur_code, sub_dates)
                         if margin_records and len(margin_records) > 0:
                             storage = StockChipStorage(cur_code)
@@ -322,11 +340,44 @@ with st.sidebar:
                         st.sidebar.error("無法取得該標的之歷史日K線交易日序列。")
                 except Exception as e:
                     st.sidebar.error(f"重抓資券發生異常: {e}")
-
                 get_cached_figures.clear()
                 time.sleep(1.0)
                 st.rerun()
-## 20261108 修訂強制更新資券資料 [結束]  
+    ## 20261108 修訂強制更新資券資料 [結束]
+
+    ## 20261108 新增大戶持股比例維護功能 [開始]
+    st.markdown("---")
+    st.subheader("大戶持股維護")
+    st.caption("ℹ️ 集保於當週各交易日不予公告，直到當週最後交易日之次日（週六）公布。")
+    if st.button("🛠️ 強制重抓最新集保大戶", use_container_width=True):
+        cur_code = str(st.session_state.stock_id).strip()
+        if cur_code.startswith("^"):
+            st.sidebar.warning("指數標的無集保大戶資料。")
+        else:
+            with st.spinner(f"正在連線集保結算所 (TDCC) 擷取 {cur_code} 最新大戶資料..."):
+                # 【防呆防錯備註 2026-11-08】【修訂目的】：
+                # 比照資券維護，提供獨立集保抓取按鈕。
+                # 嚴格落實「當週交易日期間不予公告，直到當週最後交易日之次日」之業務規則。
+                # 直接發動 TDCC 官方 Open Data 抓取並寫入 SQLite，杜絕快取殘留造成數值顯示為 0.00% 之缺陷。
+                try:
+                    from data_fetcher import fetch_tdcc_holding_data
+                    from storage import StockChipStorage
+
+                    holding_records = fetch_tdcc_holding_data(cur_code)
+                    if holding_records and len(holding_records) > 0:
+                        storage = StockChipStorage(cur_code)
+                        storage.save_holding_data(holding_records)
+                        latest_h_date = holding_records[0][0]
+                        st.sidebar.success(f"成功更新 {cur_code} 最新集保！基準日: {latest_h_date} (共 {len(holding_records)} 級距)")
+                    else:
+                        st.sidebar.warning(f"TDCC 暫未取得 {cur_code} 有效大戶資料 (若未屆次日公告期請稍候)。")
+                except Exception as e:
+                    st.sidebar.error(f"重抓集保發生異常: {e}")
+                get_cached_figures.clear()
+                time.sleep(1.0)
+                st.rerun()
+    ## 20261108 新增大戶持股比例維護功能 [結束]
+
 auth_status = cloud_sync.get_auth_status()
 if auth_status == 2:
     status_light = "🟡"
@@ -341,7 +392,7 @@ st.markdown(f"## 台股技術與籌碼分析 v{SYSTEM_VERSION} {status_light}")
 stock_id = str(st.session_state.stock_id).strip()
 if not stock_id:
     stock_id = "2330"
-st.session_state.stock_id = stock_id
+    st.session_state.stock_id = stock_id
 
 hist_records = load_stock_history()
 hist_codes = [str(item.get("code")).strip() for item in hist_records if item.get("code")]
@@ -387,6 +438,7 @@ if not stock_id.startswith("^") and c_name and c_name != stock_id:
 
 top_height = 420 if is_mobile else 460
 btm_height = 1180 if is_mobile else 1220
+
 ## 20261108 加權數向左平移時無法觸發回彈至右端。[開始]
 # 【防呆防錯備註 2026-11-08】【修訂目的】：
 # 傳入 is_index 旗標，精確告知前端 JS 是否為指數標的，
@@ -405,6 +457,7 @@ html_content = get_component_html(
     is_index=stock_id.startswith("^")
 )
 ## 20261108 加權數向左平移時無法觸發回彈至右端。[結束]
+
 total_h = 1980 if is_mobile else 1880
 components.html(html_content, height=total_h, scrolling=False)
 
