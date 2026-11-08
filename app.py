@@ -285,7 +285,7 @@ with st.sidebar:
             if not resolved.startswith("^"):
                 save_stock_history(resolved)
         st.rerun()
-
+## 20261108 修訂強制更新資券資料 [開始]
     st.markdown("---")
     st.subheader("資券維護")
     refetch_weeks = st.number_input("重抓週數", min_value=1, max_value=24, value=6, step=1)
@@ -294,13 +294,39 @@ with st.sidebar:
         if cur_code.startswith("^"):
             st.sidebar.warning("指數標的無資券資料。")
         else:
-            with st.spinner(f"正在清除 {cur_code} 近 {refetch_weeks} 週資券紀錄..."):
-                clear_msg = clear_recent_margin_data(cur_code, weeks=int(refetch_weeks))
-                st.sidebar.success(clear_msg)
+            with st.spinner(f"正在重新爬取 {cur_code} 近 {refetch_weeks} 週資券紀錄..."):
+                # 【防呆防錯備註 2026-11-08】【修訂目的】：
+                # 點擊按鈕時直接發動 TWSE/TPEX 爬蟲爬取近 N 週資券，寫入資料庫後再清空快取並刷新，
+                # 杜絕「重抓按鈕僅刪除資料庫，但重跑時因未勾選強制更新而未抓取，導致資料全空」之重工缺陷。
+                try:
+                    from data_fetcher import fetch_stock_daily_k, fetch_margin_short_data
+                    from storage import StockChipStorage
+                    from datetime import datetime, timedelta
+
+                    k_res = fetch_stock_daily_k(cur_code, period="1y", force_refresh=False)
+                    if k_res and k_res[0] is not None and not k_res[0].empty:
+                        df_k = k_res[0]
+                        cutoff_dt = datetime.now() - timedelta(days=int(refetch_weeks) * 7)
+                        sub_dates = df_k.index[df_k.index >= cutoff_dt]
+                        if len(sub_dates) == 0:
+                            sub_dates = df_k.index[-int(refetch_weeks * 5):]
+
+                        margin_records = fetch_margin_short_data(cur_code, sub_dates)
+                        if margin_records and len(margin_records) > 0:
+                            storage = StockChipStorage(cur_code)
+                            storage.save_margin_data(margin_records)
+                            st.sidebar.success(f"成功更新 {cur_code} 近 {refetch_weeks} 週共 {len(margin_records)} 筆資券！")
+                        else:
+                            st.sidebar.warning("爬取完成，但該區間未取得有效資券資料。")
+                    else:
+                        st.sidebar.error("無法取得該標的之歷史日K線交易日序列。")
+                except Exception as e:
+                    st.sidebar.error(f"重抓資券發生異常: {e}")
+
                 get_cached_figures.clear()
                 time.sleep(1.0)
                 st.rerun()
-
+## 20261108 修訂強制更新資券資料 [結束]  
 auth_status = cloud_sync.get_auth_status()
 if auth_status == 2:
     status_light = "🟡"
