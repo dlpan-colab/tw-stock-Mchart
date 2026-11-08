@@ -1,6 +1,6 @@
 """
-data_fetcher.py - 整合技術與籌碼資料擷取模組 (精準鎖定個股資券表與非交易日過濾防呆版)
-版本: 202611081915
+data_fetcher.py - 整合技術與籌碼資料擷取模組 (完全復原 11/05 FinMind 正確資券計算結構)
+版本: 202611081950
 """
 import os
 import re
@@ -14,12 +14,14 @@ from bs4 import BeautifulSoup
 from datetime import datetime, timedelta
 
 MODULE_NAME = "data_fetcher"
-MODULE_VERSION = "202611081915"
+MODULE_VERSION = "202611081950"
 
 from storage import (
     StockChipStorage, COMMON_STOCK_NAMES,
     load_stock_names_dict, get_stock_chinese_name
 )
+
+FINMIND_TOKEN = ""
 
 
 def fetch_stock_name(pure_code: str) -> str:
@@ -39,9 +41,6 @@ def fetch_stock_daily_k(raw_ticker: str, period: str = "1y", base_date: str = No
     pure_code = raw_str.upper()
     is_index = pure_code.startswith("^")
 
-    # 【防呆防錯備註 2026-11-08】：
-    # 1. ^TWII（加權指數）：Yahoo Finance 官方支援，具備真實完整的開高低收四價與成交量。
-    # 2. ^TWOII（櫃買指數）：以富櫃50 (006201.TWO / 006201.TW) 為代理來源，具備真實量價。
     if pure_code == "^TWII":
         target_ticker = "^TWII"
         full_ticker = "^TWII"
@@ -79,7 +78,6 @@ def fetch_stock_daily_k(raw_ticker: str, period: str = "1y", base_date: str = No
     except Exception:
         df_new = pd.DataFrame()
 
-    # 備援容錯：006201 或個股查無 .TWO / .TW 時自動互換
     if (df_new is None or df_new.empty):
         if target_ticker.endswith(".TWO"):
             alt_ticker = target_ticker.replace(".TWO", ".TW")
@@ -100,7 +98,6 @@ def fetch_stock_daily_k(raw_ticker: str, period: str = "1y", base_date: str = No
         if df_new.index.tz is not None:
             df_new.index = df_new.index.tz_localize(None)
 
-        # 個股嚴格排除 Volume <= 0 或缺價的非交易日；指數類放行
         valid_cols = [c for c in ['Open', 'High', 'Low', 'Close'] if c in df_new.columns]
         if valid_cols:
             df_new = df_new.dropna(subset=valid_cols)
@@ -123,8 +120,7 @@ def fetch_stock_daily_k(raw_ticker: str, period: str = "1y", base_date: str = No
 
 def sync_chip_data(pure_code: str, df_dates: pd.DatetimeIndex, status_placeholder=None, force_refresh: bool = False):
     """
-    【防呆防錯備註 2026-11-08】：
-    智慧增量補抓籌碼資料。比對本地最後紀錄日期，非強制更新時僅爬取缺漏天數。
+    智慧增量同步三大法人、資券與集保大戶。
     """
     pure_code = str(pure_code).strip()
     storage = StockChipStorage(pure_code)
@@ -143,7 +139,6 @@ def sync_chip_data(pure_code: str, df_dates: pd.DatetimeIndex, status_placeholde
     now = datetime.now()
     now_date_str = now.strftime('%Y-%m-%d')
 
-    # 判斷法人是否需更新
     should_fetch_inst = force_refresh
     if not should_fetch_inst:
         if not last_inst_date:
@@ -154,7 +149,6 @@ def sync_chip_data(pure_code: str, df_dates: pd.DatetimeIndex, status_placeholde
             else:
                 should_fetch_inst = True
 
-    # 判斷資券是否需更新
     should_fetch_margin = force_refresh
     if not should_fetch_margin:
         if not last_margin_date:
@@ -165,20 +159,17 @@ def sync_chip_data(pure_code: str, df_dates: pd.DatetimeIndex, status_placeholde
             else:
                 should_fetch_margin = True
 
-    # 判斷集保大戶是否需更新
     should_fetch_holding = force_refresh
     if not should_fetch_holding:
         if not last_holding_date:
             should_fetch_holding = True
         else:
-            last_dt = pd.to_datetime(last_holding_date)
-            diff_days = (now - last_dt).days
+            diff_days = (now - pd.to_datetime(last_holding_date)).days
             if diff_days >= 7:
                 should_fetch_holding = True
             elif now.weekday() == 4 and now.hour >= 20 and diff_days >= 1:
                 should_fetch_holding = True
 
-    # 執行增量補抓
     if should_fetch_inst:
         start_filter = None if force_refresh else last_inst_date
         inst_records = fetch_institutional_investors(pure_code, df_dates, start_date_exclusive=start_filter)
@@ -222,7 +213,7 @@ def fetch_institutional_investors(pure_code: str, df_dates: pd.DatetimeIndex, st
         return []
 
     for dt in sample_dates:
-        if dt.weekday() >= 5:  # 跳過週六週日
+        if dt.weekday() >= 5:
             continue
 
         date_twse = dt.strftime('%Y%m%d')
@@ -273,98 +264,58 @@ def fetch_institutional_investors(pure_code: str, df_dates: pd.DatetimeIndex, st
 
 def fetch_margin_short_data(pure_code: str, df_dates: pd.DatetimeIndex, start_date_exclusive: str = None) -> list:
     """
-    【防呆防錯備註 2026-11-08】【嚴禁誤刪】：
-    擷取融資融券買賣增減與餘額 (單位：張)。
-    1. 過濾週六日，防範 TWSE 官方休市直接回傳查無資料。
-    2. 鎖定 TWSE 個股融資融券彙總表格（排除 tables[0] 大盤彙總表），防範欄位錯位與異常數值。
-    3. 嚴格對齊原始正確欄位定義：row[0] 代號、5 資增減、6 資餘、11 券增減、12 券餘。
+    【防呆防錯備註 2026-11-08】【修訂目的】：
+    完全復原 11/05 FinMind API 結構，絕不逐日輪詢 TWSE 靜態表格。
+    1. 增減由買進、賣出、償還精確計算 (m_diff = mb - ms - mr, s_diff = ss - sb - sr)。
+    2. 餘額直接由 MarginPurchaseTodayBalance 與 ShortSaleTodayBalance 取出。
+    3. 日期嚴格對齊 API 自帶之 r['date']，徹底根除日期錯置與數萬張餘額被當成增減之重大重工缺陷。
     """
-    records = []
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
     }
 
     if start_date_exclusive:
-        sample_dates = [d for d in df_dates if d.strftime('%Y-%m-%d') > start_date_exclusive]
+        margin_query_start = (pd.to_datetime(start_date_exclusive) + timedelta(days=1)).strftime('%Y-%m-%d')
     else:
-        sample_dates = df_dates[-40:]
+        margin_query_start = (df_dates[0] - timedelta(days=5)).strftime('%Y-%m-%d') if len(df_dates) > 0 else (datetime.now() - timedelta(days=90)).strftime('%Y-%m-%d')
 
-    if not sample_dates:
-        return []
+    records_ms = []
+    try:
+        url_ms = "https://api.finmindtrade.com/api/v4/data"
+        p_ms = {
+            "dataset": "TaiwanStockMarginPurchaseShortSale",
+            "data_id": pure_code,
+            "start_date": margin_query_start,
+            "token": FINMIND_TOKEN
+        }
+        res_ms = requests.get(url_ms, params=p_ms, headers=headers, timeout=6)
+        if res_ms.status_code == 200:
+            data_ms = res_ms.json().get('data', [])
+            if data_ms:
+                ms_df = pd.DataFrame(data_ms)
+                for _, r in ms_df.iterrows():
+                    mb = float(r.get('MarginPurchaseBuy', 0) or 0)
+                    ms = float(r.get('MarginPurchaseSell', 0) or 0)
+                    mr = float(r.get('MarginPurchaseCashRepayment', 0) or 0)
+                    m_diff = mb - ms - mr
 
-    for dt in sample_dates:
-        if dt.weekday() >= 5:  # 過濾週六日
-            continue
+                    sb = float(r.get('ShortSaleBuy', 0) or 0)
+                    ss = float(r.get('ShortSaleSell', 0) or 0)
+                    sr = float(r.get('ShortSaleCashRepayment', 0) or 0)
+                    s_diff = ss - sb - sr
 
-        date_twse = dt.strftime('%Y%m%d')
-        date_str = dt.strftime('%Y-%m-%d')
-        url_twse = f"https://www.twse.com.tw/rwd/zh/marginTrading/MI_MARGN?date={date_twse}&selectType=ALL&response=json"
+                    m_raw_bal = r.get('MarginPurchaseTodayBalance') or r.get('MarginPurchaseBalance') or r.get('margin_purchase') or 0
+                    s_raw_bal = r.get('ShortSaleTodayBalance') or r.get('ShortSaleBalance') or r.get('short_sale') or 0
+                    m_bal = float(m_raw_bal)
+                    s_bal = float(s_raw_bal)
 
-        matched = False
-        try:
-            res = requests.get(url_twse, headers=headers, timeout=4)
-            if res.status_code == 200:
-                data = res.json()
-                if data.get("stat") == "OK":
-                    stock_rows = []
-                    # 【防呆防錯】：精確鎖定個股表格。若有 tables 陣列，優先找 title 含「融資融券」且欄位>=13 之表格；
-                    # 若為單一 tables[1] 或直接 data，皆確保排除大盤彙總表。
-                    if "tables" in data and len(data["tables"]) > 1:
-                        target_tbl = None
-                        for tbl in data["tables"]:
-                            t_title = tbl.get("title", "")
-                            if "融資融券彙總" in t_title or "個股" in t_title:
-                                target_tbl = tbl
-                                break
-                        if not target_tbl:
-                            target_tbl = data["tables"][1]
-                        stock_rows = target_tbl.get("data", [])
-                    elif "data" in data:
-                        stock_rows = data.get("data", [])
+                    records_ms.append((
+                        r['date'], m_diff, s_diff, m_bal, s_bal
+                    ))
+    except Exception:
+        pass
 
-                    for row in stock_rows:
-                        if len(row) >= 13 and str(row[0]).strip() == pure_code:
-                            def clean_val(v):
-                                return float(str(v).replace(",", "").strip())
-                            m_diff = clean_val(row[5])
-                            m_bal = clean_val(row[6])
-                            s_diff = clean_val(row[11])
-                            s_bal = clean_val(row[12])
-                            records.append((date_str, m_diff, s_diff, m_bal, s_bal))
-                            matched = True
-                            break
-        except Exception:
-            pass
-
-        if matched:
-            time.sleep(0.04)
-            continue
-
-        # 上櫃 TPEX 備援查詢
-        try:
-            year_tw = dt.year - 1911
-            date_tpex = f"{year_tw}/{dt.strftime('%m/%d')}"
-            url_tpex = f"https://www.tpex.org.tw/web/stock/margin_trading/margin_balance/margin_bal_result.php?l=zh-tw&d={date_tpex}"
-            res = requests.get(url_tpex, headers=headers, timeout=4)
-            if res.status_code == 200:
-                data = res.json()
-                if "aaData" in data:
-                    for row in data["aaData"]:
-                        if len(row) >= 12 and str(row[0]).strip() == pure_code:
-                            def clean_val(v):
-                                return float(str(v).replace(",", "").strip())
-                            m_diff = clean_val(row[4])
-                            m_bal = clean_val(row[5])
-                            s_diff = clean_val(row[10])
-                            s_bal = clean_val(row[11])
-                            records.append((date_str, m_diff, s_diff, m_bal, s_bal))
-                            break
-        except Exception:
-            pass
-
-        time.sleep(0.04)
-
-    return records
+    return records_ms
 
 
 def fetch_tdcc_holding_data(pure_code: str) -> list:
