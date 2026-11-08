@@ -1,6 +1,6 @@
-""" 
-data_fetcher.py - 整合技術與籌碼資料擷取模組 (智慧增量補抓防呆版)
-版本: 202611071315
+"""
+data_fetcher.py - 整合技術與籌碼資料擷取模組 (資券爬蟲結構自適應與非交易日過濾防呆版)
+版本: 202611081850
 """
 import os
 import re
@@ -14,18 +14,18 @@ from bs4 import BeautifulSoup
 from datetime import datetime, timedelta
 
 MODULE_NAME = "data_fetcher"
-MODULE_VERSION = "202611071315"
+MODULE_VERSION = "202611081850"
 
 from storage import (
-    StockChipStorage,
-    COMMON_STOCK_NAMES,
-    load_stock_names_dict,
-    get_stock_chinese_name
+    StockChipStorage, COMMON_STOCK_NAMES,
+    load_stock_names_dict, get_stock_chinese_name
 )
+
 
 def fetch_stock_name(pure_code: str) -> str:
     """取得股票中文名稱 (優先查字典/快取，無則爬蟲)"""
     return get_stock_chinese_name(pure_code)
+
 
 def fetch_stock_daily_k(raw_ticker: str, period: str = "1y", base_date: str = None, force_refresh: bool = False):
     """
@@ -39,9 +39,9 @@ def fetch_stock_daily_k(raw_ticker: str, period: str = "1y", base_date: str = No
     pure_code = raw_str.upper()
     is_index = pure_code.startswith("^")
 
-    # 【防呆防錯備註 2026-11-07】：
-    # 1. ^TWII（加權指數）：Yahoo Finance 官方支援，具備真實完整的開高低收四價與成交量，回歸 Yahoo Finance。
-    # 2. ^TWOII（櫃買指數）：改以「富櫃50 (006201.TWO / 006201.TW)」作為代理來源，具備真實開高低收與成交量，確保不扁平且永不報錯。
+    # 【防呆防錯備註 2026-11-08】：
+    # 1. ^TWII（加權指數）：Yahoo Finance 官方支援，具備真實完整的開高低收四價與成交量。
+    # 2. ^TWOII（櫃買指數）：以富櫃50 (006201.TWO / 006201.TW) 為代理來源，具備真實量價。
     if pure_code == "^TWII":
         target_ticker = "^TWII"
         full_ticker = "^TWII"
@@ -100,12 +100,12 @@ def fetch_stock_daily_k(raw_ticker: str, period: str = "1y", base_date: str = No
         if df_new.index.tz is not None:
             df_new.index = df_new.index.tz_localize(None)
 
-        # 【防呆防錯備註 2026-11-07】：個股嚴格排除 Volume <= 0 或缺價的非交易日；指數類放行
+        # 個股嚴格排除 Volume <= 0 或缺價的非交易日；指數類放行
         valid_cols = [c for c in ['Open', 'High', 'Low', 'Close'] if c in df_new.columns]
         if valid_cols:
             df_new = df_new.dropna(subset=valid_cols)
-            if not is_index and 'Volume' in df_new.columns:
-                df_new = df_new[df_new['Volume'] > 0]
+        if not is_index and 'Volume' in df_new.columns:
+            df_new = df_new[df_new['Volume'] > 0]
 
         if not db_df.empty and not force_refresh:
             combined = pd.concat([db_df, df_new])
@@ -120,11 +120,11 @@ def fetch_stock_daily_k(raw_ticker: str, period: str = "1y", base_date: str = No
 
     return None
 
+
 def sync_chip_data(pure_code: str, df_dates: pd.DatetimeIndex, status_placeholder=None, force_refresh: bool = False):
     """
-    【防呆防錯備註 2026-11-07】：
-    智慧增量補抓籌碼資料。比對本地最後紀錄日期，非強制更新時僅爬取缺漏天數（1~2天），
-    避免每次皆發送 60 次 HTTP 請求導致前端卡死 20 秒。
+    【防呆防錯備註 2026-11-08】：
+    智慧增量補抓籌碼資料。比對本地最後紀錄日期，非強制更新時僅爬取缺漏天數。
     """
     pure_code = str(pure_code).strip()
     storage = StockChipStorage(pure_code)
@@ -205,6 +205,7 @@ def sync_chip_data(pure_code: str, df_dates: pd.DatetimeIndex, status_placeholde
         storage.load_holding_df()
     )
 
+
 def fetch_institutional_investors(pure_code: str, df_dates: pd.DatetimeIndex, start_date_exclusive: str = None) -> list:
     """擷取三大法人買賣超資料 (單位：張)"""
     records = []
@@ -212,7 +213,6 @@ def fetch_institutional_investors(pure_code: str, df_dates: pd.DatetimeIndex, st
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
     }
 
-    # 【防呆防錯備註 2026-11-07】：增量過濾，若指定 start_date 僅抓取之後的缺漏日期
     if start_date_exclusive:
         sample_dates = [d for d in df_dates if d.strftime('%Y-%m-%d') > start_date_exclusive]
     else:
@@ -222,17 +222,19 @@ def fetch_institutional_investors(pure_code: str, df_dates: pd.DatetimeIndex, st
         return []
 
     for dt in sample_dates:
+        if dt.weekday() >= 5:  # 跳過週六週日
+            continue
+
         date_twse = dt.strftime('%Y%m%d')
         date_str = dt.strftime('%Y-%m-%d')
-
         url_twse = f"https://www.twse.com.tw/rwd/zh/fund/T86?date={date_twse}&selectType=ALLBUT0999&response=json"
         try:
-            res = requests.get(url_twse, headers=headers, timeout=3)
+            res = requests.get(url_twse, headers=headers, timeout=4)
             if res.status_code == 200:
                 data = res.json()
                 if data.get("stat") == "OK" and "data" in data:
                     for row in data["data"]:
-                        if row[0].strip() == pure_code:
+                        if str(row[0]).strip() == pure_code:
                             def clean_val(v):
                                 return float(str(v).replace(",", "").strip()) / 1000.0
                             f_net = clean_val(row[4])
@@ -248,12 +250,12 @@ def fetch_institutional_investors(pure_code: str, df_dates: pd.DatetimeIndex, st
             year_tw = dt.year - 1911
             date_tpex = f"{year_tw}/{dt.strftime('%m/%d')}"
             url_tpex = f"https://www.tpex.org.tw/web/stock/3insti/daily_trade/3itrade_hedge_result.php?l=zh-tw&se=EW&t=D&d={date_tpex}"
-            res = requests.get(url_tpex, headers=headers, timeout=3)
+            res = requests.get(url_tpex, headers=headers, timeout=4)
             if res.status_code == 200:
                 data = res.json()
                 if "aaData" in data:
                     for row in data["aaData"]:
-                        if row[0].strip() == pure_code:
+                        if str(row[0]).strip() == pure_code:
                             def clean_val(v):
                                 return float(str(v).replace(",", "").strip()) / 1000.0
                             f_net = clean_val(row[7])
@@ -265,37 +267,55 @@ def fetch_institutional_investors(pure_code: str, df_dates: pd.DatetimeIndex, st
             pass
 
         time.sleep(0.04)
+
     return records
 
+
 def fetch_margin_short_data(pure_code: str, df_dates: pd.DatetimeIndex, start_date_exclusive: str = None) -> list:
-    """擷取融資融券買賣增減與餘額 (單位：張)"""
+    """
+    【防呆防錯備註 2026-11-08】【嚴禁誤刪】：
+    擷取融資融券買賣增減與餘額 (單位：張)。
+    1. 過濾週六日，防範 TWSE 官方休市直接回傳查無資料。
+    2. 深入搜尋 data.get('tables') 中所有子表格，解決 TWSE MI_MARGN 包含多表格時指定索引越界或找不到個股問題。
+    3. 針對 row[0] 清除前後空白與特殊不可見字元，確保 1303 正確匹配。
+    """
     records = []
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
     }
 
-    # 【防呆防錯備註 2026-11-07】：增量過濾，若指定 start_date 僅抓取之後的缺漏日期
     if start_date_exclusive:
         sample_dates = [d for d in df_dates if d.strftime('%Y-%m-%d') > start_date_exclusive]
     else:
-        sample_dates = df_dates[-30:]
+        sample_dates = df_dates[-40:]
 
     if not sample_dates:
         return []
 
     for dt in sample_dates:
+        if dt.weekday() >= 5:  # 過濾週六日
+            continue
+
         date_twse = dt.strftime('%Y%m%d')
         date_str = dt.strftime('%Y-%m-%d')
-
         url_twse = f"https://www.twse.com.tw/rwd/zh/marginTrading/MI_MARGN?date={date_twse}&selectType=ALL&response=json"
+
+        matched = False
         try:
-            res = requests.get(url_twse, headers=headers, timeout=3)
+            res = requests.get(url_twse, headers=headers, timeout=4)
             if res.status_code == 200:
                 data = res.json()
-                if data.get("stat") == "OK" and "tables" in data:
-                    table = data["tables"][0]
-                    for row in table.get("data", []):
-                        if row[0].strip() == pure_code:
+                if data.get("stat") == "OK":
+                    all_rows = []
+                    # 容錯處理：可能在 tables 內，亦可能在 data 內
+                    if "tables" in data:
+                        for tbl in data["tables"]:
+                            all_rows.extend(tbl.get("data", []))
+                    elif "data" in data:
+                        all_rows.extend(data.get("data", []))
+
+                    for row in all_rows:
+                        if len(row) >= 13 and str(row[0]).strip().replace("\u3000", "") == pure_code:
                             def clean_val(v):
                                 return float(str(v).replace(",", "").strip())
                             m_diff = clean_val(row[5])
@@ -303,21 +323,26 @@ def fetch_margin_short_data(pure_code: str, df_dates: pd.DatetimeIndex, start_da
                             s_diff = clean_val(row[11])
                             s_bal = clean_val(row[12])
                             records.append((date_str, m_diff, s_diff, m_bal, s_bal))
+                            matched = True
                             break
-                    continue
         except Exception:
             pass
 
+        if matched:
+            time.sleep(0.04)
+            continue
+
+        # 上櫃 TPEX 備援查詢
         try:
             year_tw = dt.year - 1911
             date_tpex = f"{year_tw}/{dt.strftime('%m/%d')}"
             url_tpex = f"https://www.tpex.org.tw/web/stock/margin_trading/margin_balance/margin_bal_result.php?l=zh-tw&d={date_tpex}"
-            res = requests.get(url_tpex, headers=headers, timeout=3)
+            res = requests.get(url_tpex, headers=headers, timeout=4)
             if res.status_code == 200:
                 data = res.json()
                 if "aaData" in data:
                     for row in data["aaData"]:
-                        if row[0].strip() == pure_code:
+                        if len(row) >= 12 and str(row[0]).strip().replace("\u3000", "") == pure_code:
                             def clean_val(v):
                                 return float(str(v).replace(",", "").strip())
                             m_diff = clean_val(row[4])
@@ -330,7 +355,9 @@ def fetch_margin_short_data(pure_code: str, df_dates: pd.DatetimeIndex, start_da
             pass
 
         time.sleep(0.04)
+
     return records
+
 
 def fetch_tdcc_holding_data(pure_code: str) -> list:
     """擷取集保大戶持股分級資料 (集保結算所 TDCC 官方來源)"""
