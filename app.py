@@ -1,6 +1,6 @@
 """
 app.py - 主應用程式介面與生命週期控制
-版本: 202611072054
+版本: 202611081927
 """
 import os
 import time
@@ -10,7 +10,7 @@ import streamlit.components.v1 as components
 import cloud_sync
 
 MODULE_NAME = "app"
-MODULE_VERSION = "202611072054"
+MODULE_VERSION = "202611081927"
 
 # 【防呆防錯備註 2026-11-07】：版本控制權由 app.py 作為唯一權威源，動態掃描所有模組最大版本號，杜絕多頭覆寫與重工
 def get_system_version() -> str:
