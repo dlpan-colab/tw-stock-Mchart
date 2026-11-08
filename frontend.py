@@ -1,13 +1,13 @@
 """
-frontend.py - 前端 HTML/CSS 渲染與手勢/游標跨圖同步模組 (分段適配指數/個股副圖軸同步、吸附回彈與自適應高低價版)
-版本: 202611082020
+frontend.py - 前端 HTML/CSS 渲染與手勢/游標跨圖同步模組 (分段適配指數/個股副圖軸同步、吸附回彈看門狗與自適應高低價版)
+版本: 202611082105
 """
 
 MODULE_NAME = "frontend"
-MODULE_VERSION = "202611082020"
+MODULE_VERSION = "202611082105"
 
 
-def get_legend_html(version_tag: str = "202611082020") -> str:
+def get_legend_html(version_tag: str = "202611082105") -> str:
     return f"""
     <div style="font-size: 14px; margin-bottom: 4px; padding: 2px 8px; display: inline-flex; align-items: center; background: #f8fafc; border-radius: 4px; border: 1px solid #e2e8f0;">
         <span style="background:#2c3e50; color:#ffffff; padding: 2px 8px; border-radius: 4px; font-weight:bold; font-size:12px;">台股技術與籌碼分析 v{version_tag}</span>
@@ -135,6 +135,7 @@ js_template = """
 
   var totalPoints = dates.length;
   var isUpdating = false;
+  var watchdogTimer = null;
 
   var targetDays = Number(__INITIAL_DISP_DAYS__) || 20;
   var initEnd = __INITIAL_END_IDX__;
@@ -260,18 +261,27 @@ js_template = """
         if (isUpdating) return;
 
         // 【防呆防錯備註 2026-11-08】【修訂目的】：
-        // 同時解析 xaxis 與 xaxis2 的 range，確保在任一子圖拖曳皆能正確捕獲 X 軸平移區間。
+        // 捕獲水平平移事件範圍，忽略無效的垂直拖動
         var r0 = ed['xaxis.range[0]'] !== undefined ? ed['xaxis.range[0]'] : (ed['xaxis.range'] ? ed['xaxis.range'][0] : (ed['xaxis2.range[0]'] !== undefined ? ed['xaxis2.range[0]'] : (ed['xaxis2.range'] ? ed['xaxis2.range'][0] : null)));
         var r1 = ed['xaxis.range[1]'] !== undefined ? ed['xaxis.range[1]'] : (ed['xaxis.range'] ? ed['xaxis.range'][1] : (ed['xaxis2.range[1]'] !== undefined ? ed['xaxis2.range[1]'] : (ed['xaxis2.range'] ? ed['xaxis2.range'][1] : null)));
         var auto = ed['xaxis.autorange'] || ed['xaxis2.autorange'];
 
-        // 忽略非水平平移的所有垂直拖拉事件
         if (r0 === null && r1 === null && !auto) {
           return;
         }
 
         if (r0 !== null && r1 !== null) {
+          // 【防呆防錯備註 2026-11-08】【看門狗機制】：
+          // 若手勢結算時新座標與當前已記錄之範圍完全相同，直接跳過不發 relayout，阻斷回圈
+          if (Math.abs(r0 - currentR0) < 0.001 && Math.abs(r1 - currentR1) < 0.001) {
+            return;
+          }
+
           isUpdating = true;
+          if (watchdogTimer) clearTimeout(watchdogTimer);
+          // 逾時看門狗：120ms 後無條件解除鎖定，杜絕第二次平移無法回彈的死結
+          watchdogTimer = setTimeout(function() { isUpdating = false; }, 120);
+
           var span = r1 - r0;
           var maxBound = (totalPoints - 1) + 0.5;
 
@@ -284,7 +294,6 @@ js_template = """
           currentR0 = r0;
           currentR1 = r1;
 
-          // 【防呆防錯備註 2026-11-08】【修訂目的】：
           // 依據當前平移後的視窗區間 [r0, r1]，重算畫面內真實最大與最小值
           var visibleBounds = calcVisibleBounds(r0, r1);
           currentPriceRange = visibleBounds.priceRange;
@@ -297,18 +306,27 @@ js_template = """
             topXUpd['xaxis2.autorange'] = false;
           }
 
-          // 【防呆防錯備註 2026-11-08】【修訂目的】：
-          // 分開處理副圖同步：Row 1~3 (KD/MACD/OBV) 為個股與指數共通，必同步；
-          // Row 4~9 (法人/資券/集保) 僅在非指數模式且該軸真實存在時才同步，
-          // 徹底根除加權指數模式下向不存在空軸發出 relayout 導致 Plotly 例外中斷回彈與自適應之缺陷。
+          // 【防呆防錯備註 2026-11-08】【副圖分兩類處理】：
+          // 1. Row 1~3 (KD/MACD/OBV) 為個股與指數共通，必同步
+          // 2. Row 4~9 (法人/資券/集保) 僅在非指數模式且該軸真實存在時才同步
           var btmUpd = {};
           if (elBtm && elBtm.layout) {
-            var maxSyncRow = isIndexAsset ? 3 : 9;
-            for (var i = 1; i <= maxSyncRow; i++) {
+            // 第一類：共通副圖 Row 1~3
+            for (var i = 1; i <= 3; i++) {
               var ax = (i === 1) ? 'xaxis' : 'xaxis' + i;
               if (elBtm.layout[ax]) {
                 btmUpd[ax + '.range'] = [r0, r1];
                 btmUpd[ax + '.autorange'] = false;
+              }
+            }
+            // 第二類：個股專屬副圖 Row 4~9
+            if (!isIndexAsset) {
+              for (var i = 4; i <= 9; i++) {
+                var ax = 'xaxis' + i;
+                if (elBtm.layout[ax]) {
+                  btmUpd[ax + '.range'] = [r0, r1];
+                  btmUpd[ax + '.autorange'] = false;
+                }
               }
             }
           }
@@ -332,19 +350,27 @@ js_template = """
             }).finally(function() {
               setTimeout(function() {
                 isUpdating = false;
-              }, 30);
+              }, 20);
             });
           }, 0);
 
         } else if (auto) {
           isUpdating = true;
+          if (watchdogTimer) clearTimeout(watchdogTimer);
+          watchdogTimer = setTimeout(function() { isUpdating = false; }, 120);
+
           var updTopAuto = { 'xaxis.autorange': true };
           var updBtmAuto = {};
           if (elBtm && elBtm.layout) {
-            var maxAutoRow = isIndexAsset ? 3 : 9;
-            for (var j = 1; j <= maxAutoRow; j++) {
+            for (var j = 1; j <= 3; j++) {
               var axAuto = (j === 1) ? 'xaxis' : 'xaxis' + j;
               if (elBtm.layout[axAuto]) updBtmAuto[axAuto + '.autorange'] = true;
+            }
+            if (!isIndexAsset) {
+              for (var j = 4; j <= 9; j++) {
+                var axAuto = 'xaxis' + j;
+                if (elBtm.layout[axAuto]) updBtmAuto[axAuto + '.autorange'] = true;
+              }
             }
           }
           setTimeout(function() {
@@ -353,7 +379,7 @@ js_template = """
             Promise.all([pa1, pa2]).finally(function() {
               setTimeout(function() {
                 isUpdating = false;
-              }, 30);
+              }, 20);
             });
           }, 0);
         }
@@ -434,7 +460,7 @@ def render_interactive_chart_html(
     btm_height=1180,
     initial_disp_days=20,
     initial_end_idx=None,
-    version_tag="202611082020",
+    version_tag="202611082105",
     is_index=False
 ) -> str:
     import json
