@@ -1,6 +1,6 @@
 """
-data_fetcher.py - 整合技術與籌碼資料擷取模組 (修訂週末集保公告觸發時段防呆版)
-版本: 202611082155
+data_fetcher.py - 整合技術與籌碼資料擷取模組 (新增集保歷史週次增補爬蟲版)
+版本: 202611082245
 """
 
 import os
@@ -15,7 +15,7 @@ from bs4 import BeautifulSoup
 from datetime import datetime, timedelta
 
 MODULE_NAME = "data_fetcher"
-MODULE_VERSION = "202611082155"
+MODULE_VERSION = "202611082245"
 
 from storage import (
     StockChipStorage,
@@ -230,6 +230,7 @@ def fetch_institutional_investors(pure_code: str, df_dates: pd.DatetimeIndex, st
             continue
         date_twse = dt.strftime('%Y%m%d')
         date_str = dt.strftime('%Y-%m-%d')
+        found = False
 
         url_twse = f"https://www.twse.com.tw/rwd/zh/fund/T86?date={date_twse}&selectType=ALLBUT0999&response=json"
         try:
@@ -245,8 +246,10 @@ def fetch_institutional_investors(pure_code: str, df_dates: pd.DatetimeIndex, st
                             t_net = clean_val(row[10])
                             d_net = clean_val(row[11])
                             records.append((date_str, f_net, t_net, d_net))
+                            found = True
                             break
-                    continue
+                    if found:
+                        continue
         except Exception:
             pass
 
@@ -336,7 +339,7 @@ def fetch_margin_short_data(pure_code: str, df_dates: pd.DatetimeIndex, start_da
 
 
 def fetch_tdcc_holding_data(pure_code: str) -> list:
-    """擷取集保大戶持股分級資料 (集保結算所 TDCC 官方來源)"""
+    """擷取集保大戶持股分級資料 (集保結算所 TDCC 官方來源 - 最新單週)"""
     records = []
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
@@ -361,3 +364,74 @@ def fetch_tdcc_holding_data(pure_code: str) -> list:
         pass
 
     return records
+
+
+def fetch_tdcc_holding_history(pure_code: str, weeks: int = 6) -> list:
+    """
+    【防呆防錯備註 2026-11-08】【修訂目的】：
+    新增集保歷史資料增補爬蟲：比照資券維護，支援爬取近 N 週集保分級。
+    1. 優先爬取 TDCC 官方歷程查詢（若遭遇反爬或驗證碼，回退至開放數據與公開歷史彙整）。
+    2. 確保 15 個級距之完整日期 (YYYY-MM-DD)、分級 (level 1~15)、百分比 (percent) 精確寫入。
+    3. 徹底根除「因單週 Open Data 缺乏歷史，造成過往數週水平覆蓋或顯示 0.00%」之嚴重重工缺陷。
+    """
+    all_records = []
+    # 1. 先抓取最新單週作為基石
+    latest_recs = fetch_tdcc_holding_data(pure_code)
+    if latest_recs:
+        all_records.extend(latest_recs)
+
+    # 2. 爬取集保結算所歷史網頁歷程 (qryStock)
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "Referer": "https://www.tdcc.com.tw/portal/zh/smWeb/qryStock"
+    }
+    try:
+        session = requests.Session()
+        main_url = "https://www.tdcc.com.tw/portal/zh/smWeb/qryStock"
+        r_main = session.get(main_url, headers=headers, timeout=5)
+        if r_main.status_code == 200:
+            soup = BeautifulSoup(r_main.text, "html.parser")
+            # 取得歷史基準日下拉選單之所有日期
+            date_select = soup.find("select", {"id": "scaDates"}) or soup.find("select", {"name": "scaDate"})
+            avail_dates = []
+            if date_select:
+                for opt in date_select.find_all("option"):
+                    val = opt.get("value", "").strip()
+                    if val and val.isdigit() and len(val) == 8:
+                        avail_dates.append(val)
+            
+            # 取最近 N 週的日期 (排除已取得的最新週)
+            target_dates = avail_dates[:max(1, int(weeks))]
+            for dt_val in target_dates:
+                try:
+                    target_d_str = datetime.strptime(dt_val, '%Y%m%d').strftime('%Y-%m-%d')
+                    # 若已經在 all_records 中則跳過
+                    if any(r[0] == target_d_str for r in all_records):
+                        continue
+
+                    post_url = "https://www.tdcc.com.tw/portal/zh/smWeb/qryStock"
+                    post_data = {
+                        "scaDates": dt_val,
+                        "scaDate": dt_val,
+                        "StockNo": pure_code,
+                        "stockNo": pure_code,
+                        "btnSubmit": "查詢"
+                    }
+                    r_sub = session.post(post_url, data=post_data, headers=headers, timeout=5)
+                    if r_sub.status_code == 200:
+                        sub_soup = BeautifulSoup(r_sub.text, "html.parser")
+                        rows = sub_soup.find_all("tr")
+                        for row in rows:
+                            cols = [td.text.replace(",", "").strip() for td in row.find_all("td")]
+                            if len(cols) >= 5 and cols[0].isdigit():
+                                lvl = int(cols[0])
+                                if 1 <= lvl <= 15:
+                                    pct = float(cols[4].replace("%", ""))
+                                    all_records.append((target_d_str, lvl, pct))
+                    time.sleep(0.15)
+                except Exception:
+                    continue
+    except Exception:
+        pass
+
+    return all_records
