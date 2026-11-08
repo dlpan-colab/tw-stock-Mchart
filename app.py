@@ -10,7 +10,7 @@ import streamlit.components.v1 as components
 import cloud_sync
 
 MODULE_NAME = "app"
-MODULE_VERSION = "202611081927"
+MODULE_VERSION = "202611082105"
 
 # 【防呆防錯備註 2026-11-07】：版本控制權由 app.py 作為唯一權威源，動態掃描所有模組最大版本號，杜絕多頭覆寫與重工
 def get_system_version() -> str:
@@ -387,20 +387,24 @@ if not stock_id.startswith("^") and c_name and c_name != stock_id:
 
 top_height = 420 if is_mobile else 460
 btm_height = 1180 if is_mobile else 1220
-
-html_content = get_component_html(
-    fig_top=fig_top,
-    fig_btm=fig_btm,
-    df=df,
-    m1_thresh=m1_thresh,
-    m2_thresh=m2_thresh,
-    top_height=top_height,
-    btm_height=btm_height,
-    initial_disp_days=disp_n,
-    initial_end_idx=end_idx,
-    version_tag=SYSTEM_VERSION
-)
-
+## 20261108 加權數向左平移時無法觸發回彈至右端。[開始]
+# 【防呆防錯備註 2026-11-08】【修訂目的】：
+    # 傳入 is_index 旗標，精確告知前端 JS 是否為指數標的，
+    # 供 frontend.py 將副圖軸分為兩類同步 (Row 1~3 指數/個股共通，Row 4~9 僅個股)，杜絕空軸中斷平移回彈。
+    html_content = get_component_html(
+        fig_top=fig_top,
+        fig_btm=fig_btm,
+        df=df,
+        m1_thresh=m1_thresh,
+        m2_thresh=m2_thresh,
+        top_height=top_height,
+        btm_height=btm_height,
+        initial_disp_days=disp_n,
+        initial_end_idx=end_idx,
+        version_tag=SYSTEM_VERSION,
+        is_index=stock_id.startswith("^")
+    )
+## 20261108 加權數向左平移時無法觸發回彈至右端。[結束]
 total_h = 1980 if is_mobile else 1880
 components.html(html_content, height=total_h, scrolling=False)
 
