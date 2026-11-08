@@ -1,6 +1,6 @@
 """
-app.py - 主應用程式介面與生命週期控制 (新增獨立大戶持股比例維護功能版)
-版本: 202611082230
+app.py - 主應用程式介面與生命週期控制 (升級大戶持股近N週歷史增補功能版)
+版本: 202611082250
 """
 
 import os
@@ -11,7 +11,7 @@ import streamlit.components.v1 as components
 import cloud_sync
 
 MODULE_NAME = "app"
-MODULE_VERSION = "202611082230"
+MODULE_VERSION = "202611082250"
 
 
 # 【防呆防錯備註 2026-11-07】：版本控制權由 app.py 作為唯一權威源，動態掃描所有模組最大版本號，杜絕多頭覆寫與重工
@@ -314,9 +314,6 @@ with st.sidebar:
             st.sidebar.warning("指數標的無資券資料。")
         else:
             with st.spinner(f"正在重新爬取 {cur_code} 近 {refetch_weeks} 週資券紀錄..."):
-                # 【防呆防錯備註 2026-11-08】【修訂目的】：
-                # 點擊按鈕時直接發動 TWSE/TPEX 爬蟲爬取近 N 週資券，寫入資料庫後再清空快取並刷新，
-                # 杜絕「重抓按鈕僅刪除資料庫，但重跑時因未勾選強制更新而未抓取，導致資料全空」之重工缺陷。
                 try:
                     from data_fetcher import fetch_stock_daily_k, fetch_margin_short_data
                     from storage import StockChipStorage
@@ -345,38 +342,40 @@ with st.sidebar:
                 st.rerun()
     ## 20261108 修訂強制更新資券資料 [結束]
 
-    ## 20261108 新增大戶持股比例維護功能 [開始]
+    ## 20261108 升級大戶持股比例歷史增補功能 [開始]
     st.markdown("---")
     st.subheader("大戶持股維護")
     st.caption("ℹ️ 集保於當週各交易日不予公告，直到當週最後交易日之次日（週六）公布。")
-    if st.button("🛠️ 強制重抓最新集保大戶", use_container_width=True):
+    refetch_holding_weeks = st.number_input("重抓集保週數", min_value=1, max_value=24, value=6, step=1)
+    if st.button("🛠️ 增補近N週集保歷史", use_container_width=True):
         cur_code = str(st.session_state.stock_id).strip()
         if cur_code.startswith("^"):
             st.sidebar.warning("指數標的無集保大戶資料。")
         else:
-            with st.spinner(f"正在連線集保結算所 (TDCC) 擷取 {cur_code} 最新大戶資料..."):
+            with st.spinner(f"正在連線集保結算所 (TDCC) 增補 {cur_code} 近 {refetch_holding_weeks} 週歷史分級..."):
                 # 【防呆防錯備註 2026-11-08】【修訂目的】：
-                # 比照資券維護，提供獨立集保抓取按鈕。
-                # 嚴格落實「當週交易日期間不予公告，直到當週最後交易日之次日」之業務規則。
-                # 直接發動 TDCC 官方 Open Data 抓取並寫入 SQLite，杜絕快取殘留造成數值顯示為 0.00% 之缺陷。
+                # 提供近 N 週集保分級歷史回補能力。
+                # 呼叫 fetch_tdcc_holding_history 逐週爬取 15 個級距寫入 SQLite，
+                # 徹底修復歷史漏週造成折線平拉、數據沿用錯誤之問題。
                 try:
-                    from data_fetcher import fetch_tdcc_holding_data
+                    from data_fetcher import fetch_tdcc_holding_history
                     from storage import StockChipStorage
 
-                    holding_records = fetch_tdcc_holding_data(cur_code)
+                    holding_records = fetch_tdcc_holding_history(cur_code, weeks=refetch_holding_weeks)
                     if holding_records and len(holding_records) > 0:
                         storage = StockChipStorage(cur_code)
                         storage.save_holding_data(holding_records)
-                        latest_h_date = holding_records[0][0]
-                        st.sidebar.success(f"成功更新 {cur_code} 最新集保！基準日: {latest_h_date} (共 {len(holding_records)} 級距)")
+                        # 計算涵蓋的基準日週數
+                        unique_dates = sorted(list(set(r[0] for r in holding_records)))
+                        st.sidebar.success(f"成功增補 {cur_code} 共 {len(unique_dates)} 週 ({unique_dates[0]} ~ {unique_dates[-1]}) 集保歷史分級！")
                     else:
-                        st.sidebar.warning(f"TDCC 暫未取得 {cur_code} 有效大戶資料 (若未屆次日公告期請稍候)。")
+                        st.sidebar.warning(f"TDCC 暫未取得 {cur_code} 有效大戶資料。")
                 except Exception as e:
-                    st.sidebar.error(f"重抓集保發生異常: {e}")
+                    st.sidebar.error(f"增補集保發生異常: {e}")
                 get_cached_figures.clear()
                 time.sleep(1.0)
                 st.rerun()
-    ## 20261108 新增大戶持股比例維護功能 [結束]
+    ## 20261108 升級大戶持股比例歷史增補功能 [結束]
 
 auth_status = cloud_sync.get_auth_status()
 if auth_status == 2:
