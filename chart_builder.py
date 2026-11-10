@@ -1,9 +1,10 @@
 """
-chart_builder.py - Plotly 圖表建置模組 (Y軸物理鎖死 fixedrange=True 杜絕位移回彈，開放程式重算最適高低價)
-版本: 202611072305
+chart_builder.py - Plotly 圖表建置模組 (傳遞 full_ticker 市場別版)
+版本: 202611102235
 """
+
 MODULE_NAME = "chart_builder"
-MODULE_VERSION = "202611072305"
+MODULE_VERSION = "202611102235"
 
 from typing import Tuple, Optional
 import numpy as np
@@ -34,7 +35,6 @@ def build_split_figures(
     df_raw = k_res[0]
     full_ticker = k_res[1]
     shares_outstanding = k_res[2] if len(k_res) >= 3 else None
-
     c_name = fetch_stock_name(raw_ticker)
 
     if str(raw_ticker).startswith("^"):
@@ -46,6 +46,7 @@ def build_split_figures(
     else:
         market_label = "海外"
 
+    # 【防呆防錯備註 2026-11-10】：將已確認之 full_ticker 傳入計算函式，確保籌碼能精準鎖定市場別
     df = calculate_all_indicators(
         df=df_raw,
         pure_code=raw_ticker,
@@ -53,14 +54,15 @@ def build_split_figures(
         major2_thresh=major2_thresh,
         shares_outstanding=shares_outstanding,
         status_placeholder=status_placeholder,
-        force_refresh=force_refresh
+        force_refresh=force_refresh,
+        full_ticker=full_ticker
     )
 
     date_str_list = [d.strftime('%Y-%m-%d') for d in df.index]
     total_len = len(df)
     disp_n = min(int(display_days), total_len)
-
     end_idx = total_len - 1
+
     if base_date is not None:
         try:
             target_ts = pd.to_datetime(base_date)
@@ -211,20 +213,24 @@ def build_split_figures(
         fig_top.add_trace(go.Scatter(
             x=[date_str_list[i] for i in range(total_len) if to_10_mask.iloc[i]],
             y=df.loc[to_10_mask, 'Volume_Sheets'] * 1.06,
-            mode='text', text=['▲' for _ in range(to_10_mask.sum())],
+            mode='text',
+            text=['▲' for _ in range(to_10_mask.sum())],
             textposition='top center',
             textfont=dict(family='Arial Black, sans-serif', size=14, color='#1e3799'),
-            showlegend=False, hoverinfo='none'
+            showlegend=False,
+            hoverinfo='none'
         ), row=2, col=1)
 
     if to_20_mask.any():
         fig_top.add_trace(go.Scatter(
             x=[date_str_list[i] for i in range(total_len) if to_20_mask.iloc[i]],
             y=df.loc[to_20_mask, 'Volume_Sheets'] * 1.06,
-            mode='text', text=['▼' for _ in range(to_20_mask.sum())],
+            mode='text',
+            text=['▼' for _ in range(to_20_mask.sum())],
             textposition='top center',
             textfont=dict(family='Arial Black, sans-serif', size=14, color='#f1c40f'),
-            showlegend=False, hoverinfo='none'
+            showlegend=False,
+            hoverinfo='none'
         ), row=2, col=1)
 
     fig_top.update_layout(
@@ -242,7 +248,6 @@ def build_split_figures(
     fig_top.update_xaxes(type='category', range=[start_idx - 0.5, end_idx + 0.5], domain=[0, 1], showspikes=False, tickfont=dict(size=11), row=1, col=1)
     fig_top.update_xaxes(type='category', range=[start_idx - 0.5, end_idx + 0.5], domain=[0, 1], showticklabels=True, tickvals=month_ticks_vals, ticktext=month_ticks_text, showspikes=False, tickfont=dict(size=11), row=2, col=1)
 
-    # 【防呆防錯備註 2026-11-07】：恢復原生 fixedrange=True 物理鎖死手勢拖動，杜絕垂直移位與回彈
     fig_top.update_yaxes(title_text='', range=[p_min - (p_max - p_min) * 0.08, p_max + p_pad], fixedrange=True, showspikes=False, tickfont=dict(size=11), row=1, col=1)
     fig_top.update_yaxes(title_text='', range=[0, vol_upper], fixedrange=True, showspikes=False, tickfont=dict(size=11), row=2, col=1)
 
@@ -252,7 +257,17 @@ def build_split_figures(
         shared_xaxes=True,
         vertical_spacing=0.02,
         row_heights=[0.13, 0.12, 0.11, 0.10, 0.10, 0.10, 0.14, 0.10, 0.10],
-        specs=[[{}], [{}], [{}], [{}], [{}], [{}], [{"secondary_y": True}], [{}], [{}]]
+        specs=[
+            [{}],
+            [{}],
+            [{}],
+            [{}],
+            [{}],
+            [{}],
+            [{"secondary_y": True}],
+            [{}],
+            [{}]
+        ]
     )
 
     fig_btm.add_trace(go.Scatter(x=date_str_list, y=df['K'], line=dict(color='#e74c3c', width=1.2), hoverinfo='none'), row=1, col=1)
@@ -284,10 +299,11 @@ def build_split_figures(
         fig_btm.add_trace(go.Bar(x=date_str_list, y=df['Margin_Diff'], marker_color=m_colors, name='融資', width=0.4, offset=-0.4, hoverinfo='none'), secondary_y=False, row=7, col=1)
         fig_btm.add_trace(go.Bar(x=date_str_list, y=df['Short_Diff'], marker_color=s_colors, name='融券', width=0.4, offset=0.0, hoverinfo='none'), secondary_y=False, row=7, col=1)
         fig_btm.add_hline(y=0, line_color='rgba(150,150,150,0.7)', line_width=1, secondary_y=False, row=7, col=1)
-        fig_btm.add_trace(go.Scatter(x=date_str_list, y=df['Short_Margin_Ratio'], line=dict(color='#e67e22', width=1.5), connectgaps=True, hoverinfo='none', name='券資比'), secondary_y=True, row=7, col=1)
 
-        fig_btm.add_trace(go.Scatter(x=date_str_list, y=df['Major1_Pct'], line=dict(color='#c0392b', width=1.5, shape='hv'), connectgaps=True, hoverinfo='none'), row=8, col=1)
-        fig_btm.add_trace(go.Scatter(x=date_str_list, y=df['Major2_Pct'], line=dict(color='#8e44ad', width=1.5, shape='hv'), connectgaps=True, hoverinfo='none'), row=9, col=1)
+        fig_btm.add_trace(go.Scatter(x=date_str_list, y=df['Short_Margin_Ratio'], line=dict(color='#e67e22', width=1.5), connectgaps=True, hoverinfo='none', name='券資比%'), secondary_y=True, row=7, col=1)
+
+        fig_btm.add_trace(go.Scatter(x=date_str_list, y=df['Major1_Pct'], line=dict(color='#e74c3c', width=1.5), connectgaps=True, hoverinfo='none'), row=8, col=1)
+        fig_btm.add_trace(go.Scatter(x=date_str_list, y=df['Major2_Pct'], line=dict(color='#3498db', width=1.5), connectgaps=True, hoverinfo='none'), row=9, col=1)
 
     fig_btm.update_layout(
         font=dict(size=12),
@@ -296,25 +312,24 @@ def build_split_figures(
         dragmode='pan',
         showlegend=False,
         height=btm_height,
-        margin=dict(l=80, r=15, t=10, b=30, autoexpand=False),
+        margin=dict(l=80, r=15, t=10, b=10, autoexpand=False),
         xaxis_rangeslider_visible=False
     )
 
     for r in range(1, 10):
-        fig_btm.update_xaxes(type='category', range=[start_idx - 0.5, end_idx + 0.5], domain=[0, 1], showspikes=False, tickfont=dict(size=11), row=r, col=1)
+        fig_btm.update_xaxes(type='category', range=[start_idx - 0.5, end_idx + 0.5], showticklabels=False, showspikes=False, tickfont=dict(size=11), row=r, col=1)
 
-    fig_btm.update_xaxes(type='category', range=[start_idx - 0.5, end_idx + 0.5], domain=[0, 1], showticklabels=True, tickvals=month_ticks_vals, ticktext=month_ticks_text, tickfont=dict(size=11), row=9, col=1)
+    fig_btm.update_yaxes(title_text='KD', range=[0, 100], fixedrange=True, showspikes=False, tickfont=dict(size=11), row=1, col=1)
+    fig_btm.update_yaxes(title_text='MACD', range=[macd_min - macd_pad, macd_max + macd_pad], fixedrange=True, showspikes=False, tickfont=dict(size=11), row=2, col=1)
+    fig_btm.update_yaxes(title_text='OBV', range=[obv_min - obv_pad, obv_max + obv_pad], fixedrange=True, showspikes=False, tickfont=dict(size=11), row=3, col=1)
 
-    fig_btm.update_yaxes(title_text='KD', title_font=dict(size=12), tickfont=dict(size=11), range=[0, 100], fixedrange=True, row=1, col=1)
-    fig_btm.update_yaxes(title_text='MACD', title_font=dict(size=12), tickfont=dict(size=11), range=[macd_min - macd_pad, macd_max + macd_pad], fixedrange=True, row=2, col=1)
-    fig_btm.update_yaxes(title_text='OBV', title_font=dict(size=12), tickfont=dict(size=11), range=[obv_min - obv_pad, obv_max + obv_pad], fixedrange=True, row=3, col=1)
-
-    fig_btm.update_yaxes(title_text='外資', title_font=dict(size=12), tickfont=dict(size=11), range=fn_range, fixedrange=True, row=4, col=1)
-    fig_btm.update_yaxes(title_text='投信', title_font=dict(size=12), tickfont=dict(size=11), range=tn_range, fixedrange=True, row=5, col=1)
-    fig_btm.update_yaxes(title_text='自營', title_font=dict(size=12), tickfont=dict(size=11), range=dn_range, fixedrange=True, row=6, col=1)
-    fig_btm.update_yaxes(title_text='資券', title_font=dict(size=12), tickfont=dict(size=11), range=ms_range, fixedrange=True, secondary_y=False, row=7, col=1)
-    fig_btm.update_yaxes(title_text='', range=ratio_range, fixedrange=True, secondary_y=True, showgrid=False, showticklabels=False, row=7, col=1)
-    fig_btm.update_yaxes(title_text=f'≥{major1_thresh}', title_font=dict(size=12), tickfont=dict(size=11), range=m1_range, fixedrange=True, row=8, col=1)
-    fig_btm.update_yaxes(title_text=f'≥{major2_thresh}', title_font=dict(size=12), tickfont=dict(size=11), range=m2_range, fixedrange=True, row=9, col=1)
+    if not is_index:
+        fig_btm.update_yaxes(title_text='外資', range=fn_range, fixedrange=True, showspikes=False, tickfont=dict(size=11), row=4, col=1)
+        fig_btm.update_yaxes(title_text='投信', range=tn_range, fixedrange=True, showspikes=False, tickfont=dict(size=11), row=5, col=1)
+        fig_btm.update_yaxes(title_text='自營', range=dn_range, fixedrange=True, showspikes=False, tickfont=dict(size=11), row=6, col=1)
+        fig_btm.update_yaxes(title_text='資券', range=ms_range, fixedrange=True, showspikes=False, tickfont=dict(size=11), secondary_y=False, row=7, col=1)
+        fig_btm.update_yaxes(title_text='', range=ratio_range, showgrid=False, showticklabels=False, fixedrange=True, showspikes=False, tickfont=dict(size=11), secondary_y=True, row=7, col=1)
+        fig_btm.update_yaxes(title_text=f'≥{major1_thresh}', range=m1_range, fixedrange=True, showspikes=False, tickfont=dict(size=11), row=8, col=1)
+        fig_btm.update_yaxes(title_text=f'≥{major2_thresh}', range=m2_range, fixedrange=True, showspikes=False, tickfont=dict(size=11), row=9, col=1)
 
     return fig_top, fig_btm, df, c_name, end_idx, disp_n
