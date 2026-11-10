@@ -1,10 +1,10 @@
 """
-chart_builder.py - Plotly 圖表建置模組 (修復副圖最底層月份刻度顯示與精確對齊版)
-版本: 202611102305
+chart_builder.py - Plotly 圖表建置模組 (依昨日架構鎖定 domain 垂直對齊與底層月份刻度恢復版)
+版本: 202611102310
 """
 
 MODULE_NAME = "chart_builder"
-MODULE_VERSION = "202611102305"
+MODULE_VERSION = "202611102310"
 
 from typing import Tuple, Optional
 import numpy as np
@@ -312,18 +312,18 @@ def build_split_figures(
         dragmode='pan',
         showlegend=False,
         height=btm_height,
-        margin=dict(l=80, r=15, t=10, b=25, autoexpand=False),
+        margin=dict(l=80, r=15, t=10, b=30, autoexpand=False),
         xaxis_rangeslider_visible=False
     )
 
     # 【防呆防錯備註 2026-11-10】【修訂目的】：
-    # 1. 第 1～8 列副圖維持隱藏刻度文字 (showticklabels=False)。
-    # 2. 第 9 列副圖（最底層）設定 showticklabels=True，並載入月份刻度標籤，恢復月份座標顯示。
-    for r in range(1, 9):
+    # 1. 恢復所有副圖軸之 domain=[0, 1]，防止 secondary_y 自動擠壓副圖右側寬度產生垂直錯位。
+    # 2. 第 1～8 列保持隱藏刻度文字，第 9 列（最底層）設定 showticklabels=True 並帶入月份刻度標籤。
+    for r in range(1, 10):
         fig_btm.update_xaxes(
             type='category',
             range=[start_idx - 0.5, end_idx + 0.5],
-            showticklabels=False,
+            domain=[0, 1],
             showspikes=False,
             tickfont=dict(size=11),
             row=r, col=1
@@ -332,10 +332,10 @@ def build_split_figures(
     fig_btm.update_xaxes(
         type='category',
         range=[start_idx - 0.5, end_idx + 0.5],
+        domain=[0, 1],
         showticklabels=True,
         tickvals=month_ticks_vals,
         ticktext=month_ticks_text,
-        showspikes=False,
         tickfont=dict(size=11),
         row=9, col=1
     )
