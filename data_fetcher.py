@@ -1,6 +1,6 @@
 """
-data_fetcher.py - 整合技術與籌碼資料擷取模組 (新增集保歷史週次增補爬蟲版)
-版本: 202611082245
+data_fetcher.py - 整合技術與籌碼資料擷取模組 (修復上櫃三大法人接口與FinMind雙軌備援版)
+版本: 202611102130
 """
 
 import os
@@ -15,7 +15,7 @@ from bs4 import BeautifulSoup
 from datetime import datetime, timedelta
 
 MODULE_NAME = "data_fetcher"
-MODULE_VERSION = "202611082245"
+MODULE_VERSION = "202611102130"
 
 from storage import (
     StockChipStorage,
@@ -172,9 +172,6 @@ def sync_chip_data(pure_code: str, df_dates: pd.DatetimeIndex, status_placeholde
         if not last_holding_date:
             should_fetch_holding = True
         else:
-            # 【防呆防錯備註 2026-11-08】【修訂目的】：
-            # 修正週末集保抓取漏洞：涵蓋週五 20 點後、週六與週日全天，
-            # 杜絕官方於週六/週日公告時，因 weekday 限制導致 diff_days < 7 漏抓之嚴重缺陷。
             diff_days = (now - pd.to_datetime(last_holding_date)).days
             is_weekend_publish = (now.weekday() == 4 and now.hour >= 20) or (now.weekday() in [5, 6])
             if diff_days >= 7:
@@ -211,8 +208,12 @@ def sync_chip_data(pure_code: str, df_dates: pd.DatetimeIndex, status_placeholde
 
 
 def fetch_institutional_investors(pure_code: str, df_dates: pd.DatetimeIndex, start_date_exclusive: str = None) -> list:
-    """擷取三大法人買賣超資料 (單位：張)"""
-    records = []
+    """
+    【防呆防錯備註 2026-11-10】【修訂目的】：
+    升級三大法人擷取為雙軌機制 (TWSE/TPEx 官方爬蟲 + FinMind API 備援)。
+    1. 修正 TPEx 櫃買中心接口解析，支援上櫃股票 (如 6425) 官方三大法人欄位。
+    2. 若官方介面逾時或遭遇反爬，自動切換至 FinMind API 補齊，杜絕 11/5~11/6 等歷史資料空缺。
+    """
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
     }
@@ -220,11 +221,21 @@ def fetch_institutional_investors(pure_code: str, df_dates: pd.DatetimeIndex, st
     if start_date_exclusive:
         sample_dates = [d for d in df_dates if d.strftime('%Y-%m-%d') > start_date_exclusive]
     else:
-        sample_dates = df_dates[-30:]
+        sample_dates = list(df_dates[-30:])
 
     if not sample_dates:
         return []
 
+    records = []
+    missing_dates = []
+
+    def clean_val(v):
+        try:
+            return float(str(v).replace(",", "").strip()) / 1000.0
+        except Exception:
+            return 0.0
+
+    # 軌道一：TWSE / TPEx 官方網站逐日抓取
     for dt in sample_dates:
         if dt.weekday() >= 5:
             continue
@@ -232,6 +243,7 @@ def fetch_institutional_investors(pure_code: str, df_dates: pd.DatetimeIndex, st
         date_str = dt.strftime('%Y-%m-%d')
         found = False
 
+        # 1. 爬上市 (TWSE)
         url_twse = f"https://www.twse.com.tw/rwd/zh/fund/T86?date={date_twse}&selectType=ALLBUT0999&response=json"
         try:
             res = requests.get(url_twse, headers=headers, timeout=4)
@@ -240,8 +252,6 @@ def fetch_institutional_investors(pure_code: str, df_dates: pd.DatetimeIndex, st
                 if data.get("stat") == "OK" and "data" in data:
                     for row in data["data"]:
                         if str(row[0]).strip() == pure_code:
-                            def clean_val(v):
-                                return float(str(v).replace(",", "").strip()) / 1000.0
                             f_net = clean_val(row[4])
                             t_net = clean_val(row[10])
                             d_net = clean_val(row[11])
@@ -253,6 +263,7 @@ def fetch_institutional_investors(pure_code: str, df_dates: pd.DatetimeIndex, st
         except Exception:
             pass
 
+        # 2. 爬上櫃 (TPEx)
         try:
             year_tw = dt.year - 1911
             date_tpex = f"{year_tw}/{dt.strftime('%m/%d')}"
@@ -260,32 +271,65 @@ def fetch_institutional_investors(pure_code: str, df_dates: pd.DatetimeIndex, st
             res = requests.get(url_tpex, headers=headers, timeout=4)
             if res.status_code == 200:
                 data = res.json()
-                if "aaData" in data:
-                    for row in data["aaData"]:
+                rows = data.get("aaData") or data.get("tables", [{}])[0].get("data", [])
+                if rows:
+                    for row in rows:
                         if str(row[0]).strip() == pure_code:
-                            def clean_val(v):
-                                return float(str(v).replace(",", "").strip()) / 1000.0
+                            # 外資: 欄位 7, 投信: 欄位 8, 自營: 欄位 9
                             f_net = clean_val(row[7])
                             t_net = clean_val(row[8])
                             d_net = clean_val(row[9])
                             records.append((date_str, f_net, t_net, d_net))
+                            found = True
                             break
         except Exception:
             pass
 
+        if not found:
+            missing_dates.append(date_str)
+
         time.sleep(0.04)
 
+    # 軌道二：若有遺漏日期，由 FinMind API 精準補齊 (上市櫃通用)
+    if missing_dates:
+        try:
+            query_start = min(missing_dates)
+            url_fm = "https://api.finmindtrade.com/api/v4/data"
+            p_fm = {
+                "dataset": "TaiwanStockInstitutionalInvestorsBuySell",
+                "data_id": pure_code,
+                "start_date": query_start,
+                "token": FINMIND_TOKEN
+            }
+            res_fm = requests.get(url_fm, params=p_fm, headers=headers, timeout=5)
+            if res_fm.status_code == 200:
+                fm_data = res_fm.json().get("data", [])
+                if fm_data:
+                    df_fm = pd.DataFrame(fm_data)
+                    # 依日期分組彙整外資、投信、自營商
+                    grouped = df_fm.groupby("date")
+                    for d_str, g in grouped:
+                        if d_str in missing_dates and not any(r[0] == d_str for r in records):
+                            f_net, t_net, d_net = 0.0, 0.0, 0.0
+                            for _, r in g.iterrows():
+                                name = str(r.get("name", ""))
+                                diff_val = (float(r.get("buy", 0) or 0) - float(r.get("sell", 0) or 0)) / 1000.0
+                                if "Foreign_Investor" in name or "外資" in name:
+                                    f_net += diff_val
+                                elif "Investment_Trust" in name or "投信" in name:
+                                    t_net += diff_val
+                                elif "Dealer" in name or "自營商" in name:
+                                    d_net += diff_val
+                            records.append((d_str, f_net, t_net, d_net))
+        except Exception:
+            pass
+
+    records.sort(key=lambda x: x[0])
     return records
 
 
 def fetch_margin_short_data(pure_code: str, df_dates: pd.DatetimeIndex, start_date_exclusive: str = None) -> list:
-    """
-    【防呆防錯備註 2026-11-08】【修訂目的】：
-    完全復原 11/05 FinMind API 結構，絕不逐日輪詢 TWSE 靜態表格。
-    1. 增減由買進、賣出、償還精確計算 (m_diff = mb - ms - mr, s_diff = ss - sb - sr)。
-    2. 餘額直接由 MarginPurchaseTodayBalance 與 ShortSaleTodayBalance 取出。
-    3. 日期嚴格對齊 API 自帶之 r['date']，徹底根除日期錯置與數萬張餘額被當成增減之重大重工缺陷。
-    """
+    """擷取融資融券買賣超與餘額資料 (FinMind API 架構)"""
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
     }
@@ -367,20 +411,12 @@ def fetch_tdcc_holding_data(pure_code: str) -> list:
 
 
 def fetch_tdcc_holding_history(pure_code: str, weeks: int = 6) -> list:
-    """
-    【防呆防錯備註 2026-11-08】【修訂目的】：
-    新增集保歷史資料增補爬蟲：比照資券維護，支援爬取近 N 週集保分級。
-    1. 優先爬取 TDCC 官方歷程查詢（若遭遇反爬或驗證碼，回退至開放數據與公開歷史彙整）。
-    2. 確保 15 個級距之完整日期 (YYYY-MM-DD)、分級 (level 1~15)、百分比 (percent) 精確寫入。
-    3. 徹底根除「因單週 Open Data 缺乏歷史，造成過往數週水平覆蓋或顯示 0.00%」之嚴重重工缺陷。
-    """
+    """擷取集保大戶近 N 週歷史分級 (支援歷史回補)"""
     all_records = []
-    # 1. 先抓取最新單週作為基石
     latest_recs = fetch_tdcc_holding_data(pure_code)
     if latest_recs:
         all_records.extend(latest_recs)
 
-    # 2. 爬取集保結算所歷史網頁歷程 (qryStock)
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
         "Referer": "https://www.tdcc.com.tw/portal/zh/smWeb/qryStock"
@@ -391,7 +427,6 @@ def fetch_tdcc_holding_history(pure_code: str, weeks: int = 6) -> list:
         r_main = session.get(main_url, headers=headers, timeout=5)
         if r_main.status_code == 200:
             soup = BeautifulSoup(r_main.text, "html.parser")
-            # 取得歷史基準日下拉選單之所有日期
             date_select = soup.find("select", {"id": "scaDates"}) or soup.find("select", {"name": "scaDate"})
             avail_dates = []
             if date_select:
@@ -399,13 +434,11 @@ def fetch_tdcc_holding_history(pure_code: str, weeks: int = 6) -> list:
                     val = opt.get("value", "").strip()
                     if val and val.isdigit() and len(val) == 8:
                         avail_dates.append(val)
-            
-            # 取最近 N 週的日期 (排除已取得的最新週)
+
             target_dates = avail_dates[:max(1, int(weeks))]
             for dt_val in target_dates:
                 try:
                     target_d_str = datetime.strptime(dt_val, '%Y%m%d').strftime('%Y-%m-%d')
-                    # 若已經在 all_records 中則跳過
                     if any(r[0] == target_d_str for r in all_records):
                         continue
 
