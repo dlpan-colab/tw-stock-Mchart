@@ -1,6 +1,6 @@
 """
-app.py - 主應用程式介面與生命週期控制 (校正圖表函式參數簽名順序，恢復最新交易日視窗版)
-版本: 202611102205
+app.py - 主應用程式介面與生命週期控制 (修正 chart_builder 回傳解構順序，恢復最新交易日視窗版)
+版本: 202611102212
 """
 
 import os
@@ -11,7 +11,7 @@ import streamlit.components.v1 as components
 import cloud_sync
 
 MODULE_NAME = "app"
-MODULE_VERSION = "202611102205"
+MODULE_VERSION = "202611102212"
 
 # 【防呆防錯備註 2026-11-07】：版本控制權由 app.py 作為唯一權威源，動態掃描所有模組最大版本號，杜絕多頭覆寫與重工
 def get_system_version() -> str:
@@ -81,7 +81,6 @@ def resolve_ticker_code(raw_input: str) -> str:
 # 【防呆防錯備註 2026-11-10】【修訂目的】：
 # 嚴格對齊 chart_builder.py 之 build_split_figures 參數位置：
 # (raw_ticker, period, display_days, base_date, major1_thresh, major2_thresh, is_mobile, status_placeholder, force_refresh)
-# 嚴禁將 disp_days 與 base_date 傳反，避免畫面被誤判定為復盤模式而死鎖在歷史日期。
 @st.cache_data(ttl=180, show_spinner=False)
 def get_cached_figures(stock_id, period, disp_days, base_date, m1_thresh, m2_thresh, is_mobile, force_refresh):
     return build_split_figures(
@@ -417,8 +416,11 @@ with col_nav2:
 status_box = st.empty()
 
 with st.spinner(f"正在載入 {st.session_state.stock_id} 圖表資料..."):
-    # 【防呆防錯備註 2026-11-10】：明確使用具名參數傳遞，絕不錯置 disp_days 與 target_date_val
-    fig_top, fig_btm, df, full_ticker, total_len, end_idx = get_cached_figures(
+    # 【防呆防錯備註 2026-11-10】【修訂目的】：
+    # 嚴格對齊 chart_builder.py 第 320 行的真實 6 個回傳值：
+    # return fig_top, fig_btm, df, c_name, end_idx, disp_n
+    # 嚴禁誤用 total_len 搶走 end_idx 的位置，確保真實最新交易日索引 100% 傳入前端。
+    fig_top, fig_btm, df, c_name, end_idx, disp_n = get_cached_figures(
         stock_id=st.session_state.stock_id,
         period=st.session_state.period,
         disp_days=st.session_state.disp_days,
@@ -433,9 +435,9 @@ if fig_top is None or fig_btm is None or df is None or df.empty:
     st.error(f"無法載入標的【{st.session_state.stock_id}】的技術指標資料，請確認代號是否正確。")
 else:
     pure_code = str(st.session_state.stock_id).strip().upper()
-    c_name = get_stock_chinese_name(pure_code)
-    if c_name and c_name != pure_code:
-        update_stock_name_only(pure_code, c_name)
+    real_c_name = c_name or get_stock_chinese_name(pure_code)
+    if real_c_name and real_c_name != pure_code:
+        update_stock_name_only(pure_code, real_c_name)
 
     chart_uuid = f"chart_{pure_code.replace('^', '').replace('.', '_')}"
 
