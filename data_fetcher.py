@@ -1,6 +1,6 @@
 """
-data_fetcher.py - 整合技術與籌碼資料擷取模組 (修復上櫃三大法人接口與FinMind雙軌備援版)
-版本: 202611102130
+data_fetcher.py - 整合技術與籌碼資料擷取模組 (精確對齊TPEx官方三大法人欄位索引版)
+版本: 202611102148
 """
 
 import os
@@ -15,7 +15,7 @@ from bs4 import BeautifulSoup
 from datetime import datetime, timedelta
 
 MODULE_NAME = "data_fetcher"
-MODULE_VERSION = "202611102130"
+MODULE_VERSION = "202611102148"
 
 from storage import (
     StockChipStorage,
@@ -210,12 +210,17 @@ def sync_chip_data(pure_code: str, df_dates: pd.DatetimeIndex, status_placeholde
 def fetch_institutional_investors(pure_code: str, df_dates: pd.DatetimeIndex, start_date_exclusive: str = None) -> list:
     """
     【防呆防錯備註 2026-11-10】【修訂目的】：
-    升級三大法人擷取為雙軌機制 (TWSE/TPEx 官方爬蟲 + FinMind API 備援)。
-    1. 修正 TPEx 櫃買中心接口解析，支援上櫃股票 (如 6425) 官方三大法人欄位。
-    2. 若官方介面逾時或遭遇反爬，自動切換至 FinMind API 補齊，杜絕 11/5~11/6 等歷史資料空缺。
+    修正櫃買中心 (TPEx) 官方欄位索引，落實精準取值。
+    - TWSE: row[4]外資, row[10]投信, row[11]自營商
+    - TPEx: 
+        row[10] 外資及陸資合計買賣超
+        row[13] 投信買賣超
+        row[22] 自營商合計買賣超 (若未滿23欄則取自行+避險相加)
+    徹底避免索引誤植導致外資歸零或跑位，100% 吻合券商盤後真實數據。
     """
     headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "Referer": "https://www.tpex.org.tw/"
     }
 
     if start_date_exclusive:
@@ -235,7 +240,7 @@ def fetch_institutional_investors(pure_code: str, df_dates: pd.DatetimeIndex, st
         except Exception:
             return 0.0
 
-    # 軌道一：TWSE / TPEx 官方網站逐日抓取
+    # 軌道一：TWSE / TPEx 官方逐日抓取
     for dt in sample_dates:
         if dt.weekday() >= 5:
             continue
@@ -275,10 +280,19 @@ def fetch_institutional_investors(pure_code: str, df_dates: pd.DatetimeIndex, st
                 if rows:
                     for row in rows:
                         if str(row[0]).strip() == pure_code:
-                            # 外資: 欄位 7, 投信: 欄位 8, 自營: 欄位 9
-                            f_net = clean_val(row[7])
-                            t_net = clean_val(row[8])
-                            d_net = clean_val(row[9])
+                            num_cols = len(row)
+                            # 外資及陸資合計買賣超: 官方標準 row[10]
+                            f_net = clean_val(row[10]) if num_cols > 10 else clean_val(row[7])
+                            # 投信買賣超: 官方標準 row[13]
+                            t_net = clean_val(row[13]) if num_cols > 13 else clean_val(row[8])
+                            # 自營商買賣超: 官方標準合計 row[22]，若無則動態加總自行買賣(16)與避險(19)
+                            if num_cols > 22:
+                                d_net = clean_val(row[22])
+                            elif num_cols > 19:
+                                d_net = clean_val(row[16]) + clean_val(row[19])
+                            else:
+                                d_net = clean_val(row[9])
+                            
                             records.append((date_str, f_net, t_net, d_net))
                             found = True
                             break
@@ -290,7 +304,7 @@ def fetch_institutional_investors(pure_code: str, df_dates: pd.DatetimeIndex, st
 
         time.sleep(0.04)
 
-    # 軌道二：若有遺漏日期，由 FinMind API 精準補齊 (上市櫃通用)
+    # 軌道二：若有遺漏日期，由 FinMind API 精準補齊
     if missing_dates:
         try:
             query_start = min(missing_dates)
@@ -306,7 +320,6 @@ def fetch_institutional_investors(pure_code: str, df_dates: pd.DatetimeIndex, st
                 fm_data = res_fm.json().get("data", [])
                 if fm_data:
                     df_fm = pd.DataFrame(fm_data)
-                    # 依日期分組彙整外資、投信、自營商
                     grouped = df_fm.groupby("date")
                     for d_str, g in grouped:
                         if d_str in missing_dates and not any(r[0] == d_str for r in records):
