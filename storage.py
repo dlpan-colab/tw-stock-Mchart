@@ -1,9 +1,7 @@
 """
-storage.py - 本地 SQLite 資料庫與股票歷史紀錄管理器 (非破壞性安全重抓版)
-版本: 202611081850
+storage.py - 本地 SQLite 資料庫與股票歷史紀錄管理器 (新增法人籌碼維護清理函式版)
+版本: 202611102248
 """
-MODULE_NAME = "storage"
-MODULE_VERSION = "202611081850"
 
 import os
 import io
@@ -17,22 +15,20 @@ from bs4 import BeautifulSoup
 from datetime import datetime, timedelta
 import pandas as pd
 
+MODULE_NAME = "storage"
+MODULE_VERSION = "202611102248"
+
 STORAGE_DIR = "."
 HISTORY_FILE = os.path.join(STORAGE_DIR, "stock_history.json")
 NAMES_CACHE_FILE = os.path.join(STORAGE_DIR, "tw_stock_names.json")
 
 COMMON_STOCK_NAMES = {
     # 主要市場指數
-    "^TWII": "加權指數",
-    "^TWOII": "櫃買指數",
-    "^DJI": "道瓊指數",
-    "^IXIC": "那斯達克",
-    "^SOX": "費城半導體",
-    "^GSPC": "標普500",
-    "^N225": "日經225",
-    "^KS11": "韓國綜合",
-    "^FTSE": "英國富時100",
-    "^GDAXI": "德國DAX",
+    "^TWII": "加權指數", "^TWOII": "櫃買指數",
+    "^DJI": "道瓊指數", "^IXIC": "那斯達克",
+    "^SOX": "費城半導體", "^GSPC": "標普500",
+    "^N225": "日經225", "^KS11": "韓國綜合",
+    "^FTSE": "英國富時100", "^GDAXI": "德國DAX",
     "^FCHI": "法國CAC40",
     # 常用個股
     "1101": "台泥", "1102": "亞泥", "1104": "環泥", "1216": "統一",
@@ -48,12 +44,10 @@ COMMON_STOCK_NAMES = {
     "6456": "GIS-KY", "6505": "台塑化", "8111": "立碁", "8131": "福懋科"
 }
 
-
 def _async_run(func, *args, **kwargs):
     """將耗時的網路同步作業丟入背景執行緒，絕不卡死前端主頁面"""
     t = threading.Thread(target=func, args=args, kwargs=kwargs, daemon=True)
     t.start()
-
 
 def _do_sync_cloud_pull():
     try:
@@ -63,11 +57,9 @@ def _do_sync_cloud_pull():
     except Exception as e:
         print(f"[CloudSync] Pull warning: {e}")
 
-
 def _sync_cloud_pull():
     if not os.path.exists(HISTORY_FILE) or not os.path.exists(NAMES_CACHE_FILE):
         _do_sync_cloud_pull()
-
 
 def _do_sync_cloud_push(allow_empty_history: bool = False):
     try:
@@ -89,10 +81,8 @@ def _do_sync_cloud_push(allow_empty_history: bool = False):
     except Exception as e:
         print(f"[CloudSync] Push warning: {e}")
 
-
 def _sync_cloud_push(allow_empty_history: bool = False):
     _async_run(_do_sync_cloud_push, allow_empty_history=allow_empty_history)
-
 
 def _do_sync_db_pull(pure_code: str):
     try:
@@ -103,14 +93,12 @@ def _do_sync_db_pull(pure_code: str):
     except Exception as e:
         print(f"[CloudSync] DB pull warning for {pure_code}: {e}")
 
-
 def sync_db_pull(pure_code: str):
     db_name = f"data_{pure_code}.db"
     local_path = os.path.join(STORAGE_DIR, db_name)
     if os.path.exists(local_path) and os.path.getsize(local_path) > 0:
         return
     _do_sync_db_pull(pure_code)
-
 
 def _do_sync_db_push(pure_code: str):
     try:
@@ -122,10 +110,8 @@ def _do_sync_db_push(pure_code: str):
     except Exception as e:
         print(f"[CloudSync] DB push warning for {pure_code}: {e}")
 
-
 def sync_db_push(pure_code: str):
     _async_run(_do_sync_db_push, pure_code)
-
 
 def _load_name_cache() -> dict:
     try:
@@ -135,7 +121,6 @@ def _load_name_cache() -> dict:
     except Exception:
         pass
     return {}
-
 
 def _save_name_cache(code: str, name: str):
     code = str(code).strip()
@@ -152,7 +137,6 @@ def _save_name_cache(code: str, name: str):
     except Exception:
         pass
 
-
 def load_stock_names_dict() -> dict:
     cache = _load_name_cache()
     if not cache:
@@ -161,14 +145,12 @@ def load_stock_names_dict() -> dict:
     merged.update(cache)
     return merged
 
-
 def get_stock_chinese_name(pure_code: str) -> str:
     pure_code = str(pure_code).strip()
     if not pure_code:
         return ""
     if pure_code in COMMON_STOCK_NAMES:
         return COMMON_STOCK_NAMES[pure_code]
-
     cache = _load_name_cache()
     if pure_code in cache and cache[pure_code] and cache[pure_code] != pure_code:
         return cache[pure_code]
@@ -246,7 +228,6 @@ def get_stock_chinese_name(pure_code: str) -> str:
 
     return pure_code
 
-
 def _recover_history_from_databases() -> list:
     recovered = []
     seen = set()
@@ -256,8 +237,10 @@ def _recover_history_from_databases() -> list:
         if sync_client.service and sync_client.folder_id:
             q = f"'{sync_client.folder_id}' in parents and name contains 'data_' and name contains '.db' and trashed = false"
             res = sync_client.service.files().list(
-                q=q, fields="files(id, name, modifiedTime)",
-                orderBy="modifiedTime desc", pageSize=50
+                q=q,
+                fields="files(id, name, modifiedTime)",
+                orderBy="modifiedTime desc",
+                pageSize=50
             ).execute()
             files = res.get("files", [])
             for f in files:
@@ -288,7 +271,6 @@ def _recover_history_from_databases() -> list:
 
     return recovered[:30]
 
-
 def load_stock_history():
     _sync_cloud_pull()
     data = []
@@ -300,15 +282,16 @@ def load_stock_history():
             data = []
     if not isinstance(data, list):
         data = []
+
     if not data:
         data = _recover_history_from_databases()
+
     for item in data:
         code = str(item.get("code", "")).strip()
         curr_name = str(item.get("name", "")).strip()
         if not curr_name or curr_name == code:
             item["name"] = get_stock_chinese_name(code)
     return data
-
 
 def save_stock_history(code: str, name: str = None):
     code = str(code).strip()
@@ -326,7 +309,6 @@ def save_stock_history(code: str, name: str = None):
     except Exception:
         pass
     return new_hist
-
 
 def update_stock_name_only(code: str, name: str):
     code = str(code).strip()
@@ -348,7 +330,6 @@ def update_stock_name_only(code: str, name: str):
         except Exception:
             pass
 
-
 def clear_stock_history():
     try:
         if os.path.exists(HISTORY_FILE):
@@ -359,7 +340,6 @@ def clear_stock_history():
     except Exception:
         pass
     return []
-
 
 def remove_stocks_from_history(target_codes: list) -> list:
     history = load_stock_history()
@@ -373,24 +353,45 @@ def remove_stocks_from_history(target_codes: list) -> list:
         pass
     return new_history
 
-
 def clear_recent_margin_data(pure_code: str, weeks: int = 2) -> str:
-    """
-    【防呆防錯備註 2026-11-08】【嚴禁誤刪】：
-    安全重抓標記：不再預先對本地 SQLite 執行破壞性 DELETE，
-    避免網路爬蟲若遇短暫網路波動時造成資券紀錄直接消失。
-    """
+    """清除指定週數內之資券紀錄，供重新爬取覆蓋"""
     pure_code = str(pure_code).strip()
     db_name = f"data_{pure_code}.db"
     db_path = os.path.join(STORAGE_DIR, db_name)
     sync_db_pull(pure_code)
-
     if not os.path.exists(db_path):
         return f"查無代號 {pure_code} 之本地資料庫。"
-
     cutoff_date = (datetime.now() - timedelta(days=weeks * 7)).strftime('%Y-%m-%d')
-    return f"已將 {pure_code} 設定自 {cutoff_date} 起重抓近 {weeks} 週資券，勾選強制更新並查詢即安全覆蓋。"
+    try:
+        with sqlite3.connect(db_path) as conn:
+            cur = conn.cursor()
+            cur.execute("DELETE FROM margin_short WHERE date >= ?", (cutoff_date,))
+            conn.commit()
+        sync_db_push(pure_code)
+        return f"已成功清除 {pure_code} 自 {cutoff_date} 起之資券紀錄。"
+    except Exception as e:
+        return f"清除資券紀錄失敗: {e}"
 
+# 【防呆防錯備註 2026-11-10】【修訂目的與防呆防錯原因】：
+# 新增法人籌碼清理函式，比照資券維護模式，僅針對近 N 週資料執行精確 DELETE，
+# 嚴禁破壞性刪除整張資料表，保留遠期歷史資料完整性，避免引發全面重爬或歷史斷層。
+def clear_recent_institutional_data(pure_code: str, weeks: int = 6) -> str:
+    pure_code = str(pure_code).strip()
+    db_name = f"data_{pure_code}.db"
+    db_path = os.path.join(STORAGE_DIR, db_name)
+    sync_db_pull(pure_code)
+    if not os.path.exists(db_path):
+        return f"查無代號 {pure_code} 之本地資料庫。"
+    cutoff_date = (datetime.now() - timedelta(days=weeks * 7)).strftime('%Y-%m-%d')
+    try:
+        with sqlite3.connect(db_path) as conn:
+            cur = conn.cursor()
+            cur.execute("DELETE FROM institutional_investors WHERE date >= ?", (cutoff_date,))
+            conn.commit()
+        sync_db_push(pure_code)
+        return f"已成功清除 {pure_code} 自 {cutoff_date} 起之法人紀錄。"
+    except Exception as e:
+        return f"清除法人紀錄失敗: {e}"
 
 class StockChipStorage:
     def __init__(self, pure_code: str):
@@ -405,39 +406,39 @@ class StockChipStorage:
         with sqlite3.connect(self.db_path) as conn:
             cur = conn.cursor()
             cur.execute("""
-                CREATE TABLE IF NOT EXISTS daily_k (
-                    date TEXT PRIMARY KEY,
-                    open REAL,
-                    high REAL,
-                    low REAL,
-                    close REAL,
-                    volume REAL
-                )
+            CREATE TABLE IF NOT EXISTS daily_k (
+                date TEXT PRIMARY KEY,
+                open REAL,
+                high REAL,
+                low REAL,
+                close REAL,
+                volume REAL
+            )
             """)
             cur.execute("""
-                CREATE TABLE IF NOT EXISTS institutional_investors (
-                    date TEXT PRIMARY KEY,
-                    foreign_net REAL,
-                    trust_net REAL,
-                    dealer_net REAL
-                )
+            CREATE TABLE IF NOT EXISTS institutional_investors (
+                date TEXT PRIMARY KEY,
+                foreign_net REAL,
+                trust_net REAL,
+                dealer_net REAL
+            )
             """)
             cur.execute("""
-                CREATE TABLE IF NOT EXISTS shareholding_distribution (
-                    date TEXT,
-                    level INTEGER,
-                    percent REAL,
-                    PRIMARY KEY (date, level)
-                )
+            CREATE TABLE IF NOT EXISTS shareholding_distribution (
+                date TEXT,
+                level INTEGER,
+                percent REAL,
+                PRIMARY KEY (date, level)
+            )
             """)
             cur.execute("""
-                CREATE TABLE IF NOT EXISTS margin_short (
-                    date TEXT PRIMARY KEY,
-                    margin_diff REAL,
-                    short_diff REAL,
-                    margin_bal REAL,
-                    short_bal REAL
-                )
+            CREATE TABLE IF NOT EXISTS margin_short (
+                date TEXT PRIMARY KEY,
+                margin_diff REAL,
+                short_diff REAL,
+                margin_bal REAL,
+                short_bal REAL
+            )
             """)
             conn.commit()
 
@@ -496,17 +497,17 @@ class StockChipStorage:
         with sqlite3.connect(self.db_path) as conn:
             if self.is_index:
                 sql = """
-                    SELECT date, open as Open, high as High, low as Low, close as Close, volume as Volume
-                    FROM daily_k
-                    WHERE open IS NOT NULL AND high IS NOT NULL AND low IS NOT NULL AND close IS NOT NULL
-                    ORDER BY date
+                SELECT date, open as Open, high as High, low as Low, close as Close, volume as Volume
+                FROM daily_k
+                WHERE open IS NOT NULL AND high IS NOT NULL AND low IS NOT NULL AND close IS NOT NULL
+                ORDER BY date
                 """
             else:
                 sql = """
-                    SELECT date, open as Open, high as High, low as Low, close as Close, volume as Volume
-                    FROM daily_k
-                    WHERE volume > 0 AND open IS NOT NULL AND high IS NOT NULL AND low IS NOT NULL AND close IS NOT NULL
-                    ORDER BY date
+                SELECT date, open as Open, high as High, low as Low, close as Close, volume as Volume
+                FROM daily_k
+                WHERE volume > 0 AND open IS NOT NULL AND high IS NOT NULL AND low IS NOT NULL AND close IS NOT NULL
+                ORDER BY date
                 """
             df = pd.read_sql(sql, conn)
             if not df.empty:
