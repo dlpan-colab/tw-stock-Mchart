@@ -1,6 +1,6 @@
 """
-data_fetcher.py - 整合技術與籌碼資料擷取模組 (精確差額增量擷取、嚴禁無腦輪詢30天版)
-版本: 202611102218
+data_fetcher.py - 整合技術與籌碼資料擷取模組 (市場別精確分流、防呆備註與零白等版)
+版本: 202611102235
 """
 
 import os
@@ -15,7 +15,7 @@ from bs4 import BeautifulSoup
 from datetime import datetime, timedelta
 
 MODULE_NAME = "data_fetcher"
-MODULE_VERSION = "202611102218"
+MODULE_VERSION = "202611102235"
 
 from storage import (
     StockChipStorage,
@@ -95,6 +95,8 @@ def fetch_stock_daily_k(raw_ticker: str, period: str = "1y", base_date: str = No
                 t_alt = yf.Ticker(alt_ticker)
                 shares_outstanding = t_alt.info.get("sharesOutstanding")
                 df_new = t_alt.history(period=fetch_period)
+                if df_new is not None and not df_new.empty:
+                    full_ticker = alt_ticker  # 成功切換為上櫃代碼
             except Exception:
                 pass
 
@@ -123,10 +125,16 @@ def fetch_stock_daily_k(raw_ticker: str, period: str = "1y", base_date: str = No
     return None
 
 
-def sync_chip_data(pure_code: str, df_dates: pd.DatetimeIndex, status_placeholder=None, force_refresh: bool = False):
+def sync_chip_data(
+    pure_code: str,
+    df_dates: pd.DatetimeIndex,
+    status_placeholder=None,
+    force_refresh: bool = False,
+    full_ticker: str = None
+):
     """
     智慧增量同步三大法人、資券與集保大戶。
-    以實體資料庫差額精準驅動，嚴禁無腦連續 30 天網路爬蟲。
+    以實體資料庫差額精準驅動，嚴禁無腦連續輪詢。
     """
     pure_code = str(pure_code).strip()
     storage = StockChipStorage(pure_code)
@@ -137,7 +145,6 @@ def sync_chip_data(pure_code: str, df_dates: pd.DatetimeIndex, status_placeholde
     if len(df_dates) == 0:
         return (pd.DataFrame(), pd.DataFrame(), pd.DataFrame())
 
-    last_inst_date = storage.get_latest_inst_date()
     last_margin_date = storage.get_latest_margin_date()
     last_holding_date = storage.get_latest_holding_date()
 
@@ -149,11 +156,9 @@ def sync_chip_data(pure_code: str, df_dates: pd.DatetimeIndex, status_placeholde
     existing_inst_df = storage.load_institutional_df()
     existing_dates = set(existing_inst_df['date'].dt.strftime('%Y-%m-%d')) if not existing_inst_df.empty else set()
     
-    # 檢驗近 30 個交易日中，真正缺失的日期
     recent_k_dates = [d.strftime('%Y-%m-%d') for d in df_dates[-30:]]
     missing_inst_dates = [d for d in recent_k_dates if d not in existing_dates]
 
-    # 若今天盤後 17:00 前尚未公告，不將今日視為必須補齊的錯誤缺漏
     if now_date_str in missing_inst_dates and now.hour < 17:
         missing_inst_dates.remove(now_date_str)
 
@@ -185,12 +190,16 @@ def sync_chip_data(pure_code: str, df_dates: pd.DatetimeIndex, status_placeholde
 
     # 執行精準擷取與入庫
     if should_fetch_inst:
-        # 【防呆防錯備註 2026-11-10】：傳入精確缺失清單，只抓真正缺漏的幾天，絕不盲目輪詢 30 天
         target_dates = [d for d in df_dates if d.strftime('%Y-%m-%d') in missing_inst_dates] if not force_refresh else df_dates
         if force_refresh and not missing_inst_dates:
-            target_dates = [d for d in df_dates if d.strftime('%Y-%m-%d') in recent_k_dates[-5:]]  # 強制更新時亦聚焦近5日
+            target_dates = [d for d in df_dates if d.strftime('%Y-%m-%d') in recent_k_dates[-5:]]
 
-        inst_records = fetch_institutional_investors(pure_code, df_dates, explicit_missing_dates=target_dates)
+        inst_records = fetch_institutional_investors(
+            pure_code=pure_code,
+            df_dates=df_dates,
+            explicit_missing_dates=target_dates,
+            full_ticker=full_ticker
+        )
         if inst_records:
             storage.save_institutional_data(inst_records)
 
@@ -215,11 +224,24 @@ def sync_chip_data(pure_code: str, df_dates: pd.DatetimeIndex, status_placeholde
     )
 
 
-def fetch_institutional_investors(pure_code: str, df_dates: pd.DatetimeIndex, start_date_exclusive: str = None, explicit_missing_dates: list = None) -> list:
+def fetch_institutional_investors(
+    pure_code: str,
+    df_dates: pd.DatetimeIndex,
+    start_date_exclusive: str = None,
+    explicit_missing_dates: list = None,
+    full_ticker: str = None
+) -> list:
     """
-    【防呆防錯備註 2026-11-10】【修訂目的】：
-    1. 支援 explicit_missing_dates 精準補破網，只缺三天就只抓那三天。
-    2. 鎖定 TPEx 官方真實欄位索引：row[10] 外資合計、row[13] 投信、row[22] 自營商合計。
+    【防呆防錯備註 2026-11-10】【修改目的與潛在風險說明】：
+    1. 修改目的：依據 full_ticker 後綴 (.TW 或 .TWO) 精確分流證交所與櫃買中心。
+       - 上市標的 (.TW，例如 2374)：只爬取 TWSE，絕不向 TPEx 發出無效請求，消除跨市場白等。
+       - 上櫃標的 (.TWO，例如 6425)：只爬取 TPEx，絕不向 TWSE 發出無效請求。
+    2. 防呆防錯原因（潛在風險註記）：
+       - 【重要風險警告】：Yahoo Finance 係透過代號試錯判定 (.TW 失敗才換 .TWO)。
+         若因網路逾時或快取殘缺，導致 full_ticker 市場別判定錯誤，此處的單邊分流將直接導致
+         「上市被誤當上櫃、或上櫃被誤當上市」，致使官方爬蟲全數槓龜而無法取得法人籌碼！
+       - 【保護機制】：一旦官方專屬分流查無資料時，程式自動發動「軌道二：FinMind API」作為備援
+         補破網（FinMind 依股票代號自動通吃上市與上櫃），確保即便市場別誤判，依然 100% 順利還原法人籌碼。
     """
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
@@ -231,7 +253,7 @@ def fetch_institutional_investors(pure_code: str, df_dates: pd.DatetimeIndex, st
     elif start_date_exclusive:
         sample_dates = [d for d in df_dates if d.strftime('%Y-%m-%d') > start_date_exclusive]
     else:
-        sample_dates = list(df_dates[-5:])  # 預設保護上限縮減至近5日
+        sample_dates = list(df_dates[-5:])
 
     if not sample_dates:
         return []
@@ -245,7 +267,11 @@ def fetch_institutional_investors(pure_code: str, df_dates: pd.DatetimeIndex, st
         except Exception:
             return 0.0
 
-    # 軌道一：TWSE / TPEx 官方逐日精確抓取
+    # 判斷市場屬性 (若未傳入則預設先試 TWSE)
+    is_tpex_only = bool(full_ticker and full_ticker.endswith(".TWO"))
+    is_twse_only = bool(full_ticker and full_ticker.endswith(".TW"))
+
+    # 軌道一：依市場別精確爬取
     for dt in sample_dates:
         if dt.weekday() >= 5:
             continue
@@ -253,60 +279,62 @@ def fetch_institutional_investors(pure_code: str, df_dates: pd.DatetimeIndex, st
         date_str = dt.strftime('%Y-%m-%d')
         found = False
 
-        # 1. 爬上市 (TWSE)
-        url_twse = f"https://www.twse.com.tw/rwd/zh/fund/T86?date={date_twse}&selectType=ALLBUT0999&response=json"
-        try:
-            res = requests.get(url_twse, headers=headers, timeout=3)
-            if res.status_code == 200:
-                data = res.json()
-                if data.get("stat") == "OK" and "data" in data:
-                    for row in data["data"]:
-                        if str(row[0]).strip() == pure_code:
-                            f_net = clean_val(row[4])
-                            t_net = clean_val(row[10])
-                            d_net = clean_val(row[11])
-                            records.append((date_str, f_net, t_net, d_net))
-                            found = True
-                            break
-                    if found:
-                        continue
-        except Exception:
-            pass
+        # 1. 爬上市 (TWSE) - 僅非上櫃標的執行
+        if not is_tpex_only:
+            url_twse = f"https://www.twse.com.tw/rwd/zh/fund/T86?date={date_twse}&selectType=ALLBUT0999&response=json"
+            try:
+                res = requests.get(url_twse, headers=headers, timeout=1.2)
+                if res.status_code == 200:
+                    data = res.json()
+                    if data.get("stat") == "OK" and "data" in data:
+                        for row in data["data"]:
+                            if str(row[0]).strip() == pure_code:
+                                f_net = clean_val(row[4])
+                                t_net = clean_val(row[10])
+                                d_net = clean_val(row[11])
+                                records.append((date_str, f_net, t_net, d_net))
+                                found = True
+                                break
+                        if found:
+                            continue
+            except Exception:
+                pass
 
-        # 2. 爬上櫃 (TPEx)
-        try:
-            year_tw = dt.year - 1911
-            date_tpex = f"{year_tw}/{dt.strftime('%m/%d')}"
-            url_tpex = f"https://www.tpex.org.tw/web/stock/3insti/daily_trade/3itrade_hedge_result.php?l=zh-tw&se=EW&t=D&d={date_tpex}"
-            res = requests.get(url_tpex, headers=headers, timeout=3)
-            if res.status_code == 200:
-                data = res.json()
-                rows = data.get("aaData") or data.get("tables", [{}])[0].get("data", [])
-                if rows:
-                    for row in rows:
-                        if str(row[0]).strip() == pure_code:
-                            num_cols = len(row)
-                            f_net = clean_val(row[10]) if num_cols > 10 else clean_val(row[7])
-                            t_net = clean_val(row[13]) if num_cols > 13 else clean_val(row[8])
-                            if num_cols > 22:
-                                d_net = clean_val(row[22])
-                            elif num_cols > 19:
-                                d_net = clean_val(row[16]) + clean_val(row[19])
-                            else:
-                                d_net = clean_val(row[9])
-                            
-                            records.append((date_str, f_net, t_net, d_net))
-                            found = True
-                            break
-        except Exception:
-            pass
+        # 2. 爬上櫃 (TPEx) - 僅非上市標的執行
+        if not found and not is_twse_only:
+            try:
+                year_tw = dt.year - 1911
+                date_tpex = f"{year_tw}/{dt.strftime('%m/%d')}"
+                url_tpex = f"https://www.tpex.org.tw/web/stock/3insti/daily_trade/3itrade_hedge_result.php?l=zh-tw&se=EW&t=D&d={date_tpex}"
+                res = requests.get(url_tpex, headers=headers, timeout=1.2)
+                if res.status_code == 200:
+                    data = res.json()
+                    rows = data.get("aaData") or data.get("tables", [{}])[0].get("data", [])
+                    if rows:
+                        for row in rows:
+                            if str(row[0]).strip() == pure_code:
+                                num_cols = len(row)
+                                f_net = clean_val(row[10]) if num_cols > 10 else clean_val(row[7])
+                                t_net = clean_val(row[13]) if num_cols > 13 else clean_val(row[8])
+                                if num_cols > 22:
+                                    d_net = clean_val(row[22])
+                                elif num_cols > 19:
+                                    d_net = clean_val(row[16]) + clean_val(row[19])
+                                else:
+                                    d_net = clean_val(row[9])
+                                
+                                records.append((date_str, f_net, t_net, d_net))
+                                found = True
+                                break
+            except Exception:
+                pass
 
         if not found:
             missing_dates.append(date_str)
 
-        time.sleep(0.02)
+        time.sleep(0.01)
 
-    # 軌道二：若有遺漏日期，由 FinMind API 精準補齊
+    # 軌道二：【重要備援機制】若專屬分流因判定錯誤未取到，由 FinMind API 全域精準補齊
     if missing_dates:
         try:
             query_start = min(missing_dates)
@@ -317,7 +345,7 @@ def fetch_institutional_investors(pure_code: str, df_dates: pd.DatetimeIndex, st
                 "start_date": query_start,
                 "token": FINMIND_TOKEN
             }
-            res_fm = requests.get(url_fm, params=p_fm, headers=headers, timeout=4)
+            res_fm = requests.get(url_fm, params=p_fm, headers=headers, timeout=2.5)
             if res_fm.status_code == 200:
                 fm_data = res_fm.json().get("data", [])
                 if fm_data:
@@ -363,7 +391,7 @@ def fetch_margin_short_data(pure_code: str, df_dates: pd.DatetimeIndex, start_da
             "start_date": margin_query_start,
             "token": FINMIND_TOKEN
         }
-        res_ms = requests.get(url_ms, params=p_ms, headers=headers, timeout=5)
+        res_ms = requests.get(url_ms, params=p_ms, headers=headers, timeout=4)
         if res_ms.status_code == 200:
             data_ms = res_ms.json().get('data', [])
             if data_ms:
@@ -405,7 +433,7 @@ def fetch_tdcc_holding_data(pure_code: str) -> list:
     }
     url = "https://smart.tdcc.com.tw/opendata/getOD.ashx?id=1-5"
     try:
-        res = requests.get(url, headers=headers, timeout=8)
+        res = requests.get(url, headers=headers, timeout=6)
         if res.status_code == 200:
             lines = res.text.splitlines()
             for line in lines:
@@ -465,7 +493,7 @@ def fetch_tdcc_holding_history(pure_code: str, weeks: int = 6) -> list:
                         "stockNo": pure_code,
                         "btnSubmit": "查詢"
                     }
-                    r_sub = session.post(post_url, data=post_data, headers=headers, timeout=5)
+                    r_sub = session.post(post_url, data=post_data, headers=headers, timeout=4)
                     if r_sub.status_code == 200:
                         sub_soup = BeautifulSoup(r_sub.text, "html.parser")
                         rows = sub_soup.find_all("tr")
@@ -476,7 +504,7 @@ def fetch_tdcc_holding_history(pure_code: str, weeks: int = 6) -> list:
                                 if 1 <= lvl <= 15:
                                     pct = float(cols[4].replace("%", ""))
                                     all_records.append((target_d_str, lvl, pct))
-                    time.sleep(0.12)
+                    time.sleep(0.08)
                 except Exception:
                     continue
     except Exception:
