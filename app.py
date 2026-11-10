@@ -1,6 +1,6 @@
 """
-app.py - 主應用程式介面與生命週期控制 (新增法人籌碼維護獨立控制區塊版)
-版本: 202611102248
+app.py - 主應用程式介面與生命週期控制 (法人與資券維護預設 1 週版)
+版本: 202611102325
 """
 
 import os
@@ -11,7 +11,7 @@ import streamlit.components.v1 as components
 import cloud_sync
 
 MODULE_NAME = "app"
-MODULE_VERSION = "202611102248"
+MODULE_VERSION = "202611102325"
 
 # 【防呆防錯備註 2026-11-07】：版本控制權由 app.py 作為唯一權威源，動態掃描所有模組最大版本號，杜絕多頭覆寫與重工
 def get_system_version() -> str:
@@ -305,10 +305,10 @@ with st.sidebar:
         st.rerun()
 
     # 【防呆防錯備註 2026-11-10】【修訂目的】：
-    # 新增法人籌碼維護獨立區塊，完全比照資券維護模式，支援自由指定週數精確重抓法人買賣超。
+    # 法人籌碼維護重抓預設週數改為 1 週 (value=1)，符合常態維護需求
     st.markdown("---")
     st.subheader("法人籌碼維護")
-    refetch_inst_weeks = st.number_input("重抓法人週數", min_value=1, max_value=24, value=6, step=1)
+    refetch_inst_weeks = st.number_input("重抓法人週數", min_value=1, max_value=24, value=1, step=1)
     if st.button("🛠️ 清除並重抓近N週法人籌碼", use_container_width=True):
         cur_code = str(st.session_state.stock_id).strip()
         if cur_code.startswith("^"):
@@ -351,9 +351,11 @@ with st.sidebar:
                 except Exception as e:
                     st.sidebar.error(f"法人重抓失敗: {e}")
 
+    # 【防呆防錯備註 2026-11-10】【修訂目的】：
+    # 資券維護重抓預設週數改為 1 週 (value=1)，符合常態維護需求
     st.markdown("---")
     st.subheader("資券維護")
-    refetch_weeks = st.number_input("重抓週數", min_value=1, max_value=24, value=6, step=1)
+    refetch_weeks = st.number_input("重抓週數", min_value=1, max_value=24, value=1, step=1)
     if st.button("🛠️ 清除並重抓近N週資券", use_container_width=True):
         cur_code = str(st.session_state.stock_id).strip()
         if cur_code.startswith("^"):
