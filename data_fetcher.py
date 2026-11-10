@@ -1,6 +1,6 @@
 """
-data_fetcher.py - 整合技術與籌碼資料擷取模組 (市場別精確分流、防呆備註與零白等版)
-版本: 202611102235
+data_fetcher.py - 整合技術與籌碼資料擷取模組 (台灣時區校正自動補抓與市場別精確分流版)
+版本: 202611102325
 """
 
 import os
@@ -15,7 +15,7 @@ from bs4 import BeautifulSoup
 from datetime import datetime, timedelta
 
 MODULE_NAME = "data_fetcher"
-MODULE_VERSION = "202611102235"
+MODULE_VERSION = "202611102325"
 
 from storage import (
     StockChipStorage,
@@ -65,9 +65,7 @@ def fetch_stock_daily_k(raw_ticker: str, period: str = "1y", base_date: str = No
     last_k_date = storage.get_latest_daily_k_date()
     shares_outstanding = None
 
-    if force_refresh:
-        db_df = pd.DataFrame()
-
+    # 日 K 線永遠保留本地完整歷史，杜絕清空破壞
     ticker = yf.Ticker(target_ticker)
     if pure_code.isdigit():
         try:
@@ -75,7 +73,7 @@ def fetch_stock_daily_k(raw_ticker: str, period: str = "1y", base_date: str = No
         except Exception:
             pass
 
-    fetch_period = period if force_refresh or db_df.empty or not last_k_date else "5d"
+    fetch_period = period if db_df.empty or not last_k_date else "5d"
 
     try:
         df_new = ticker.history(period=fetch_period)
@@ -134,7 +132,7 @@ def sync_chip_data(
 ):
     """
     智慧增量同步三大法人、資券與集保大戶。
-    以實體資料庫差額精準驅動，嚴禁無腦連續輪詢。
+    引入台灣時區 (UTC+8) 校正，解除伺服器盤後時間差死鎖，使當日法人與資券自動抓取。
     """
     pure_code = str(pure_code).strip()
     storage = StockChipStorage(pure_code)
@@ -149,8 +147,13 @@ def sync_chip_data(
     last_holding_date = storage.get_latest_holding_date()
 
     latest_trade_date_str = df_dates[-1].strftime('%Y-%m-%d')
-    now = datetime.now()
-    now_date_str = now.strftime('%Y-%m-%d')
+    
+    # 【防呆防錯備註 2026-11-10】【修訂目的與防呆防錯原因】：
+    # Streamlit Cloud 伺服器運行於 UTC 時區 (落後台灣 8 小時)。
+    # 若直接使用 datetime.now() 會導致台灣晚上 21:00 時系統時間誤判為 13:00 (尚未收盤)，
+    # 進而強制將今日籌碼自待爬清單中剃除。此處強制使用 UTC+8 台灣時間進行盤後公告時間比對。
+    now_tw = datetime.utcnow() + timedelta(hours=8)
+    now_tw_date_str = now_tw.strftime('%Y-%m-%d')
 
     # 1. 三大法人判斷 (差額比對)
     existing_inst_df = storage.load_institutional_df()
@@ -159,8 +162,9 @@ def sync_chip_data(
     recent_k_dates = [d.strftime('%Y-%m-%d') for d in df_dates[-30:]]
     missing_inst_dates = [d for d in recent_k_dates if d not in existing_dates]
 
-    if now_date_str in missing_inst_dates and now.hour < 17:
-        missing_inst_dates.remove(now_date_str)
+    # 法人通常於台灣時間 15:30 前後全數公告，16:00 之後必定可抓
+    if now_tw_date_str in missing_inst_dates and now_tw.hour < 16:
+        missing_inst_dates.remove(now_tw_date_str)
 
     should_fetch_inst = force_refresh or (len(missing_inst_dates) > 0)
 
@@ -170,7 +174,8 @@ def sync_chip_data(
         if not last_margin_date:
             should_fetch_margin = True
         elif last_margin_date < latest_trade_date_str:
-            if now_date_str == latest_trade_date_str and now.hour < 17:
+            # 資券通常於台灣時間 21:00 前後產出，21:00 前不發出無效請求
+            if now_tw_date_str == latest_trade_date_str and now_tw.hour < 21:
                 should_fetch_margin = False
             else:
                 should_fetch_margin = True
@@ -181,8 +186,8 @@ def sync_chip_data(
         if not last_holding_date:
             should_fetch_holding = True
         else:
-            diff_days = (now - pd.to_datetime(last_holding_date)).days
-            is_weekend_publish = (now.weekday() == 4 and now.hour >= 20) or (now.weekday() in [5, 6])
+            diff_days = (now_tw - pd.to_datetime(last_holding_date)).days
+            is_weekend_publish = (now_tw.weekday() == 4 and now_tw.hour >= 20) or (now_tw.weekday() in [5, 6])
             if diff_days >= 7:
                 should_fetch_holding = True
             elif is_weekend_publish and diff_days >= 1:
@@ -283,7 +288,7 @@ def fetch_institutional_investors(
         if not is_tpex_only:
             url_twse = f"https://www.twse.com.tw/rwd/zh/fund/T86?date={date_twse}&selectType=ALLBUT0999&response=json"
             try:
-                res = requests.get(url_twse, headers=headers, timeout=1.2)
+                res = requests.get(url_twse, headers=headers, timeout=1.5)
                 if res.status_code == 200:
                     data = res.json()
                     if data.get("stat") == "OK" and "data" in data:
@@ -306,7 +311,7 @@ def fetch_institutional_investors(
                 year_tw = dt.year - 1911
                 date_tpex = f"{year_tw}/{dt.strftime('%m/%d')}"
                 url_tpex = f"https://www.tpex.org.tw/web/stock/3insti/daily_trade/3itrade_hedge_result.php?l=zh-tw&se=EW&t=D&d={date_tpex}"
-                res = requests.get(url_tpex, headers=headers, timeout=1.2)
+                res = requests.get(url_tpex, headers=headers, timeout=1.5)
                 if res.status_code == 200:
                     data = res.json()
                     rows = data.get("aaData") or data.get("tables", [{}])[0].get("data", [])
