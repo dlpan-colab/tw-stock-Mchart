@@ -1,13 +1,13 @@
-""" 
-indicators.py - 技術指標與籌碼計算模組
-版本: 202611052245
+"""
+indicators.py - 技術指標與籌碼計算模組 (向下傳遞 full_ticker 市場別版)
+版本: 202611102235
 """
 
 import numpy as np
 import pandas as pd
 
 MODULE_NAME = "indicators"
-MODULE_VERSION = "202611052245"
+MODULE_VERSION = "202611102235"
 
 HOLDING_LEVEL_MAP = {
     100: [8, 9, 10, 11, 12, 13, 14, 15],
@@ -18,7 +18,16 @@ HOLDING_LEVEL_MAP = {
     1000: [15]
 }
 
-def calculate_all_indicators(df, pure_code, major1_thresh, major2_thresh, shares_outstanding=None, status_placeholder=None, force_refresh: bool = False):
+def calculate_all_indicators(
+    df,
+    pure_code,
+    major1_thresh,
+    major2_thresh,
+    shares_outstanding=None,
+    status_placeholder=None,
+    force_refresh: bool = False,
+    full_ticker: str = None
+):
     if df is None or df.empty:
         return df
 
@@ -91,10 +100,19 @@ def calculate_all_indicators(df, pure_code, major1_thresh, major2_thresh, shares
     df['Is_Head'], df['Is_Bottom'] = is_head, is_bottom
 
     # 7. 籌碼同步與對齊
+    # 【防呆防錯備註 2026-11-10】【修訂目的】：
+    # 將 Yahoo 日 K 驗證出的 full_ticker (.TW 或 .TWO) 傳遞給 sync_chip_data。
+    # 避免籌碼模組因失去市場別，無腦連續輪詢證交所與櫃買中心而造成延遲與誤判。
     inst_df, margin_df, holding_df = pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
     try:
         from data_fetcher import sync_chip_data
-        chip_res = sync_chip_data(pure_code, df.index, status_placeholder=status_placeholder, force_refresh=force_refresh)
+        chip_res = sync_chip_data(
+            pure_code=pure_code,
+            df_dates=df.index,
+            status_placeholder=status_placeholder,
+            force_refresh=force_refresh,
+            full_ticker=full_ticker
+        )
         if isinstance(chip_res, tuple):
             if len(chip_res) == 3:
                 inst_df, margin_df, holding_df = chip_res
@@ -171,7 +189,6 @@ def calculate_all_indicators(df, pure_code, major1_thresh, major2_thresh, shares
             iso_y, iso_w = int(iso_cal.year), int(iso_cal.week)
             m1_vals.append(m1_dict.get((iso_y, iso_w), np.nan))
             m2_vals.append(m2_dict.get((iso_y, iso_w), np.nan))
-
         df['Major1_Pct'] = pd.Series(m1_vals, index=df.index)
         df['Major2_Pct'] = pd.Series(m2_vals, index=df.index)
     else:
@@ -187,11 +204,11 @@ def calculate_all_indicators(df, pure_code, major1_thresh, major2_thresh, shares
             filled_major = df['Major2_Pct'].ffill().bfill()
             free_float_ratio = (100.0 - filled_major).clip(lower=10.0, upper=100.0) / 100.0
         else:
-            free_float_ratio = 0.75
+            free_float_ratio = 1.0
 
-        free_float_shares = float(shares_outstanding) * free_float_ratio
+        free_float_shares = shares_outstanding * free_float_ratio
         df['Turnover_Rate'] = (df['Volume'] / free_float_shares) * 100.0
     else:
-        df['Turnover_Rate'] = np.nan
+        df['Turnover_Rate'] = 0.0
 
     return df
