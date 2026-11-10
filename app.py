@@ -1,6 +1,6 @@
 """
-app.py - 主應用程式介面與生命週期控制 (修正 chart_builder 回傳解構順序，恢復最新交易日視窗版)
-版本: 202611102212
+app.py - 主應用程式介面與生命週期控制 (新增法人籌碼維護獨立控制區塊版)
+版本: 202611102248
 """
 
 import os
@@ -11,7 +11,7 @@ import streamlit.components.v1 as components
 import cloud_sync
 
 MODULE_NAME = "app"
-MODULE_VERSION = "202611102212"
+MODULE_VERSION = "202611102248"
 
 # 【防呆防錯備註 2026-11-07】：版本控制權由 app.py 作為唯一權威源，動態掃描所有模組最大版本號，杜絕多頭覆寫與重工
 def get_system_version() -> str:
@@ -48,7 +48,8 @@ from storage import (
     remove_stocks_from_history,
     update_stock_name_only,
     get_stock_chinese_name,
-    clear_recent_margin_data
+    clear_recent_margin_data,
+    clear_recent_institutional_data
 )
 from chart_builder import build_split_figures
 from frontend import get_legend_html, get_component_html
@@ -78,9 +79,6 @@ def resolve_ticker_code(raw_input: str) -> str:
         return INDEX_MAP[upper]
     return cleaned
 
-# 【防呆防錯備註 2026-11-10】【修訂目的】：
-# 嚴格對齊 chart_builder.py 之 build_split_figures 參數位置：
-# (raw_ticker, period, display_days, base_date, major1_thresh, major2_thresh, is_mobile, status_placeholder, force_refresh)
 @st.cache_data(ttl=180, show_spinner=False)
 def get_cached_figures(stock_id, period, disp_days, base_date, m1_thresh, m2_thresh, is_mobile, force_refresh):
     return build_split_figures(
@@ -289,11 +287,10 @@ with st.sidebar:
     m1_thresh = st.number_input("大戶門檻1 (張)", min_value=100, max_value=2000, value=1000, step=100)
     m2_thresh = st.number_input("大戶門檻2 (張)", min_value=100, max_value=1000, value=400, step=100)
 
-    # 【防呆防錯備註 2026-11-07】：標題正名，明確包含穿透快取 (Cache) 與重新爬取籌碼功能
     force_refresh = st.checkbox(
         "⚡ 強制更新（穿透快取與重抓籌碼）",
         value=False,
-        help="勾選後將穿透記憶體快取 (Cache) 與本地資料庫，強制發動網路爬蟲重抓近30日籌碼資料。"
+        help="勾選後將穿透記憶體快取 (Cache) 與本地資料庫，強制發動網路爬蟲重抓籌碼資料。"
     )
     if force_refresh:
         get_cached_figures.clear()
@@ -307,7 +304,53 @@ with st.sidebar:
                 save_stock_history(resolved)
         st.rerun()
 
-    ## 20261108 修訂強制更新資券資料 [開始]
+    # 【防呆防錯備註 2026-11-10】【修訂目的】：
+    # 新增法人籌碼維護獨立區塊，完全比照資券維護模式，支援自由指定週數精確重抓法人買賣超。
+    st.markdown("---")
+    st.subheader("法人籌碼維護")
+    refetch_inst_weeks = st.number_input("重抓法人週數", min_value=1, max_value=24, value=6, step=1)
+    if st.button("🛠️ 清除並重抓近N週法人籌碼", use_container_width=True):
+        cur_code = str(st.session_state.stock_id).strip()
+        if cur_code.startswith("^"):
+            st.sidebar.warning("指數標的無三大法人買賣超資料。")
+        else:
+            with st.spinner(f"正在重新爬取 {cur_code} 近 {refetch_inst_weeks} 週法人籌碼..."):
+                try:
+                    from data_fetcher import fetch_stock_daily_k, fetch_institutional_investors
+                    from storage import StockChipStorage
+                    from datetime import datetime, timedelta
+
+                    k_res = fetch_stock_daily_k(cur_code, period="1y", force_refresh=False)
+                    if k_res and k_res[0] is not None and not k_res[0].empty:
+                        df_k = k_res[0]
+                        full_tkr = k_res[1]
+                        cutoff_dt = datetime.now() - timedelta(days=int(refetch_inst_weeks) * 7)
+                        sub_dates = [d for d in df_k.index if d >= cutoff_dt]
+
+                        if sub_dates:
+                            clear_recent_institutional_data(cur_code, int(refetch_inst_weeks))
+                            fresh_inst = fetch_institutional_investors(
+                                pure_code=cur_code,
+                                df_dates=df_k.index,
+                                explicit_missing_dates=sub_dates,
+                                full_ticker=full_tkr
+                            )
+                            if fresh_inst:
+                                storage = StockChipStorage(cur_code)
+                                storage.save_institutional_data(fresh_inst)
+                                st.sidebar.success(f"成功重抓並更新 {len(fresh_inst)} 筆法人籌碼紀錄！")
+                                get_cached_figures.clear()
+                                time.sleep(0.5)
+                                st.rerun()
+                            else:
+                                st.sidebar.warning("伺服器未回傳法人資料，請稍後再試。")
+                        else:
+                            st.sidebar.warning("找不到對應週數的交易日紀錄。")
+                    else:
+                        st.sidebar.error("無法載入該標的日K線資料。")
+                except Exception as e:
+                    st.sidebar.error(f"法人重抓失敗: {e}")
+
     st.markdown("---")
     st.subheader("資券維護")
     refetch_weeks = st.number_input("重抓週數", min_value=1, max_value=24, value=6, step=1)
@@ -346,9 +389,7 @@ with st.sidebar:
                         st.sidebar.error("無法載入該標的日K線資料。")
                 except Exception as e:
                     st.sidebar.error(f"資券重抓失敗: {e}")
-    ## 20261108 修訂強制更新資券資料 [結束]
 
-    ## 20261108 修訂大戶持股近N週歷史增補功能 [開始]
     st.markdown("---")
     st.subheader("大戶持股維護")
     st.caption("ℹ️ 集保於當週各交易日不予公告，直到當週最後交易日之次日（週六）公布。")
@@ -376,7 +417,6 @@ with st.sidebar:
                         st.sidebar.warning("集保伺服器未回傳歷史資料，請稍候重試。")
                 except Exception as e:
                     st.sidebar.error(f"大戶持股增補失敗: {e}")
-    ## 20261108 修訂大戶持股近N週歷史增補功能 [結束]
 
 auth_status = cloud_sync.get_auth_status()
 if auth_status == 2:
@@ -416,10 +456,6 @@ with col_nav2:
 status_box = st.empty()
 
 with st.spinner(f"正在載入 {st.session_state.stock_id} 圖表資料..."):
-    # 【防呆防錯備註 2026-11-10】【修訂目的】：
-    # 嚴格對齊 chart_builder.py 第 320 行的真實 6 個回傳值：
-    # return fig_top, fig_btm, df, c_name, end_idx, disp_n
-    # 嚴禁誤用 total_len 搶走 end_idx 的位置，確保真實最新交易日索引 100% 傳入前端。
     fig_top, fig_btm, df, c_name, end_idx, disp_n = get_cached_figures(
         stock_id=st.session_state.stock_id,
         period=st.session_state.period,
