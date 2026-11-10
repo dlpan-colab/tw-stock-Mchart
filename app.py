@@ -1,6 +1,6 @@
 """
-app.py - 主應用程式介面與生命週期控制 (修正手機版與電腦版底部高度，確保法人集保條完整裸露版)
-版本: 202611102155
+app.py - 主應用程式介面與生命週期控制 (校正圖表函式參數簽名順序，恢復最新交易日視窗版)
+版本: 202611102205
 """
 
 import os
@@ -11,7 +11,7 @@ import streamlit.components.v1 as components
 import cloud_sync
 
 MODULE_NAME = "app"
-MODULE_VERSION = "202611102155"
+MODULE_VERSION = "202611102205"
 
 # 【防呆防錯備註 2026-11-07】：版本控制權由 app.py 作為唯一權威源，動態掃描所有模組最大版本號，杜絕多頭覆寫與重工
 def get_system_version() -> str:
@@ -78,19 +78,22 @@ def resolve_ticker_code(raw_input: str) -> str:
         return INDEX_MAP[upper]
     return cleaned
 
-# 【防呆防錯備註 2026-11-07】：完整對齊 chart_builder.py 之 build_split_figures 參數簽名，避免 TypeError
+# 【防呆防錯備註 2026-11-10】【修訂目的】：
+# 嚴格對齊 chart_builder.py 之 build_split_figures 參數位置：
+# (raw_ticker, period, display_days, base_date, major1_thresh, major2_thresh, is_mobile, status_placeholder, force_refresh)
+# 嚴禁將 disp_days 與 base_date 傳反，避免畫面被誤判定為復盤模式而死鎖在歷史日期。
 @st.cache_data(ttl=180, show_spinner=False)
 def get_cached_figures(stock_id, period, disp_days, base_date, m1_thresh, m2_thresh, is_mobile, force_refresh):
     return build_split_figures(
-        stock_id,
-        period,
-        disp_days,
-        base_date,
-        m1_thresh,
-        m2_thresh,
-        is_mobile,
-        None,
-        force_refresh
+        raw_ticker=stock_id,
+        period=period,
+        display_days=disp_days,
+        base_date=base_date,
+        major1_thresh=m1_thresh,
+        major2_thresh=m2_thresh,
+        is_mobile=is_mobile,
+        status_placeholder=None,
+        force_refresh=force_refresh
     )
 
 st.set_page_config(
@@ -414,15 +417,16 @@ with col_nav2:
 status_box = st.empty()
 
 with st.spinner(f"正在載入 {st.session_state.stock_id} 圖表資料..."):
+    # 【防呆防錯備註 2026-11-10】：明確使用具名參數傳遞，絕不錯置 disp_days 與 target_date_val
     fig_top, fig_btm, df, full_ticker, total_len, end_idx = get_cached_figures(
-        st.session_state.stock_id,
-        st.session_state.period,
-        st.session_state.disp_days,
-        target_date_val,
-        m1_thresh,
-        m2_thresh,
-        is_mobile,
-        force_refresh
+        stock_id=st.session_state.stock_id,
+        period=st.session_state.period,
+        disp_days=st.session_state.disp_days,
+        base_date=target_date_val,
+        m1_thresh=m1_thresh,
+        m2_thresh=m2_thresh,
+        is_mobile=is_mobile,
+        force_refresh=force_refresh
     )
 
 if fig_top is None or fig_btm is None or df is None or df.empty:
@@ -447,9 +451,6 @@ else:
         m2_thresh=m2_thresh
     )
 
-    # 【防呆防錯備註 2026-11-10】【修訂目的】：
-    # 調高總高度（手機版 2100px、電腦版 1980px），確保底部容器的「資券條」與「法人集保條」
-    # 絕不被外框或底部 Manage app 工具列裁切，100% 完整呈現外資、投信、自營買賣超。
     total_h = 2100 if is_mobile else 1980
     components.html(html_content, height=total_h, scrolling=False)
 
