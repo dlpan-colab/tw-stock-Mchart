@@ -1,6 +1,6 @@
 """
-app.py - 主應用程式介面與生命週期控制 (法人與資券維護預設 1 週版)
-版本: 202611102325
+app.py - 主應用程式介面與生命週期控制 (修正上一檔/下一檔不改動歷史順序版)
+版本: 202611112020
 """
 
 import os
@@ -11,19 +11,14 @@ import streamlit.components.v1 as components
 import cloud_sync
 
 MODULE_NAME = "app"
-MODULE_VERSION = "202611102325"
+MODULE_VERSION = "202611112020"
 
 # 【防呆防錯備註 2026-11-07】：版本控制權由 app.py 作為唯一權威源，動態掃描所有模組最大版本號，杜絕多頭覆寫與重工
 def get_system_version() -> str:
     versions = [MODULE_VERSION]
     module_names = [
-        "frontend",
-        "chart_builder",
-        "indicators",
-        "data_fetcher",
-        "storage",
-        "config",
-        "cloud_sync"
+        "frontend", "chart_builder", "indicators", 
+        "data_fetcher", "storage", "config", "cloud_sync"
     ]
     base_dir = os.path.dirname(os.path.abspath(__file__))
     for mod_name in module_names:
@@ -117,12 +112,14 @@ footer {visibility: hidden;}
     align-items: center !important;
     gap: 8px !important;
 }
+
 [data-testid="stHorizontalBlock"] > div {
     flex: 0 0 65px !important;
     width: 65px !important;
     min-width: 65px !important;
     max-width: 65px !important;
 }
+
 [data-testid="stHorizontalBlock"] button {
     width: 100% !important;
     min-width: 65px !important;
@@ -170,11 +167,10 @@ def on_index_select_change():
         if m:
             idx_code = m.group(1)
             st.session_state.stock_id = idx_code
-            st.session_state.index_select_box = "選擇主要市場指數..."
+        st.session_state.index_select_box = "選擇主要市場指數..."
 
 with st.sidebar:
     st.header("參數設定")
-    
     INDEX_CHOICES = [
         "選擇主要市場指數...",
         "加權指數 (^TWII)",
@@ -193,7 +189,7 @@ with st.sidebar:
 
     history_records = load_stock_history()
     history_codes = [str(item.get("code")).strip() for item in history_records if item.get("code")]
-
+    
     with st.expander("查詢歷史紀錄", expanded=False):
         if history_codes:
             history_display = [f"{h.get('code')} {h.get('name', '')}".strip() for h in history_records]
@@ -204,7 +200,7 @@ with st.sidebar:
                 default=[],
                 key=current_ms_key
             )
-
+            
             newly_selected = [item for item in selected_history if item not in st.session_state.history_multiselect_prev]
             if newly_selected:
                 latest_clicked_code = newly_selected[-1].split()[0]
@@ -234,21 +230,21 @@ with st.sidebar:
         else:
             st.caption("目前無歷史紀錄")
 
-    if st.session_state.confirm_clear_all:
-        st.warning("⚠️ 未勾選任何標的，確定要清除全部歷史紀錄嗎？")
-        c_del1, c_del2 = st.columns(2)
-        with c_del1:
-            if st.button("確認全刪", key="btn_confirm_delete_all", use_container_width=True):
-                clear_stock_history()
-                st.session_state.stock_id = "2330"
-                st.session_state.confirm_clear_all = False
-                st.session_state.history_multiselect_prev = []
-                st.session_state.ms_counter += 1
-                st.rerun()
-        with c_del2:
-            if st.button("取消", key="btn_cancel_delete_all", use_container_width=True):
-                st.session_state.confirm_clear_all = False
-                st.rerun()
+        if st.session_state.confirm_clear_all:
+            st.warning("⚠️ 未勾選任何標的，確定要清除全部歷史紀錄嗎？")
+            c_del1, c_del2 = st.columns(2)
+            with c_del1:
+                if st.button("確認全刪", key="btn_confirm_delete_all", use_container_width=True):
+                    clear_stock_history()
+                    st.session_state.stock_id = "2330"
+                    st.session_state.confirm_clear_all = False
+                    st.session_state.history_multiselect_prev = []
+                    st.session_state.ms_counter += 1
+                    st.rerun()
+            with c_del2:
+                if st.button("取消", key="btn_cancel_delete_all", use_container_width=True):
+                    st.session_state.confirm_clear_all = False
+                    st.rerun()
 
     if "stock_input_box" not in st.session_state or st.session_state.stock_input_box != st.session_state.stock_id:
         st.session_state.stock_input_box = st.session_state.stock_id
@@ -319,14 +315,12 @@ with st.sidebar:
                     from data_fetcher import fetch_stock_daily_k, fetch_institutional_investors
                     from storage import StockChipStorage
                     from datetime import datetime, timedelta
-
                     k_res = fetch_stock_daily_k(cur_code, period="1y", force_refresh=False)
                     if k_res and k_res[0] is not None and not k_res[0].empty:
                         df_k = k_res[0]
                         full_tkr = k_res[1]
                         cutoff_dt = datetime.now() - timedelta(days=int(refetch_inst_weeks) * 7)
                         sub_dates = [d for d in df_k.index if d >= cutoff_dt]
-
                         if sub_dates:
                             clear_recent_institutional_data(cur_code, int(refetch_inst_weeks))
                             fresh_inst = fetch_institutional_investors(
@@ -366,16 +360,18 @@ with st.sidebar:
                     from data_fetcher import fetch_stock_daily_k, fetch_margin_short_data
                     from storage import StockChipStorage
                     from datetime import datetime, timedelta
-
                     k_res = fetch_stock_daily_k(cur_code, period="1y", force_refresh=False)
                     if k_res and k_res[0] is not None and not k_res[0].empty:
                         df_k = k_res[0]
                         cutoff_dt = datetime.now() - timedelta(days=int(refetch_weeks) * 7)
                         sub_dates = [d for d in df_k.index if d >= cutoff_dt]
-
                         if sub_dates:
                             clear_recent_margin_data(cur_code, int(refetch_weeks))
-                            fresh_records = fetch_margin_short_data(cur_code, df_k.index, start_date_exclusive=(cutoff_dt - timedelta(days=1)).strftime('%Y-%m-%d'))
+                            fresh_records = fetch_margin_short_data(
+                                cur_code,
+                                df_k.index,
+                                start_date_exclusive=(cutoff_dt - timedelta(days=1)).strftime('%Y-%m-%d')
+                            )
                             if fresh_records:
                                 storage = StockChipStorage(cur_code)
                                 storage.save_margin_data(fresh_records)
@@ -405,7 +401,6 @@ with st.sidebar:
                 try:
                     from data_fetcher import fetch_tdcc_holding_history
                     from storage import StockChipStorage
-
                     fresh_holdings = fetch_tdcc_holding_history(cur_code, weeks=int(refetch_holding_weeks))
                     if fresh_holdings:
                         storage = StockChipStorage(cur_code)
@@ -431,6 +426,14 @@ else:
 st.markdown(f"### 台股技術與籌碼分析 v{SYSTEM_VERSION} {status_icon}")
 
 def navigate_stock(direction: int):
+    """
+    【修訂說明 2026-11-11】：
+    修改目的：落實上一檔／下一檔純瀏覽，絕不改動查詢歷史清單排列順序。
+    防呆防錯原因：原先在此處呼叫 save_stock_history(target_code) 會將當前股票自動移至歷史第 0 位（置頂），
+                  導致歷史清單在每次導航時動態重排，游標陷入前兩檔互換的死循環，無法讀取第三檔以後。
+                  修訂後移除 save_stock_history，僅改變 session_state.stock_id 供頁面渲染，
+                  清單置頂行為僅保留於「文字框手動輸入」、「點擊查詢」與「歷史清單主動點選」。
+    """
     history_records = load_stock_history()
     codes = [str(item.get("code")).strip() for item in history_records if item.get("code")]
     if not codes:
@@ -443,7 +446,7 @@ def navigate_stock(direction: int):
     else:
         target_code = codes[0]
     st.session_state.stock_id = target_code
-    save_stock_history(target_code)
+    # 【已移除 save_stock_history(target_code)】避免上一檔／下一檔時清單順序被動態置頂改動
 
 col_nav1, col_nav2 = st.columns(2)
 with col_nav1:
@@ -478,7 +481,6 @@ else:
         update_stock_name_only(pure_code, real_c_name)
 
     chart_uuid = f"chart_{pure_code.replace('^', '').replace('.', '_')}"
-
     html_content = get_component_html(
         fig_top=fig_top,
         fig_btm=fig_btm,
@@ -490,7 +492,6 @@ else:
         m1_thresh=m1_thresh,
         m2_thresh=m2_thresh
     )
-
     total_h = 2100 if is_mobile else 1980
     components.html(html_content, height=total_h, scrolling=False)
 
