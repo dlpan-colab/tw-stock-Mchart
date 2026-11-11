@@ -1,6 +1,6 @@
 """
-app.py - 主應用程式介面與生命週期控制 (修正上一檔/下一檔不改動歷史順序版)
-版本: 202611112020
+app.py - 主應用程式介面與生命週期控制 (修正上一檔/下一檔不改動歷史順序與緊湊底部留白版)
+版本: 202611112030
 """
 
 import os
@@ -11,7 +11,7 @@ import streamlit.components.v1 as components
 import cloud_sync
 
 MODULE_NAME = "app"
-MODULE_VERSION = "202611112020"
+MODULE_VERSION = "202611112030"
 
 # 【防呆防錯備註 2026-11-07】：版本控制權由 app.py 作為唯一權威源，動態掃描所有模組最大版本號，杜絕多頭覆寫與重工
 def get_system_version() -> str:
@@ -492,7 +492,12 @@ else:
         m1_thresh=m1_thresh,
         m2_thresh=m2_thresh
     )
-    total_h = 2100 if is_mobile else 1980
+    
+    # 【修訂說明 2026-11-11】：
+    # 修改目的：緊縮 components.html 高度，解決底部的上/下一檔與資訊條之間空白過大的問題。
+    # 防呆防錯原因：原先 2100px 超出實體圖表與資訊條總高，造成 iframe 底部溢出約 250px 空白；
+    #               調整為 1800px / 1780px 緊密包覆內容，且不影響 Plotly 手勢操作。
+    total_h = 1800 if is_mobile else 1780
     components.html(html_content, height=total_h, scrolling=False)
 
 col_nav_b1, col_nav_b2 = st.columns(2)
