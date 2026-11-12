@@ -1,6 +1,6 @@
 """
-app.py - 主應用程式介面與生命週期控制 (修正上一檔/下一檔不改動歷史順序與緊湊底部留白版)
-版本: 202611112030
+app.py - 主應用程式介面與生命週期控制 (修正上一檔/下一檔不改動歷史順序、緊湊留白與底部安全墊高版)
+版本: 202611122115
 """
 
 import os
@@ -11,7 +11,7 @@ import streamlit.components.v1 as components
 import cloud_sync
 
 MODULE_NAME = "app"
-MODULE_VERSION = "202611112030"
+MODULE_VERSION = "202611122115"
 
 # 【防呆防錯備註 2026-11-07】：版本控制權由 app.py 作為唯一權威源，動態掃描所有模組最大版本號，杜絕多頭覆寫與重工
 def get_system_version() -> str:
@@ -509,3 +509,9 @@ with col_nav_b2:
     if st.button("下一檔 ▶", key="nav_next_btm"):
         navigate_stock(1)
         st.rerun()
+
+# 【修訂說明 2026-11-12】：
+# 修改目的：在「上一檔／下一檔」底部按鈕列下方增加一行空白安全高度，避開右下角官方懸浮的 Manage app 黑條。
+# 防呆防錯原因：手機瀏覽時「Manage app」固定於視窗右下角底緣（position: fixed; bottom: 0; right: 0），
+#               若無此空白墊高區，滑到底部時「下一檔 ▶」會直接被黑條遮蓋無法點擊。
+st.markdown('<div style="height: 48px;"></div>', unsafe_allow_html=True)
