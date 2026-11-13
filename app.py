@@ -1,6 +1,6 @@
 """
-app.py - 主應用程式介面與生命週期控制 (共用主圖 Frame + 三頁籤各自獨立 Frame 整合版)
-版本: 202611132115
+app.py - 主應用程式介面與生命週期控制 (共用主圖 Frame + 三頁籤各自獨立 Frame + 雲端分點持久化累積版)
+版本: 202611132200
 """
 
 import os
@@ -11,7 +11,7 @@ import streamlit.components.v1 as components
 import cloud_sync
 
 MODULE_NAME = "app"
-MODULE_VERSION = "202611132115"
+MODULE_VERSION = "202611132200"
 
 # 【防呆防錯備註 2026-11-07】：版本控制權由 app.py 作為唯一權威源，動態掃描所有模組最大版本號，杜絕多頭覆寫與重工
 def get_system_version() -> str:
@@ -37,6 +37,7 @@ def get_system_version() -> str:
 SYSTEM_VERSION = get_system_version()
 
 from storage import (
+    StockChipStorage,
     load_stock_history,
     save_stock_history,
     clear_stock_history,
@@ -54,12 +55,15 @@ from frontend import (
     get_chip_tab_html,
     get_broker_tab_html
 )
-from data_fetcher import fetch_stock_broker_range_ranking, fetch_single_broker_daily_series
+from data_fetcher import (
+    fetch_stock_broker_range_ranking,
+    fetch_single_broker_daily_series
+)
 
 INDEX_MAP = {
     # 台股
     "TWII": "^TWII", "加權": "^TWII", "大盤": "^TWII", "^TWII": "^TWII",
-    "TWOII": "^TWOII", "OTC": "^TWOII", "櫃買": "^TWII", "^TWOII": "^TWOII",
+    "TWOII": "^TWOII", "OTC": "^TWOII", "櫃買": "^TWOII", "^TWOII": "^TWOII",
     # 美股
     "DJI": "^DJI", "道瓊": "^DJI", "^DJI": "^DJI",
     "IXIC": "^IXIC", "COMP": "^IXIC", "那指": "^IXIC", "那斯達克": "^IXIC", "^IXIC": "^IXIC",
@@ -97,13 +101,17 @@ def get_cached_figures(stock_id, period, disp_days, base_date, m1_thresh, m2_thr
 
 
 @st.cache_data(ttl=600, show_spinner=False)
-def get_cached_broker_payload(stock_id: str, trade_dates_tuple: tuple, target_end_idx: int) -> dict:
+def get_cached_broker_payload(
+    stock_id: str,
+    trade_dates_tuple: tuple,
+    target_end_idx: int,
+    force_refresh: bool = False
+) -> dict:
     """
     【修訂說明 2026-11-13】【修改目的與防呆防錯原因】：
-    依據關注交易日（target_end_idx）與實際台股交易日曆，建構：
-    1. 當日、前 10 日、前 20 日、前 60 日分點買超前 10 名與賣超前 10 名排行榜。
-    2. 10 / 20 / 60 日區間累計買賣超各前 5 名分點之逐日買賣超柱狀圖序列。
-    防呆機制：對同一分點跨區間去重抓取最大覆蓋區間（60日）再本地日期切片，降低遠端請求數並避免限流。
+    1. 優先讀取個股雲端 SQLite（broker_range_rank + broker_daily_trades），已收錄基準日零網路請求秒開。
+    2. 若為新交易日或強制更新，向 MoneyDJ 發送單次精簡請求抓回排行榜與最新 20 日逐日明細，
+       寫入本地 SQLite 並一次背景同步上傳至 Google 雲端硬碟，隨時間逐步累積滿 60 個交易日。
     """
     code = str(stock_id).strip()
     if not code or code.startswith("^") or not code.isdigit() or not trade_dates_tuple:
@@ -123,7 +131,47 @@ def get_cached_broker_payload(stock_id: str, trade_dates_tuple: tuple, target_en
         20: get_start_date_by_window(20),
         60: get_start_date_by_window(60),
     }
+    earliest_start = win_starts[60]
 
+    storage = StockChipStorage(code)
+
+    def attach_cloud_series_to_bundle(bundle: dict) -> dict:
+        """從雲端 SQLite 讀取各分點已累積之全區間逐日買賣超明細並組裝柱狀圖序列"""
+        for w in (10, 20, 60):
+            w_key = f"w{w}"
+            s_str = win_starts[w]
+            w_obj = bundle.get(w_key)
+            if not isinstance(w_obj, dict):
+                continue
+            for side_rank_key, series_key in (("buy", "top5_buy_series"), ("sell", "top5_sell_series")):
+                rank_rows = w_obj.get(side_rank_key, [])[:5]
+                out_series = []
+                for r in rank_rows:
+                    b_name = str(r.get("name", "")).strip()
+                    tot_net = int(r.get("net", 0))
+                    df_d = storage.load_broker_daily_series(b_name, s_str, end_date_str)
+                    if df_d is not None and not df_d.empty:
+                        dates_arr = df_d["日期"].tolist()
+                        nets_arr = [int(v) for v in df_d["買賣超(張)"].tolist()]
+                    else:
+                        dates_arr, nets_arr = [], []
+                    out_series.append({
+                        "name": b_name,
+                        "total_net": tot_net,
+                        "dates": dates_arr,
+                        "nets": nets_arr
+                    })
+                w_obj[series_key] = out_series
+        return bundle
+
+    # 1. 若非強制更新，優先檢查雲端 SQLite 是否已收錄該基準日排行榜
+    if not force_refresh:
+        cached_rank = storage.load_broker_range_rank(end_date_str)
+        if cached_rank is not None:
+            hydrated = attach_cloud_series_to_bundle(cached_rank)
+            return {"by_date": {end_date_str: hydrated}}
+
+    # 2. 尚未收錄或強制更新：向遠端發送單次精簡請求並寫入雲端 SQLite 增量累積
     def df_to_rank_records(df_rank):
         if df_rank is None or df_rank.empty:
             return []
@@ -144,7 +192,6 @@ def get_cached_broker_payload(stock_id: str, trade_dates_tuple: tuple, target_en
         df_b, df_s = fetch_stock_broker_range_ranking(code, s_str, end_date_str)
         rank_dfs[w] = (df_b, df_s)
 
-    earliest_start = win_starts[60]
     broker_url_map = {}
     for w in (10, 20, 60):
         df_b, df_s = rank_dfs[w]
@@ -156,50 +203,35 @@ def get_cached_broker_payload(stock_id: str, trade_dates_tuple: tuple, target_en
                     if b_name and d_url and b_name not in broker_url_map:
                         broker_url_map[b_name] = d_url
 
-    daily_cache_by_broker = {}
+    # 每個分點只打 1 次 zco0.djhtm 抓最新 20 日明細，並增量存入 SQLite（關閉單筆上傳，最後統一上傳 1 次）
     for b_name, d_url in broker_url_map.items():
-        df_daily = fetch_single_broker_daily_series(d_url, earliest_start, end_date_str)
-        daily_cache_by_broker[b_name] = df_daily
-        time.sleep(0.08)
-
-    def build_top5_series(df_side, s_str: str):
-        if df_side is None or df_side.empty:
-            return []
-        out_list = []
-        for _, row in df_side.head(5).iterrows():
-            b_name = str(row.get("分點名稱", "")).strip()
-            tot_net = int(row.get("買賣超(張)", 0))
-            df_d = daily_cache_by_broker.get(b_name)
-            if df_d is not None and not df_d.empty:
-                sub_d = df_d[(df_d["日期"] >= s_str) & (df_d["日期"] <= end_date_str)]
-                dates_arr = sub_d["日期"].tolist()
-                nets_arr = [int(v) for v in sub_d["買賣超(張)"].tolist()]
-            else:
-                dates_arr, nets_arr = [], []
-            out_list.append({
-                "name": b_name,
-                "total_net": tot_net,
-                "dates": dates_arr,
-                "nets": nets_arr
-            })
-        return out_list
+        df_fresh = fetch_single_broker_daily_series(d_url, earliest_start, end_date_str)
+        if df_fresh is not None and not df_fresh.empty:
+            storage.save_broker_daily_trades(b_name, df_fresh, sync_cloud=False)
+        time.sleep(0.06)
 
     day_bundle = {}
+    has_any_rank = False
     for w in (1, 10, 20, 60):
         s_str = win_starts[w]
         df_b, df_s = rank_dfs[w]
+        b_recs = df_to_rank_records(df_b)
+        s_recs = df_to_rank_records(df_s)
+        if b_recs or s_recs:
+            has_any_rank = True
         label = end_date_str if w == 1 else f"{s_str} ~ {end_date_str}"
-        entry = {
+        day_bundle[f"w{w}"] = {
             "range_label": label,
-            "buy": df_to_rank_records(df_b),
-            "sell": df_to_rank_records(df_s),
+            "buy": b_recs,
+            "sell": s_recs,
         }
-        if w in (10, 20, 60):
-            entry["top5_buy_series"] = build_top5_series(df_b, s_str)
-            entry["top5_sell_series"] = build_top5_series(df_s, s_str)
-        day_bundle[f"w{w}"] = entry
 
-    return {"by_date": {end_date_str: day_bundle}}
+    # 僅在成功取得有效排行榜時才存入雲端 SQLite 並觸發背景同步上傳
+    if has_any_rank:
+        storage.save_broker_range_rank(end_date_str, day_bundle, sync_cloud=True)
+
+    hydrated_new = attach_cloud_series_to_bundle(day_bundle)
+    return {"by_date": {end_date_str: hydrated_new}}
 
 
 st.set_page_config(
@@ -606,8 +638,13 @@ else:
     trade_dates_tuple = tuple(d.strftime('%Y-%m-%d') for d in df.index)
     broker_payload = {"by_date": {}}
     if pure_code.isdigit() and not pure_code.startswith("^"):
-        with st.spinner(f"正在彙整 {pure_code} 券商分點區間統計與前五大分點逐日明細..."):
-            broker_payload = get_cached_broker_payload(pure_code, trade_dates_tuple, end_idx)
+        with st.spinner(f"正在彙整 {pure_code} 券商分點區間統計與雲端逐日明細..."):
+            broker_payload = get_cached_broker_payload(
+                pure_code,
+                trade_dates_tuple,
+                end_idx,
+                force_refresh=force_refresh
+            )
 
     chart_uuid = f"chart_{pure_code.replace('^', '').replace('.', '_')}"
     is_idx = pure_code.startswith("^")
