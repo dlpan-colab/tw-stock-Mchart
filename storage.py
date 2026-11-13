@@ -1,6 +1,6 @@
 """
-storage.py - 本地 SQLite 資料庫與股票歷史紀錄管理器 (新增法人籌碼維護清理函式版)ㄖ
-版本: 202611102248
+storage.py - 本地 SQLite 資料庫與股票歷史紀錄管理器 (新增雲端分點排行榜與逐日明細增量累積版)
+版本: 202611132150
 """
 
 import os
@@ -16,7 +16,7 @@ from datetime import datetime, timedelta
 import pandas as pd
 
 MODULE_NAME = "storage"
-MODULE_VERSION = "202611102248"
+MODULE_VERSION = "202611132150"
 
 STORAGE_DIR = "."
 HISTORY_FILE = os.path.join(STORAGE_DIR, "stock_history.json")
@@ -25,11 +25,9 @@ NAMES_CACHE_FILE = os.path.join(STORAGE_DIR, "tw_stock_names.json")
 COMMON_STOCK_NAMES = {
     # 主要市場指數
     "^TWII": "加權指數", "^TWOII": "櫃買指數",
-    "^DJI": "道瓊指數", "^IXIC": "那斯達克",
-    "^SOX": "費城半導體", "^GSPC": "標普500",
-    "^N225": "日經225", "^KS11": "韓國綜合",
-    "^FTSE": "英國富時100", "^GDAXI": "德國DAX",
-    "^FCHI": "法國CAC40",
+    "^DJI": "道瓊指數", "^IXIC": "那斯達克", "^SOX": "費城半導體",
+    "^GSPC": "標普500", "^N225": "日經225", "^KS11": "韓國綜合",
+    "^FTSE": "英國富時100", "^GDAXI": "德國DAX", "^FCHI": "法國CAC40",
     # 常用個股
     "1101": "台泥", "1102": "亞泥", "1104": "環泥", "1216": "統一",
     "1301": "台塑", "1303": "南亞", "1312": "國喬", "1326": "台化",
@@ -44,10 +42,12 @@ COMMON_STOCK_NAMES = {
     "6456": "GIS-KY", "6505": "台塑化", "8111": "立碁", "8131": "福懋科"
 }
 
+
 def _async_run(func, *args, **kwargs):
     """將耗時的網路同步作業丟入背景執行緒，絕不卡死前端主頁面"""
     t = threading.Thread(target=func, args=args, kwargs=kwargs, daemon=True)
     t.start()
+
 
 def _do_sync_cloud_pull():
     try:
@@ -57,9 +57,11 @@ def _do_sync_cloud_pull():
     except Exception as e:
         print(f"[CloudSync] Pull warning: {e}")
 
+
 def _sync_cloud_pull():
     if not os.path.exists(HISTORY_FILE) or not os.path.exists(NAMES_CACHE_FILE):
         _do_sync_cloud_pull()
+
 
 def _do_sync_cloud_push(allow_empty_history: bool = False):
     try:
@@ -70,8 +72,8 @@ def _do_sync_cloud_push(allow_empty_history: bool = False):
                 try:
                     with open(HISTORY_FILE, "r", encoding="utf-8") as f:
                         chk_data = json.load(f)
-                    if not chk_data or len(chk_data) == 0:
-                        can_push = False
+                        if not chk_data or len(chk_data) == 0:
+                            can_push = False
                 except Exception:
                     can_push = False
             if can_push:
@@ -81,8 +83,10 @@ def _do_sync_cloud_push(allow_empty_history: bool = False):
     except Exception as e:
         print(f"[CloudSync] Push warning: {e}")
 
+
 def _sync_cloud_push(allow_empty_history: bool = False):
     _async_run(_do_sync_cloud_push, allow_empty_history=allow_empty_history)
+
 
 def _do_sync_db_pull(pure_code: str):
     try:
@@ -93,12 +97,14 @@ def _do_sync_db_pull(pure_code: str):
     except Exception as e:
         print(f"[CloudSync] DB pull warning for {pure_code}: {e}")
 
+
 def sync_db_pull(pure_code: str):
     db_name = f"data_{pure_code}.db"
     local_path = os.path.join(STORAGE_DIR, db_name)
     if os.path.exists(local_path) and os.path.getsize(local_path) > 0:
         return
     _do_sync_db_pull(pure_code)
+
 
 def _do_sync_db_push(pure_code: str):
     try:
@@ -110,8 +116,10 @@ def _do_sync_db_push(pure_code: str):
     except Exception as e:
         print(f"[CloudSync] DB push warning for {pure_code}: {e}")
 
+
 def sync_db_push(pure_code: str):
     _async_run(_do_sync_db_push, pure_code)
+
 
 def _load_name_cache() -> dict:
     try:
@@ -121,6 +129,7 @@ def _load_name_cache() -> dict:
     except Exception:
         pass
     return {}
+
 
 def _save_name_cache(code: str, name: str):
     code = str(code).strip()
@@ -137,6 +146,7 @@ def _save_name_cache(code: str, name: str):
     except Exception:
         pass
 
+
 def load_stock_names_dict() -> dict:
     cache = _load_name_cache()
     if not cache:
@@ -144,6 +154,7 @@ def load_stock_names_dict() -> dict:
     merged = COMMON_STOCK_NAMES.copy()
     merged.update(cache)
     return merged
+
 
 def get_stock_chinese_name(pure_code: str) -> str:
     pure_code = str(pure_code).strip()
@@ -154,14 +165,12 @@ def get_stock_chinese_name(pure_code: str) -> str:
     cache = _load_name_cache()
     if pure_code in cache and cache[pure_code] and cache[pure_code] != pure_code:
         return cache[pure_code]
-
     if pure_code.startswith("^"):
         return pure_code
 
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
     }
-
     url_twse = f"https://isin.twse.com.tw/isin/single_main.jsp?owncode={pure_code}&stockname="
     for attempt in range(2):
         try:
@@ -228,6 +237,7 @@ def get_stock_chinese_name(pure_code: str) -> str:
 
     return pure_code
 
+
 def _recover_history_from_databases() -> list:
     recovered = []
     seen = set()
@@ -268,8 +278,8 @@ def _recover_history_from_databases() -> list:
             _sync_cloud_push(allow_empty_history=False)
         except Exception:
             pass
-
     return recovered[:30]
+
 
 def load_stock_history():
     _sync_cloud_pull()
@@ -282,16 +292,15 @@ def load_stock_history():
             data = []
     if not isinstance(data, list):
         data = []
-
     if not data:
         data = _recover_history_from_databases()
-
     for item in data:
         code = str(item.get("code", "")).strip()
         curr_name = str(item.get("name", "")).strip()
         if not curr_name or curr_name == code:
             item["name"] = get_stock_chinese_name(code)
     return data
+
 
 def save_stock_history(code: str, name: str = None):
     code = str(code).strip()
@@ -309,6 +318,7 @@ def save_stock_history(code: str, name: str = None):
     except Exception:
         pass
     return new_hist
+
 
 def update_stock_name_only(code: str, name: str):
     code = str(code).strip()
@@ -330,6 +340,7 @@ def update_stock_name_only(code: str, name: str):
         except Exception:
             pass
 
+
 def clear_stock_history():
     try:
         if os.path.exists(HISTORY_FILE):
@@ -340,6 +351,7 @@ def clear_stock_history():
     except Exception:
         pass
     return []
+
 
 def remove_stocks_from_history(target_codes: list) -> list:
     history = load_stock_history()
@@ -352,6 +364,7 @@ def remove_stocks_from_history(target_codes: list) -> list:
     except Exception:
         pass
     return new_history
+
 
 def clear_recent_margin_data(pure_code: str, weeks: int = 2) -> str:
     """清除指定週數內之資券紀錄，供重新爬取覆蓋"""
@@ -371,6 +384,7 @@ def clear_recent_margin_data(pure_code: str, weeks: int = 2) -> str:
         return f"已成功清除 {pure_code} 自 {cutoff_date} 起之資券紀錄。"
     except Exception as e:
         return f"清除資券紀錄失敗: {e}"
+
 
 # 【防呆防錯備註 2026-11-10】【修訂目的與防呆防錯原因】：
 # 新增法人籌碼清理函式，比照資券維護模式，僅針對近 N 週資料執行精確 DELETE，
@@ -393,6 +407,7 @@ def clear_recent_institutional_data(pure_code: str, weeks: int = 6) -> str:
     except Exception as e:
         return f"清除法人紀錄失敗: {e}"
 
+
 class StockChipStorage:
     def __init__(self, pure_code: str):
         self.pure_code = str(pure_code).strip()
@@ -406,39 +421,57 @@ class StockChipStorage:
         with sqlite3.connect(self.db_path) as conn:
             cur = conn.cursor()
             cur.execute("""
-            CREATE TABLE IF NOT EXISTS daily_k (
-                date TEXT PRIMARY KEY,
-                open REAL,
-                high REAL,
-                low REAL,
-                close REAL,
-                volume REAL
-            )
+                CREATE TABLE IF NOT EXISTS daily_k (
+                    date TEXT PRIMARY KEY,
+                    open REAL,
+                    high REAL,
+                    low REAL,
+                    close REAL,
+                    volume REAL
+                )
             """)
             cur.execute("""
-            CREATE TABLE IF NOT EXISTS institutional_investors (
-                date TEXT PRIMARY KEY,
-                foreign_net REAL,
-                trust_net REAL,
-                dealer_net REAL
-            )
+                CREATE TABLE IF NOT EXISTS institutional_investors (
+                    date TEXT PRIMARY KEY,
+                    foreign_net REAL,
+                    trust_net REAL,
+                    dealer_net REAL
+                )
             """)
             cur.execute("""
-            CREATE TABLE IF NOT EXISTS shareholding_distribution (
-                date TEXT,
-                level INTEGER,
-                percent REAL,
-                PRIMARY KEY (date, level)
-            )
+                CREATE TABLE IF NOT EXISTS shareholding_distribution (
+                    date TEXT,
+                    level INTEGER,
+                    percent REAL,
+                    PRIMARY KEY (date, level)
+                )
             """)
             cur.execute("""
-            CREATE TABLE IF NOT EXISTS margin_short (
-                date TEXT PRIMARY KEY,
-                margin_diff REAL,
-                short_diff REAL,
-                margin_bal REAL,
-                short_bal REAL
-            )
+                CREATE TABLE IF NOT EXISTS margin_short (
+                    date TEXT PRIMARY KEY,
+                    margin_diff REAL,
+                    short_diff REAL,
+                    margin_bal REAL,
+                    short_bal REAL
+                )
+            """)
+            # 【修訂說明 2026-11-13】新增雲端券商分點區間排行表與單一分點逐日明細增量累積表
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS broker_range_rank (
+                    base_date TEXT PRIMARY KEY,
+                    rank_json TEXT,
+                    updated_at TEXT
+                )
+            """)
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS broker_daily_trades (
+                    broker_name TEXT,
+                    date TEXT,
+                    buy_vol INTEGER,
+                    sell_vol INTEGER,
+                    net_vol INTEGER,
+                    PRIMARY KEY (broker_name, date)
+                )
             """)
             conn.commit()
 
@@ -479,86 +512,203 @@ class StockChipStorage:
         records = []
         for d, row in df.iterrows():
             d_str = d.strftime('%Y-%m-%d') if hasattr(d, 'strftime') else str(d)[:10]
+            vol_val = float(row['Volume']) if not pd.isna(row['Volume']) else 0.0
+            if not self.is_index and vol_val <= 0:
+                continue
+            if pd.isna(row['Open']) or pd.isna(row['Close']):
+                continue
             records.append((
                 d_str,
                 float(row['Open']),
                 float(row['High']),
                 float(row['Low']),
                 float(row['Close']),
-                float(row.get('Volume', 0.0))
+                vol_val
             ))
-        with sqlite3.connect(self.db_path) as conn:
-            cur = conn.cursor()
-            cur.executemany("INSERT OR REPLACE INTO daily_k VALUES (?, ?, ?, ?, ?, ?)", records)
-            conn.commit()
-        sync_db_push(self.pure_code)
+        if records:
+            with sqlite3.connect(self.db_path) as conn:
+                cur = conn.cursor()
+                cur.executemany("""
+                    INSERT OR REPLACE INTO daily_k (date, open, high, low, close, volume)
+                    VALUES (?, ?, ?, ?, ?, ?)
+                """, records)
+                conn.commit()
+            sync_db_push(self.pure_code)
 
     def load_daily_k_df(self) -> pd.DataFrame:
+        if not os.path.exists(self.db_path):
+            return pd.DataFrame()
         with sqlite3.connect(self.db_path) as conn:
             if self.is_index:
-                sql = """
-                SELECT date, open as Open, high as High, low as Low, close as Close, volume as Volume
-                FROM daily_k
-                WHERE open IS NOT NULL AND high IS NOT NULL AND low IS NOT NULL AND close IS NOT NULL
-                ORDER BY date
-                """
+                df = pd.read_sql_query(
+                    "SELECT date, open, high, low, close, volume FROM daily_k WHERE open IS NOT NULL ORDER BY date ASC",
+                    conn
+                )
             else:
-                sql = """
-                SELECT date, open as Open, high as High, low as Low, close as Close, volume as Volume
-                FROM daily_k
-                WHERE volume > 0 AND open IS NOT NULL AND high IS NOT NULL AND low IS NOT NULL AND close IS NOT NULL
-                ORDER BY date
-                """
-            df = pd.read_sql(sql, conn)
-            if not df.empty:
-                df['date'] = pd.to_datetime(df['date'])
-                df = df.set_index('date')
-            return df
+                df = pd.read_sql_query(
+                    "SELECT date, open, high, low, close, volume FROM daily_k WHERE volume > 0 ORDER BY date ASC",
+                    conn
+                )
+        if df.empty:
+            return pd.DataFrame()
+        df['date'] = pd.to_datetime(df['date'])
+        df.set_index('date', inplace=True)
+        df.index.name = 'Date'
+        df.rename(columns={
+            'open': 'Open',
+            'high': 'High',
+            'low': 'Low',
+            'close': 'Close',
+            'volume': 'Volume'
+        }, inplace=True)
+        return df
 
-    def save_institutional_data(self, records):
+    def save_institutional_data(self, records: list):
         if not records:
             return
         with sqlite3.connect(self.db_path) as conn:
             cur = conn.cursor()
-            cur.executemany("INSERT OR REPLACE INTO institutional_investors VALUES (?, ?, ?, ?)", records)
+            cur.executemany("""
+                INSERT OR REPLACE INTO institutional_investors (date, foreign_net, trust_net, dealer_net)
+                VALUES (?, ?, ?, ?)
+            """, records)
             conn.commit()
         sync_db_push(self.pure_code)
 
-    def save_margin_data(self, records):
+    def load_institutional_df(self) -> pd.DataFrame:
+        if not os.path.exists(self.db_path):
+            return pd.DataFrame()
+        with sqlite3.connect(self.db_path) as conn:
+            df = pd.read_sql_query(
+                "SELECT date, foreign_net, trust_net, dealer_net FROM institutional_investors ORDER BY date ASC",
+                conn
+            )
+        if not df.empty:
+            df['date'] = pd.to_datetime(df['date'])
+        return df
+
+    def save_margin_data(self, records: list):
         if not records:
             return
         with sqlite3.connect(self.db_path) as conn:
             cur = conn.cursor()
-            cur.executemany("INSERT OR REPLACE INTO margin_short VALUES (?, ?, ?, ?, ?)", records)
+            cur.executemany("""
+                INSERT OR REPLACE INTO margin_short (date, margin_diff, short_diff, margin_bal, short_bal)
+                VALUES (?, ?, ?, ?, ?)
+            """, records)
             conn.commit()
         sync_db_push(self.pure_code)
 
-    def save_holding_data(self, records):
+    def load_margin_df(self) -> pd.DataFrame:
+        if not os.path.exists(self.db_path):
+            return pd.DataFrame()
+        with sqlite3.connect(self.db_path) as conn:
+            df = pd.read_sql_query(
+                "SELECT date, margin_diff, short_diff, margin_bal, short_bal FROM margin_short ORDER BY date ASC",
+                conn
+            )
+        if not df.empty:
+            df['date'] = pd.to_datetime(df['date'])
+        return df
+
+    def save_holding_data(self, records: list):
         if not records:
             return
         with sqlite3.connect(self.db_path) as conn:
             cur = conn.cursor()
-            cur.executemany("INSERT OR REPLACE INTO shareholding_distribution VALUES (?, ?, ?)", records)
+            cur.executemany("""
+                INSERT OR REPLACE INTO shareholding_distribution (date, level, percent)
+                VALUES (?, ?, ?)
+            """, records)
             conn.commit()
         sync_db_push(self.pure_code)
 
-    def load_institutional_df(self):
+    def load_holding_df(self) -> pd.DataFrame:
+        if not os.path.exists(self.db_path):
+            return pd.DataFrame()
         with sqlite3.connect(self.db_path) as conn:
-            df = pd.read_sql("SELECT date, foreign_net, trust_net, dealer_net FROM institutional_investors ORDER BY date", conn)
-            if not df.empty:
-                df["date"] = pd.to_datetime(df["date"]).dt.normalize()
-            return df
+            df = pd.read_sql_query(
+                "SELECT date, level, percent FROM shareholding_distribution ORDER BY date ASC",
+                conn
+            )
+        if not df.empty:
+            df['date'] = pd.to_datetime(df['date'])
+        return df
 
-    def load_margin_df(self):
+    # =====================================================================
+    # 【修訂說明 2026-11-13】券商分點區間排行榜與逐日明細雲端 SQLite 存取介面
+    # =====================================================================
+    def save_broker_range_rank(self, base_date: str, rank_bundle: dict, sync_cloud: bool = True):
+        if not base_date or not isinstance(rank_bundle, dict):
+            return
+        now_str = (datetime.utcnow() + timedelta(hours=8)).strftime("%Y-%m-%d %H:%M:%S")
+        payload_str = json.dumps(rank_bundle, ensure_ascii=False)
         with sqlite3.connect(self.db_path) as conn:
-            df = pd.read_sql("SELECT * FROM margin_short ORDER BY date", conn)
-            if not df.empty:
-                df["date"] = pd.to_datetime(df["date"]).dt.normalize()
-            return df
+            cur = conn.cursor()
+            cur.execute("""
+                INSERT OR REPLACE INTO broker_range_rank (base_date, rank_json, updated_at)
+                VALUES (?, ?, ?)
+            """, (str(base_date)[:10], payload_str, now_str))
+            conn.commit()
+        if sync_cloud:
+            sync_db_push(self.pure_code)
 
-    def load_holding_df(self):
+    def load_broker_range_rank(self, base_date: str):
+        if not base_date or not os.path.exists(self.db_path):
+            return None
         with sqlite3.connect(self.db_path) as conn:
-            df = pd.read_sql("SELECT date, level, percent FROM shareholding_distribution ORDER BY date, level", conn)
-            if not df.empty:
-                df["date"] = pd.to_datetime(df["date"]).dt.normalize()
-            return df
+            cur = conn.cursor()
+            cur.execute(
+                "SELECT rank_json FROM broker_range_rank WHERE base_date = ?",
+                (str(base_date)[:10],)
+            )
+            row = cur.fetchone()
+        if not row or not row[0]:
+            return None
+        try:
+            parsed = json.loads(row[0])
+            if isinstance(parsed, dict) and all(k in parsed for k in ("w1", "w10", "w20", "w60")):
+                return parsed
+        except Exception:
+            pass
+        return None
+
+    def save_broker_daily_trades(self, broker_name: str, df_daily: pd.DataFrame, sync_cloud: bool = True):
+        b_name = str(broker_name or "").strip()
+        if not b_name or df_daily is None or df_daily.empty:
+            return
+        records = []
+        for _, r in df_daily.iterrows():
+            d_str = str(r.get("日期", "")).strip()[:10]
+            if not d_str:
+                continue
+            buy_v = int(r.get("買進(張)", 0) or 0)
+            sell_v = int(r.get("賣出(張)", 0) or 0)
+            net_v = int(r.get("買賣超(張)", buy_v - sell_v) or 0)
+            records.append((b_name, d_str, buy_v, sell_v, net_v))
+        if not records:
+            return
+        with sqlite3.connect(self.db_path) as conn:
+            cur = conn.cursor()
+            cur.executemany("""
+                INSERT OR REPLACE INTO broker_daily_trades (broker_name, date, buy_vol, sell_vol, net_vol)
+                VALUES (?, ?, ?, ?, ?)
+            """, records)
+            conn.commit()
+        if sync_cloud:
+            sync_db_push(self.pure_code)
+
+    def load_broker_daily_series(self, broker_name: str, start_date: str, end_date: str) -> pd.DataFrame:
+        b_name = str(broker_name or "").strip()
+        if not b_name or not os.path.exists(self.db_path):
+            return pd.DataFrame()
+        s_iso = str(start_date)[:10]
+        e_iso = str(end_date)[:10]
+        with sqlite3.connect(self.db_path) as conn:
+            df = pd.read_sql_query("""
+                SELECT date AS "日期", buy_vol AS "買進(張)", sell_vol AS "賣出(張)", net_vol AS "買賣超(張)"
+                FROM broker_daily_trades
+                WHERE broker_name = ? AND date >= ? AND date <= ?
+                ORDER BY date ASC
+            """, conn, params=(b_name, s_iso, e_iso))
+        return df
