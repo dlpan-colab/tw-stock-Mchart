@@ -1,6 +1,6 @@
 """
 app.py - 主應用程式介面與生命週期控制 (三頁籤分流、乖離率副圖與券商分點統計柱狀圖整合版)
-版本: 202611132040
+版本: 202611132055
 """
 
 import os
@@ -11,7 +11,7 @@ import streamlit.components.v1 as components
 import cloud_sync
 
 MODULE_NAME = "app"
-MODULE_VERSION = "202611132040"
+MODULE_VERSION = "202611132055"
 
 # 【防呆防錯備註 2026-11-07】：版本控制權由 app.py 作為唯一權威源，動態掃描所有模組最大版本號，杜絕多頭覆寫與重工
 def get_system_version() -> str:
@@ -609,10 +609,11 @@ else:
         broker_payload=broker_payload
     )
     
-    # 【修訂說明 2026-11-13】：
-    # 配合三頁籤切換架構，預設首屏為「指標」頁籤（共用主圖 270/310px + 頁籤列 + 指標副圖 540/580px），
-    # 初始高度設為 920px / 980px，切換頁籤時由前端 Streamlit.setFrameHeight 動態自動伸縮。
-    total_h = 920 if is_mobile else 980
+    # 【修訂說明 2026-11-13】【修改目的與防呆防錯原因】：
+    # 提高初始 iframe 容器高度至 1060px（手機版）/ 1120px（電腦版），
+    # 確保首次載入時共用主圖、三頁籤按鈕列與「指標」4 層副圖（含最下方乖離率）皆完整露出不被裁切；
+    # 切換頁籤時再由前端 ResizeObserver 與 streamlit:setFrameHeight 自動動態伸縮高度。
+    total_h = 1060 if is_mobile else 1120
     components.html(html_content, height=total_h, scrolling=False)
 
 col_nav_b1, col_nav_b2 = st.columns(2)
