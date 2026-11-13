@@ -1,7 +1,7 @@
 """ 
 台股技術與籌碼分析系統 - Google Drive 雲端雙向同步模組
 支援 Service Account (st.secrets) 與 Google Colab 雙環境。
-具備檔名相容比對機制 (相容 data_{code}.db 與 {code}.db)。
+具備檔名相容比對機制 (相容 data_{code}.db 與 {code}.db)。 
 """
 
 MODULE_NAME = "cloud_sync"
