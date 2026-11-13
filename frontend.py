@@ -1,16 +1,16 @@
 """
-frontend.py - 前端 HTML/CSS 渲染模組 (共用主圖 Frame + 三頁籤各自獨立 Frame + 分點柱狀圖橫軸日期去年份版) 
-版本: 202611132125
+frontend.py - 前端 HTML/CSS 渲染模組 (共用主圖 Frame + 三頁籤各自獨立 Frame + 雲端分點累積天數精確標示版)
+版本: 202611132205
 """
 
 import json
 import pandas as pd
 
 MODULE_NAME = "frontend"
-MODULE_VERSION = "202611132125"
+MODULE_VERSION = "202611132205"
 
 
-def get_legend_html(version_tag: str = "202611132125") -> str:
+def get_legend_html(version_tag: str = "202611132205") -> str:
     return f"""
     <div style="font-size: 14px; margin-bottom: 4px; padding: 2px 8px; display: inline-flex; align-items: center; background: #f8fafc; border-radius: 4px; border: 1px solid #e2e8f0;">
         <span style="background:#2c3e50; color:#ffffff; padding: 2px 8px; border-radius: 4px; font-weight:bold; font-size:12px;">台股技術與籌碼分析 v{version_tag}</span>
@@ -460,9 +460,9 @@ def get_broker_tab_html(df: pd.DataFrame, chart_id: str, initial_end_idx: int = 
             var byD = (payload && payload.by_date) ? payload.by_date : {}, dayData = byD[d];
             if (!dayData) {
                 var ks = Object.keys(byD).sort(), fb = ks.length ? ks[ks.length - 1] : null;
-                if (fb) { dayData = byD[fb]; hdrEl.innerHTML = '<b>關注交易日：' + d + '</b>（目前顯示已快取基準日 <b>' + fb + '</b> 之分點統計；若需指定歷史日請於側邊欄設定基準日）'; }
+                if (fb) { dayData = byD[fb]; hdrEl.innerHTML = '<b>關注交易日：' + d + '</b>（目前顯示已收錄基準日 <b>' + fb + '</b> 之分點統計；若需指定歷史日請於側邊欄設定基準日）'; }
                 else { hdrEl.innerHTML = '<b>關注交易日：' + d + '</b> ｜ 尚無分點明細資料'; tblsEl.innerHTML = ''; barsEl.innerHTML = ''; pushH(); return; }
-            } else { hdrEl.innerHTML = '<b>關注交易日：' + d + '</b> ｜ 券商分點買賣超統計與前五大分點逐日明細（單位：張）'; }
+            } else { hdrEl.innerHTML = '<b>關注交易日：' + d + '</b> ｜ 券商分點買賣超統計與雲端累積逐日明細（單位：張）'; }
 
             var r1 = dayData.w1 || {}, r10 = dayData.w10 || {}, r20 = dayData.w20 || {}, r60 = dayData.w60 || {};
             tblsEl.innerHTML =
@@ -471,7 +471,8 @@ def get_broker_tab_html(df: pd.DataFrame, chart_id: str, initial_end_idx: int = 
                 makeTbl('3. 前 20 日至關注交易日分點統計買賣超各前十名（' + (r20.range_label || '') + '）', r20.buy, r20.sell) +
                 makeTbl('4. 前 60 日至關注交易日分點統計買賣超各前十名（' + (r60.range_label || '') + '）', r60.buy, r60.sell);
 
-            var winObj = dayData['w' + (selEl ? selEl.value : '10')] || r10;
+            var winDays = selEl ? selEl.value : '10';
+            var winObj = dayData['w' + winDays] || r10;
             var t5b = winObj.top5_buy_series || [], t5s = winObj.top5_sell_series || [];
             if (!t5b.length && !t5s.length) { barsEl.innerHTML = '<div style="font-size:12px; color:#64748b; padding:6px;">此區間尚無前五大分點逐日柱狀圖資料。</div>'; pushH(); return; }
 
@@ -484,11 +485,14 @@ def get_broker_tab_html(df: pd.DataFrame, chart_id: str, initial_end_idx: int = 
             function drawBar(domId, item, lbl) {
                 var dom = document.getElementById(domId); if (!dom) return;
                 var xd = item.dates || [], yn = item.nets || [], cols = yn.map(function(v) { return Number(v) >= 0 ? '#eb4d4b' : '#2ecc71'; });
-                // 【修訂說明 2026-11-13】橫軸日期顯示文字去除年份前綴（YYYY-MM-DD -> MM-DD），防止左側首字裁切
                 var xTickText = xd.map(function(s) { var str = String(s || ''); return str.length >= 10 ? str.slice(5) : str; });
                 var sum = yn.reduce(function(a, v) { return a + Number(v || 0); }, 0);
+                // 【修訂說明 2026-11-13】標題清楚標示主表區間累計與雲端已收錄天數逐日加總，消除天數基準誤解
+                var titleStr = lbl + '：' + item.name +
+                    '（主表' + winDays + '日累計:' + (item.total_net > 0 ? '+' : '') + Number(item.total_net || 0).toLocaleString() +
+                    '張｜已收錄近' + yn.length + '日逐日加總:' + (sum > 0 ? '+' : '') + sum.toLocaleString() + '張）';
                 Plotly.newPlot(dom, [{ x: xd, y: yn, type: 'bar', marker: { color: cols }, hovertemplate: '%{x}<br>買賣超: %{y:,} 張<extra></extra>' }], {
-                    title: { text: lbl + '：' + item.name + '（主表:' + (item.total_net > 0 ? '+' : '') + Number(item.total_net || 0).toLocaleString() + '張｜逐日加總:' + (sum > 0 ? '+' : '') + sum.toLocaleString() + '張）', font: { size: 11.5 } },
+                    title: { text: titleStr, font: { size: 11 } },
                     margin: { l: 48, r: 12, t: 28, b: 36 }, height: 180, template: 'plotly_white',
                     xaxis: { type: 'category', tickvals: xd, ticktext: xTickText, tickangle: -35, tickfont: { size: 10 }, fixedrange: true },
                     yaxis: { tickfont: { size: 10 }, fixedrange: true, zeroline: true, zerolinecolor: '#94a3b8' }, showlegend: false
