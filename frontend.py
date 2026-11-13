@@ -1,16 +1,16 @@
 """
-frontend.py - 前端 HTML/CSS 渲染模組 (精簡防截斷 + 分點柱狀圖X軸僅首日標示月份版)
-版本: 202611132220
+frontend.py - 前端 HTML/CSS 渲染模組 (籌碼標準字典防快取遺失 + 分點柱狀圖X軸僅首日標示月份版)
+版本: 202611132230
 """
 
 import json
 import pandas as pd
 
 MODULE_NAME = "frontend"
-MODULE_VERSION = "202611132220"
+MODULE_VERSION = "202611132230"
 
 
-def get_legend_html(version_tag: str = "202611132220") -> str:
+def get_legend_html(version_tag: str = "202611132230") -> str:
     return f"""<div style="font-size:14px;margin-bottom:4px;padding:2px 8px;display:inline-flex;align-items:center;background:#f8fafc;border-radius:4px;border:1px solid #e2e8f0;"><span style="background:#2c3e50;color:#fff;padding:2px 8px;border-radius:4px;font-weight:bold;font-size:12px;">台股技術與籌碼分析 v{version_tag}</span></div>"""
 
 
@@ -144,7 +144,7 @@ def get_tech_tab_html(fig_btm, df: pd.DataFrame, chart_id: str, tech_height: int
     n_pts = len(df)
     end_idx = n_pts - 1 if initial_end_idx is None else initial_end_idx
     dates_list = _extract_dates_list(df)
-    fig_tech = getattr(fig_btm, "_fig_tech", fig_btm)
+    fig_tech = fig_btm["tech"] if isinstance(fig_btm, dict) and "tech" in fig_btm else getattr(fig_btm, "_fig_tech", fig_btm)
 
     tpl = COMMON_CSS + """
     <div class="frame-root" id="__CID___tech_root">
@@ -222,7 +222,7 @@ def get_chip_tab_html(fig_btm, df: pd.DataFrame, chart_id: str, chip_height: int
     n_pts = len(df)
     end_idx = n_pts - 1 if initial_end_idx is None else initial_end_idx
     dates_list = _extract_dates_list(df)
-    fig_chip = getattr(fig_btm, "_fig_chip", fig_btm)
+    fig_chip = fig_btm["chip"] if isinstance(fig_btm, dict) and "chip" in fig_btm else getattr(fig_btm, "_fig_chip", fig_btm)
 
     tpl = COMMON_CSS + """
     <div class="frame-root" id="__CID___chip_root">
