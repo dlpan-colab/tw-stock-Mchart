@@ -1,5 +1,5 @@
 """
-chart_builder.py - Plotly 圖表建置模組 (依昨日架構鎖定 domain 垂直對齊與底層月份刻度恢復版)
+chart_builder.py - Plotly 圖表建置模組 (依昨日架構鎖定 domain 垂直對齊與底層月份刻度恢復版) 
 版本: 202611102310
 """
 
