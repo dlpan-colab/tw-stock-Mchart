@@ -1,6 +1,6 @@
 """
-data_fetcher.py - 整合技術與籌碼資料擷取模組 (台灣時區校正自動補抓、市場別精確分流與 MoneyDJ 分段全區間券商分點引擎版)
-版本: 202611132135
+data_fetcher.py - 整合技術與籌碼資料擷取模組 (台灣時區校正自動補抓、市場別精確分流與單次精簡+雲端增量累積分點引擎版)
+版本: 202611132155
 """
 
 import os
@@ -16,7 +16,7 @@ from datetime import datetime, timedelta
 from urllib.parse import urljoin, urlparse, parse_qs, urlencode, urlunparse
 
 MODULE_NAME = "data_fetcher"
-MODULE_VERSION = "202611132135"
+MODULE_VERSION = "202611132155"
 
 from storage import (
     StockChipStorage,
@@ -478,7 +478,7 @@ def fetch_tdcc_holding_history(pure_code: str, weeks: int = 6) -> list:
 
 
 # =====================================================================
-# 【修訂說明 2026-11-13】個股券商分點進出排行與分段全區間逐日明細引擎
+# 【修訂說明 2026-11-13】個股券商分點進出排行與單次查詢+雲端增量累積引擎
 # =====================================================================
 def is_gov_broker_branch(broker_name: str) -> bool:
     clean_name = str(broker_name).strip()
@@ -583,18 +583,31 @@ def fetch_stock_broker_range_ranking(stock_id: str, start_date: str, end_date: s
         return pd.DataFrame(), pd.DataFrame()
 
 
-def _parse_single_zco0_chunk(detail_url: str, chunk_start_dt, chunk_end_dt, s_iso: str, e_iso: str) -> list:
-    """抓取單一段落（不超過 20 個交易日）之 zco0.djhtm 逐日明細"""
-    s_mdj = f"{chunk_start_dt.year}-{chunk_start_dt.month}-{chunk_start_dt.day}"
-    e_mdj = f"{chunk_end_dt.year}-{chunk_end_dt.month}-{chunk_end_dt.day}"
-    target_url = _build_detail_url_with_range(detail_url, s_mdj, e_mdj)
-    rows_out = []
+def fetch_single_broker_daily_series(detail_url: str, start_date: str, end_date: str) -> pd.DataFrame:
+    """
+    【修改目的與防呆防錯原因 2026-11-13】：
+    向 MoneyDJ zco0.djhtm 發送單次精簡請求，取得該分點最新 20 個交易日明細。
+    絕不重複分段打多次請求（避免伺服器限流），超出 20 日的歷史由系統逐步存入雲端 SQLite 累積。
+    """
+    if not detail_url:
+        return pd.DataFrame()
+
+    s_iso = str(start_date)[:10]
+    e_iso = str(end_date)[:10]
     try:
+        s_dt = datetime.strptime(s_iso, "%Y-%m-%d").date()
+        e_dt = datetime.strptime(e_iso, "%Y-%m-%d").date()
+        s_mdj = f"{s_dt.year}-{s_dt.month}-{s_dt.day}"
+        e_mdj = f"{e_dt.year}-{e_dt.month}-{e_dt.day}"
+        target_url = _build_detail_url_with_range(detail_url, s_mdj, e_mdj)
+
         resp = requests.get(target_url, headers=MDJ_HEADERS, timeout=12)
         resp.encoding = "big5"
         if resp.status_code != 200:
-            return rows_out
+            return pd.DataFrame()
+
         soup = BeautifulSoup(resp.text, "html.parser")
+        rows_out = []
         for tbl in soup.find_all("table"):
             for tr in tbl.find_all("tr"):
                 tds = [td.get_text(strip=True) for td in tr.find_all(["td", "th"])]
@@ -611,55 +624,36 @@ def _parse_single_zco0_chunk(detail_url: str, chunk_start_dt, chunk_end_dt, s_is
                         "賣出(張)": sell_vol,
                         "買賣超(張)": net_vol
                     })
-    except Exception:
-        pass
-    return rows_out
 
-
-def fetch_single_broker_daily_series(detail_url: str, start_date: str, end_date: str) -> pd.DataFrame:
-    """
-    【修改目的與防呆防錯原因 2026-11-13】：
-    抓取單一分點於指定區間（start_date ~ end_date）內的逐日買賣超明細（MoneyDJ zco0.djhtm）。
-    防呆要點：
-    1. 因應 MoneyDJ zco0.djhtm 單頁最多回傳 20 個交易日之伺服器硬限制，
-       若查詢區間超過 24 個日曆日（例如 60 交易日），自動以每段 24 日曆日由迄日往起日分段請求並合併去重。
-    2. 絕不抓第 4 欄總成交張數（買進+賣出），直接以「買進(張) - 賣出(張)」計算每日真實淨買賣超張數。
-    """
-    if not detail_url:
-        return pd.DataFrame()
-
-    s_iso = str(start_date)[:10]
-    e_iso = str(end_date)[:10]
-    try:
-        s_dt = datetime.strptime(s_iso, "%Y-%m-%d").date()
-        e_dt = datetime.strptime(e_iso, "%Y-%m-%d").date()
-        if s_dt > e_dt:
+        if not rows_out:
             return pd.DataFrame()
 
-        # 由迄日往回以每段 24 個日曆日（約 16~18 個交易日，嚴格低於 20 筆上限）分段抓取
-        chunk_days = 24
-        cur_end = e_dt
-        all_daily_rows = []
-        guard_count = 0
-
-        while cur_end >= s_dt and guard_count < 8:
-            cur_start = max(s_dt, cur_end - timedelta(days=chunk_days - 1))
-            chunk_rows = _parse_single_zco0_chunk(detail_url, cur_start, cur_end, s_iso, e_iso)
-            all_daily_rows.extend(chunk_rows)
-            cur_end = cur_start - timedelta(days=1)
-            guard_count += 1
-            if cur_end >= s_dt:
-                time.sleep(0.06)
-
-        if not all_daily_rows:
-            return pd.DataFrame()
-
-        df_d = (
-            pd.DataFrame(all_daily_rows)
+        return (
+            pd.DataFrame(rows_out)
             .drop_duplicates(subset=["日期"], keep="last")
             .sort_values("日期", ascending=True)
             .reset_index(drop=True)
         )
-        return df_d
     except Exception:
         return pd.DataFrame()
+
+
+def fetch_and_sync_broker_daily_series(
+    stock_id: str,
+    broker_name: str,
+    detail_url: str,
+    start_date: str,
+    end_date: str,
+    sync_cloud: bool = True
+) -> pd.DataFrame:
+    """
+    【修訂說明 2026-11-13】：
+    抓回最新 20 日分點逐日明細後，立即寫入個股 SQLite（broker_daily_trades）並同步至 Google 雲端，
+    再從資料庫讀取 start_date ~ end_date 全區間累積紀錄，逐步突破 20 日限制並湊滿 60 日。
+    """
+    storage = StockChipStorage(stock_id)
+    df_fresh = fetch_single_broker_daily_series(detail_url, start_date, end_date)
+    if df_fresh is not None and not df_fresh.empty:
+        storage.save_broker_daily_trades(broker_name, df_fresh, sync_cloud=sync_cloud)
+    df_merged = storage.load_broker_daily_series(broker_name, start_date, end_date)
+    return df_merged if not df_merged.empty else df_fresh
