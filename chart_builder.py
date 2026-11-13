@@ -1,16 +1,16 @@
 """
-chart_builder.py - Plotly 圖表建置模組 (主圖1/2緊緻化、指標頁籤新增20/120/240/1200乖離率與籌碼分頁圖表版)
-版本: 202611132030
+chart_builder.py - Plotly 圖表建置模組 (主圖1/2緊緻化、指標頁籤乖離率與籌碼分頁標準字典防快取遺失版)
+版本: 202611132225
 """
 
-from typing import Tuple, Optional
+from typing import Tuple, Optional, Dict
 import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
 MODULE_NAME = "chart_builder"
-MODULE_VERSION = "202611132030"
+MODULE_VERSION = "202611132225"
 
 from data_fetcher import fetch_stock_daily_k, fetch_stock_name
 from indicators import calculate_all_indicators
@@ -26,7 +26,7 @@ def build_split_figures(
     is_mobile: bool = False,
     status_placeholder=None,
     force_refresh: bool = False
-) -> Tuple[Optional[go.Figure], Optional[go.Figure], Optional[pd.DataFrame], str, int, int]:
+) -> Tuple[Optional[go.Figure], Optional[Dict[str, go.Figure]], Optional[pd.DataFrame], str, int, int]:
     k_res = fetch_stock_daily_k(
         raw_ticker,
         period=period,
@@ -39,8 +39,8 @@ def build_split_figures(
     df_raw = k_res[0]
     full_ticker = k_res[1]
     shares_outstanding = k_res[2] if len(k_res) >= 3 else None
-    c_name = fetch_stock_name(raw_ticker)
 
+    c_name = fetch_stock_name(raw_ticker)
     if str(raw_ticker).startswith("^"):
         market_label = "指數"
     elif full_ticker.endswith(".TW"):
@@ -50,7 +50,6 @@ def build_split_figures(
     else:
         market_label = "海外"
 
-    # 【防呆防錯備註 2026-11-10】：將已確認之 full_ticker 傳入計算函式，確保籌碼能精準鎖定市場別
     df = calculate_all_indicators(
         df=df_raw,
         pure_code=raw_ticker,
@@ -64,8 +63,8 @@ def build_split_figures(
 
     date_str_list = [d.strftime('%Y-%m-%d') for d in df.index]
     total_len = len(df)
-    disp_n = min(int(display_days), total_len)
 
+    disp_n = min(int(display_days), total_len)
     end_idx = total_len - 1
     if base_date is not None:
         try:
@@ -77,7 +76,6 @@ def build_split_figures(
                 end_idx = valid_idx[-1]
         except Exception:
             pass
-
     start_idx = max(0, end_idx - disp_n + 1)
     sub_df = df.iloc[start_idx:end_idx + 1]
 
@@ -110,12 +108,8 @@ def build_split_figures(
     macd_max = float(sub_macd_vals.max()) if not sub_macd_vals.empty else 1.0
     macd_pad = (macd_max - macd_min) * 0.15 if macd_max > macd_min else 0.5
 
-    # 【修訂說明 2026-11-13】【修改目的與防呆防錯原因】：
-    # 計算乖離率（20/120/240/1200日）在可視視窗內的 Y 軸極值並納入 0 軸基準，
-    # 若長天期（如 1200日）資料尚未滿期全為 NaN，自動安全忽略避免 min/max 拋錯。
     bias_series_list = [
-        sub_df[col].dropna()
-        for col in ['BIAS_20', 'BIAS_120', 'BIAS_240', 'BIAS_1200']
+        sub_df[col].dropna() for col in ['BIAS_20', 'BIAS_120', 'BIAS_240', 'BIAS_1200']
         if col in sub_df.columns and not sub_df[col].dropna().empty
     ]
     if bias_series_list:
@@ -158,9 +152,6 @@ def build_split_figures(
     r_pad = max(0.5, (r_max - r_min) * 0.15) if r_max > r_min else 1.0
     ratio_range = [max(0, r_min - r_pad), r_max + r_pad]
 
-    # 【修訂說明 2026-11-13】【修改目的】：
-    # 將共用主圖高度緊縮至全螢幕約 1/2 高度（手機版 270px、電腦版 310px），
-    # 讓主圖資訊列、K線、成交量與下方三頁籤導航列可同屏完整呈現。
     top_height = 270 if is_mobile else 310
     tech_height = 540 if is_mobile else 580
     chip_height = 760 if is_mobile else 800
@@ -169,42 +160,51 @@ def build_split_figures(
     # 1. 上半部共用主圖（K線 + 成交量）
     # =====================================================================
     fig_top = make_subplots(
-        rows=2, cols=1, shared_xaxes=True,
-        vertical_spacing=0.04, row_heights=[0.72, 0.28]
+        rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.04,
+        row_heights=[0.72, 0.28]
     )
+
     fig_top.add_trace(go.Candlestick(
         x=date_str_list, open=df['Open'], high=df['High'], low=df['Low'], close=df['Close'],
         increasing_line_color='#eb4d4b', increasing_fillcolor='#eb4d4b',
         decreasing_line_color='#2ecc71', decreasing_fillcolor='#2ecc71',
         hoverinfo='none', name='K線'
     ), row=1, col=1)
+
     fig_top.add_trace(go.Scatter(
-        x=date_str_list, y=df['MA5'], line=dict(color='#f1c40f', width=1.2), hoverinfo='none', name='MA5'
+        x=date_str_list, y=df['MA5'], line=dict(color='#f1c40f', width=1.2),
+        hoverinfo='none', name='MA5'
     ), row=1, col=1)
     fig_top.add_trace(go.Scatter(
-        x=date_str_list, y=df['MA20'], line=dict(color='#e67e22', width=1.2), hoverinfo='none', name='MA20'
+        x=date_str_list, y=df['MA20'], line=dict(color='#e67e22', width=1.2),
+        hoverinfo='none', name='MA20'
     ), row=1, col=1)
     fig_top.add_trace(go.Scatter(
-        x=date_str_list, y=df['MA60'], line=dict(color='#9b59b6', width=1.2), hoverinfo='none', name='MA60'
+        x=date_str_list, y=df['MA60'], line=dict(color='#9b59b6', width=1.2),
+        hoverinfo='none', name='MA60'
     ), row=1, col=1)
 
     head_df = df[df['Is_Head']]
     if not head_df.empty:
         fig_top.add_trace(go.Scatter(
-            x=[d.strftime('%Y-%m-%d') for d in head_df.index], y=head_df['High'], mode='text',
-            text='<b>〔頭〕</b>', textposition='top center',
-            textfont=dict(family='Arial Black, sans-serif', size=12, color='#27ae60'), hoverinfo='none'
+            x=[d.strftime('%Y-%m-%d') for d in head_df.index], y=head_df['High'],
+            mode='text', text='<b>〔頭〕</b>', textposition='top center',
+            textfont=dict(family='Arial Black, sans-serif', size=12, color='#27ae60'),
+            hoverinfo='none'
         ), row=1, col=1)
+
     bottom_df = df[df['Is_Bottom']]
     if not bottom_df.empty:
         fig_top.add_trace(go.Scatter(
-            x=[d.strftime('%Y-%m-%d') for d in bottom_df.index], y=bottom_df['Low'], mode='text',
-            text='<b>〔底〕</b>', textposition='bottom center',
-            textfont=dict(family='Arial Black, sans-serif', size=12, color='#e74c3c'), hoverinfo='none'
+            x=[d.strftime('%Y-%m-%d') for d in bottom_df.index], y=bottom_df['Low'],
+            mode='text', text='<b>〔底〕</b>', textposition='bottom center',
+            textfont=dict(family='Arial Black, sans-serif', size=12, color='#e74c3c'),
+            hoverinfo='none'
         ), row=1, col=1)
 
     fig_top.add_trace(go.Bar(
-        x=date_str_list, y=df['Volume_Sheets'], marker_color=vol_colors, hoverinfo='none', name='成交量'
+        x=date_str_list, y=df['Volume_Sheets'], marker_color=vol_colors,
+        hoverinfo='none', name='成交量'
     ), row=2, col=1)
 
     to_series = df['Turnover_Rate']
@@ -213,16 +213,20 @@ def build_split_figures(
     if to_10_mask.any():
         fig_top.add_trace(go.Scatter(
             x=[date_str_list[i] for i in range(total_len) if to_10_mask.iloc[i]],
-            y=df.loc[to_10_mask, 'Volume_Sheets'] * 1.06, mode='text',
-            text=['▲' for _ in range(to_10_mask.sum())], textposition='top center',
-            textfont=dict(family='Arial Black, sans-serif', size=13, color='#1e3799'), showlegend=False, hoverinfo='none'
+            y=df.loc[to_10_mask, 'Volume_Sheets'] * 1.06,
+            mode='text', text=['▲' for _ in range(to_10_mask.sum())],
+            textposition='top center',
+            textfont=dict(family='Arial Black, sans-serif', size=13, color='#1e3799'),
+            showlegend=False, hoverinfo='none'
         ), row=2, col=1)
     if to_20_mask.any():
         fig_top.add_trace(go.Scatter(
             x=[date_str_list[i] for i in range(total_len) if to_20_mask.iloc[i]],
-            y=df.loc[to_20_mask, 'Volume_Sheets'] * 1.06, mode='text',
-            text=['▼' for _ in range(to_20_mask.sum())], textposition='top center',
-            textfont=dict(family='Arial Black, sans-serif', size=13, color='#f1c40f'), showlegend=False, hoverinfo='none'
+            y=df.loc[to_20_mask, 'Volume_Sheets'] * 1.06,
+            mode='text', text=['▼' for _ in range(to_20_mask.sum())],
+            textposition='top center',
+            textfont=dict(family='Arial Black, sans-serif', size=13, color='#f1c40f'),
+            showlegend=False, hoverinfo='none'
         ), row=2, col=1)
 
     fig_top.update_layout(
@@ -257,22 +261,19 @@ def build_split_figures(
         rows=4, cols=1, shared_xaxes=True, vertical_spacing=0.045,
         row_heights=[0.24, 0.24, 0.24, 0.28]
     )
-    # Row 1: KD(9)
+
     fig_tech.add_trace(go.Scatter(x=date_str_list, y=df['K'], line=dict(color='#e74c3c', width=1.2), hoverinfo='none'), row=1, col=1)
     fig_tech.add_trace(go.Scatter(x=date_str_list, y=df['D'], line=dict(color='#3498db', width=1.2), hoverinfo='none'), row=1, col=1)
     fig_tech.add_hline(y=80, line_dash='dot', line_color='rgba(150,150,150,0.5)', row=1, col=1)
     fig_tech.add_hline(y=20, line_dash='dot', line_color='rgba(150,150,150,0.5)', row=1, col=1)
 
-    # Row 2: MACD
     fig_tech.add_trace(go.Bar(x=date_str_list, y=df['OSC'], marker_color=osc_colors, hoverinfo='none'), row=2, col=1)
     fig_tech.add_trace(go.Scatter(x=date_str_list, y=df['DIF'], line=dict(color='#f39c12', width=1.2), hoverinfo='none'), row=2, col=1)
     fig_tech.add_trace(go.Scatter(x=date_str_list, y=df['MACD'], line=dict(color='#2980b9', width=1.2), hoverinfo='none'), row=2, col=1)
 
-    # Row 3: OBV
     fig_tech.add_trace(go.Scatter(x=date_str_list, y=df['OBV'], line=dict(color='#16a085', width=1.2), hoverinfo='none'), row=3, col=1)
     fig_tech.add_trace(go.Scatter(x=date_str_list, y=df['OBV_MA20'], line=dict(color='#8e44ad', width=1.1, dash='dash'), hoverinfo='none'), row=3, col=1)
 
-    # Row 4: 乖離率 (20日、120日、240日、1200日均價乖離率折線圖，規範同其它副圖Y軸不可縮放平移)
     fig_tech.add_trace(go.Scatter(x=date_str_list, y=df['BIAS_20'], line=dict(color='#e67e22', width=1.3), hoverinfo='none', name='20日乖離'), row=4, col=1)
     fig_tech.add_trace(go.Scatter(x=date_str_list, y=df['BIAS_120'], line=dict(color='#2980b9', width=1.3), hoverinfo='none', name='120日乖離'), row=4, col=1)
     fig_tech.add_trace(go.Scatter(x=date_str_list, y=df['BIAS_240'], line=dict(color='#8e44ad', width=1.3), hoverinfo='none', name='240日乖離'), row=4, col=1)
@@ -308,6 +309,7 @@ def build_split_figures(
         row_heights=[0.15, 0.15, 0.15, 0.21, 0.17, 0.17],
         specs=[[{}], [{}], [{}], [{"secondary_y": True}], [{}], [{}]]
     )
+
     is_index = str(raw_ticker).startswith("^")
     if not is_index:
         f_colors = ['#eb4d4b' if x >= 0 else '#2ecc71' for x in df['Foreign_Net'].fillna(0)]
@@ -331,6 +333,7 @@ def build_split_figures(
             name='融券', width=0.4, offset=0.0, hoverinfo='none'
         ), secondary_y=False, row=4, col=1)
         fig_chip.add_hline(y=0, line_color='rgba(150,150,150,0.7)', line_width=1, secondary_y=False, row=4, col=1)
+
         fig_chip.add_trace(go.Scatter(
             x=date_str_list, y=df['Short_Margin_Ratio'], line=dict(color='#e67e22', width=1.5),
             connectgaps=True, hoverinfo='none', name='券資比%'
@@ -340,6 +343,7 @@ def build_split_figures(
             x=date_str_list, y=df['Major1_Pct'], line=dict(color='#e74c3c', width=1.5),
             connectgaps=True, hoverinfo='none'
         ), row=5, col=1)
+
         fig_chip.add_trace(go.Scatter(
             x=date_str_list, y=df['Major2_Pct'], line=dict(color='#3498db', width=1.5),
             connectgaps=True, hoverinfo='none'
@@ -370,9 +374,7 @@ def build_split_figures(
     fig_chip.update_yaxes(title_text=f'≥{major2_thresh}', range=m2_range, fixedrange=True, showspikes=False, tickfont=dict(size=11), row=6, col=1)
 
     # 【防呆防錯備註 2026-11-13】：
-    # 將 fig_tech（頁籤1：指標）與 fig_chip（頁籤2：籌碼）附掛於 fig_tech 物件屬性上，
-    # 維持 build_split_figures 6 變數回傳簽名不變，防止舊有呼叫端解包長度不符而報錯。
-    fig_tech._fig_tech = fig_tech
-    fig_tech._fig_chip = fig_chip
-
-    return fig_top, fig_tech, df, c_name, end_idx, disp_n
+    # 改以標準 Python 字典包裝 fig_tech 與 fig_chip，避免 @st.cache_data 序列化時剝除自訂屬性導致籌碼圖遺失。
+    fig_bundle = {"tech": fig_tech, "chip": fig_chip}
+    return fig_top, fig_bundle, df, c_name, end_idx, disp_n
+# EOF chart_builder.py
