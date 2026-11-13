@@ -1,6 +1,6 @@
 """
-frontend.py - 前端 HTML/CSS 渲染與手勢/游標跨圖同步模組 (三頁籤切換、乖離率資訊條與分點統計柱狀圖版)
-版本: 202611132035
+frontend.py - 前端 HTML/CSS 渲染與手勢/游標跨圖同步模組 (三頁籤強制可見、ResizeObserver自動撐高與分點統計柱狀圖版)
+版本: 202611132050
 """
 
 import json
@@ -8,10 +8,10 @@ import uuid
 import pandas as pd
 
 MODULE_NAME = "frontend"
-MODULE_VERSION = "202611132035"
+MODULE_VERSION = "202611132050"
 
 
-def get_legend_html(version_tag: str = "202611132035") -> str:
+def get_legend_html(version_tag: str = "202611132050") -> str:
     return f"""
     <div style="font-size: 14px; margin-bottom: 4px; padding: 2px 8px; display: inline-flex; align-items: center; background: #f8fafc; border-radius: 4px; border: 1px solid #e2e8f0;">
         <span style="background:#2c3e50; color:#ffffff; padding: 2px 8px; border-radius: 4px; font-weight:bold; font-size:12px;">台股技術與籌碼分析 v{version_tag}</span>
@@ -25,7 +25,7 @@ js_template = """
     position: relative;
     width: 100%;
     box-sizing: border-box;
-    padding-bottom: 6px !important;
+    padding-bottom: 10px !important;
     font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
 }
 .touch-plot-box {
@@ -34,6 +34,7 @@ js_template = """
     user-select: none !important;
     -webkit-user-select: none !important;
     width: 100% !important;
+    overflow: hidden;
 }
 .pane-info-bar {
     font-size: 13px;
@@ -51,36 +52,47 @@ js_template = """
 .val-dn { color: #2ecc71; font-weight: bold; }
 .tag-lbl { margin-right: 4px; }
 
-/* 三頁籤切換導航列 */
+/* 【修訂說明 2026-11-13】三頁籤切換導航列：鎖定最小高度、獨立區塊與最高層級，確保成交量下方清晰可見 */
 .sub-tab-bar {
-    display: flex;
-    flex-direction: row;
-    width: 100%;
-    margin: 4px 0 4px 0;
-    background: #eef2f6;
-    border-radius: 6px;
-    padding: 3px;
-    gap: 4px;
-    box-sizing: border-box;
-    border: 1px solid #cbd5e1;
+    display: flex !important;
+    flex-direction: row !important;
+    align-items: center !important;
+    justify-content: space-between !important;
+    width: 100% !important;
+    min-height: 38px !important;
+    margin: 6px 0 6px 0 !important;
+    background: #e2e8f0 !important;
+    border-radius: 6px !important;
+    padding: 4px !important;
+    gap: 6px !important;
+    box-sizing: border-box !important;
+    border: 1px solid #94a3b8 !important;
+    position: relative !important;
+    z-index: 100 !important;
+    pointer-events: auto !important;
 }
 .sub-tab-btn {
-    flex: 1 1 0;
-    text-align: center;
-    padding: 6px 4px;
-    font-size: 13px;
-    font-weight: 600;
-    color: #475569;
-    background: transparent;
-    border: none;
-    border-radius: 4px;
-    cursor: pointer;
-    transition: all 0.15s ease;
+    flex: 1 1 0 !important;
+    height: 30px !important;
+    line-height: 22px !important;
+    text-align: center !important;
+    padding: 4px 6px !important;
+    font-size: 13.5px !important;
+    font-weight: 700 !important;
+    color: #334155 !important;
+    background: #f8fafc !important;
+    border: 1px solid #cbd5e1 !important;
+    border-radius: 4px !important;
+    cursor: pointer !important;
+    touch-action: manipulation !important;
+    pointer-events: auto !important;
+    transition: all 0.12s ease;
 }
 .sub-tab-btn.active {
-    background: #2c3e50;
-    color: #ffffff;
-    box-shadow: 0 1px 3px rgba(0,0,0,0.15);
+    background: #1e293b !important;
+    color: #ffffff !important;
+    border-color: #1e293b !important;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.2) !important;
 }
 .tab-panel {
     display: none;
@@ -218,10 +230,10 @@ js_template = """
     </div>
 
     <!-- 下半部三頁籤切換導航列 -->
-    <div class="sub-tab-bar" id="__CHART_ID___tabbar">
-        <button type="button" class="sub-tab-btn active" data-tab="tech">指標</button>
-        <button type="button" class="sub-tab-btn" data-tab="chip">籌碼</button>
-        <button type="button" class="sub-tab-btn" data-tab="broker">分點</button>
+    <div class="sub-tab-bar" id="__CHART_ID___tabbar" role="tablist">
+        <button type="button" class="sub-tab-btn active" data-tab="tech">📊 指標</button>
+        <button type="button" class="sub-tab-btn" data-tab="chip">💰 籌碼</button>
+        <button type="button" class="sub-tab-btn" data-tab="broker">🏦 分點</button>
     </div>
 
     <!-- 頁籤 1：指標（KD、MACD、OBV、乖離率） -->
@@ -311,18 +323,30 @@ js_template = """
     var currentR0 = initStart - 0.5;
     var currentR1 = initEnd + 0.5;
 
+    function postFrameHeightNow() {
+        if (!container) return;
+        var h = Math.ceil(container.getBoundingClientRect().height || container.scrollHeight) + 14;
+        if (window.parent && window.parent !== window) {
+            window.parent.postMessage({
+                isStreamlitMessage: true,
+                type: "streamlit:setFrameHeight",
+                height: h
+            }, "*");
+        }
+    }
+
     function notifyIframeHeight() {
-        setTimeout(function() {
-            if (!container) return;
-            var h = container.scrollHeight + 12;
-            if (window.parent && window.parent !== window) {
-                window.parent.postMessage({
-                    isStreamlitMessage: true,
-                    type: "streamlit:setFrameHeight",
-                    height: h
-                }, "*");
-            }
-        }, 60);
+        postFrameHeightNow();
+        setTimeout(postFrameHeightNow, 60);
+        setTimeout(postFrameHeightNow, 250);
+        setTimeout(postFrameHeightNow, 600);
+    }
+
+    if (typeof ResizeObserver !== 'undefined' && container) {
+        var ro = new ResizeObserver(function() {
+            postFrameHeightNow();
+        });
+        ro.observe(container);
     }
 
     function calcVisibleBounds(r0, r1) {
@@ -618,13 +642,15 @@ js_template = """
     }
 
     document.querySelectorAll('#__CHART_ID___tabbar .sub-tab-btn').forEach(function(btn) {
-        btn.addEventListener('click', function() {
+        btn.addEventListener('click', function(e) {
+            e.stopPropagation();
             switchTab(this.getAttribute('data-tab'));
         });
     });
 
     if (brokerWinSel) {
-        brokerWinSel.addEventListener('change', function() {
+        brokerWinSel.addEventListener('change', function(e) {
+            e.stopPropagation();
             renderBrokerTab(currentFocusIdx);
         });
     }
@@ -784,7 +810,7 @@ def render_interactive_chart_html(
     chip_height=760,
     initial_disp_days=20,
     initial_end_idx=None,
-    version_tag="202611132035",
+    version_tag="202611132050",
     is_index=False,
     chart_id=None,
     broker_payload=None
