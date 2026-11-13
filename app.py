@@ -1,6 +1,6 @@
 """
-app.py - 主應用程式介面與生命週期控制 (三頁籤分流、乖離率副圖與券商分點統計柱狀圖整合版)
-版本: 202611132055
+app.py - 主應用程式介面與生命週期控制 (共用主圖 Frame + 三頁籤各自獨立 Frame 整合版)
+版本: 202611132115
 """
 
 import os
@@ -11,7 +11,7 @@ import streamlit.components.v1 as components
 import cloud_sync
 
 MODULE_NAME = "app"
-MODULE_VERSION = "202611132055"
+MODULE_VERSION = "202611132115"
 
 # 【防呆防錯備註 2026-11-07】：版本控制權由 app.py 作為唯一權威源，動態掃描所有模組最大版本號，杜絕多頭覆寫與重工
 def get_system_version() -> str:
@@ -47,7 +47,13 @@ from storage import (
     clear_recent_institutional_data
 )
 from chart_builder import build_split_figures
-from frontend import get_legend_html, get_component_html
+from frontend import (
+    get_legend_html,
+    get_top_chart_html,
+    get_tech_tab_html,
+    get_chip_tab_html,
+    get_broker_tab_html
+)
 from data_fetcher import fetch_stock_broker_range_ranking, fetch_single_broker_daily_series
 
 INDEX_MAP = {
@@ -94,7 +100,7 @@ def get_cached_figures(stock_id, period, disp_days, base_date, m1_thresh, m2_thr
 def get_cached_broker_payload(stock_id: str, trade_dates_tuple: tuple, target_end_idx: int) -> dict:
     """
     【修訂說明 2026-11-13】【修改目的與防呆防錯原因】：
-    依據關注交易日（target_end_idx）與實際台股交易日曆，一次建構：
+    依據關注交易日（target_end_idx）與實際台股交易日曆，建構：
     1. 當日、前 10 日、前 20 日、前 60 日分點買超前 10 名與賣超前 10 名排行榜。
     2. 10 / 20 / 60 日區間累計買賣超各前 5 名分點之逐日買賣超柱狀圖序列。
     防呆機制：對同一分點跨區間去重抓取最大覆蓋區間（60日）再本地日期切片，降低遠端請求數並避免限流。
@@ -138,7 +144,6 @@ def get_cached_broker_payload(stock_id: str, trade_dates_tuple: tuple, target_en
         df_b, df_s = fetch_stock_broker_range_ranking(code, s_str, end_date_str)
         rank_dfs[w] = (df_b, df_s)
 
-    # 收集 10/20/60 日前 5 名分點之明細網址，去重後統一抓取最長區間（w60 起日 ~ end_date）逐日明細
     earliest_start = win_starts[60]
     broker_url_map = {}
     for w in (10, 20, 60):
@@ -235,6 +240,29 @@ footer {visibility: hidden;}
     padding: 2px 4px !important;
     font-size: 12px !important;
     white-space: nowrap !important;
+}
+
+/* 【修訂說明 2026-11-13】三頁籤樣式強化：均分滿版、防被窄按鈕樣式影響 */
+[data-testid="stTabs"] [role="tablist"] {
+    display: flex !important;
+    width: 100% !important;
+    gap: 4px !important;
+    background: #eef2f6 !important;
+    padding: 3px !important;
+    border-radius: 6px !important;
+    border: 1px solid #cbd5e1 !important;
+}
+[data-testid="stTabs"] [role="tab"] {
+    flex: 1 1 0 !important;
+    justify-content: center !important;
+    font-weight: 700 !important;
+    font-size: 13.5px !important;
+    padding: 6px 8px !important;
+    border-radius: 4px !important;
+}
+[data-testid="stTabs"] [aria-selected="true"] {
+    background-color: #1e293b !important;
+    color: #ffffff !important;
 }
 </style>
 """, unsafe_allow_html=True)
@@ -410,8 +438,6 @@ with st.sidebar:
                 save_stock_history(resolved)
         st.rerun()
 
-    # 【防呆防錯備註 2026-11-10】【修訂目的】：
-    # 法人籌碼維護重抓預設週數改為 1 週 (value=1)，符合常態維護需求
     st.markdown("---")
     st.subheader("法人籌碼維護")
     refetch_inst_weeks = st.number_input("重抓法人週數", min_value=1, max_value=24, value=1, step=1)
@@ -455,8 +481,6 @@ with st.sidebar:
                 except Exception as e:
                     st.sidebar.error(f"法人重抓失敗: {e}")
 
-    # 【防呆防錯備註 2026-11-10】【修訂目的】：
-    # 資券維護重抓預設週數改為 1 週 (value=1)，符合常態維護需求
     st.markdown("---")
     st.subheader("資券維護")
     refetch_weeks = st.number_input("重抓週數", min_value=1, max_value=24, value=1, step=1)
@@ -536,14 +560,6 @@ else:
 st.markdown(f"### 台股技術與籌碼分析 v{SYSTEM_VERSION} {status_icon}")
 
 def navigate_stock(direction: int):
-    """
-    【修訂說明 2026-11-11】：
-    修改目的：落實上一檔／下一檔純瀏覽，絕不改動查詢歷史清單排列順序。
-    防呆防錯原因：原先在此處呼叫 save_stock_history(target_code) 會將當前股票自動移至歷史第 0 位（置頂），
-                  導致歷史清單在每次導航時動態重排，游標陷入前兩檔互換的死循環，無法讀取第三檔以後。
-                  修訂後移除 save_stock_history，僅改變 session_state.stock_id 供頁面渲染，
-                  清單置頂行為僅保留於「文字框手動輸入」、「點擊查詢」與「歷史清單主動點選」。
-    """
     history_records = load_stock_history()
     codes = [str(item.get("code")).strip() for item in history_records if item.get("code")]
     if not codes:
@@ -566,8 +582,6 @@ with col_nav2:
     if st.button("下一檔 ▶", key="nav_next_top"):
         navigate_stock(1)
         st.rerun()
-
-status_box = st.empty()
 
 with st.spinner(f"正在載入 {st.session_state.stock_id} 圖表資料..."):
     fig_top, fig_btm, df, c_name, end_idx, disp_n = get_cached_figures(
@@ -596,25 +610,65 @@ else:
             broker_payload = get_cached_broker_payload(pure_code, trade_dates_tuple, end_idx)
 
     chart_uuid = f"chart_{pure_code.replace('^', '').replace('.', '_')}"
-    html_content = get_component_html(
+    is_idx = pure_code.startswith("^")
+
+    # =====================================================================
+    # 1. 上半部共用主圖 Frame（緊緻為全螢幕約 1/2 高度）
+    # =====================================================================
+    top_plot_h = 270 if is_mobile else 310
+    top_frame_h = 328 if is_mobile else 368
+    html_top = get_top_chart_html(
         fig_top=fig_top,
-        fig_btm=fig_btm,
         df=df,
         chart_id=chart_uuid,
-        is_mobile=is_mobile,
+        top_height=top_plot_h,
         initial_disp_days=st.session_state.disp_days,
-        initial_end_idx=end_idx,
-        m1_thresh=m1_thresh,
-        m2_thresh=m2_thresh,
-        broker_payload=broker_payload
+        initial_end_idx=end_idx
     )
-    
-    # 【修訂說明 2026-11-13】【修改目的與防呆防錯原因】：
-    # 提高初始 iframe 容器高度至 1060px（手機版）/ 1120px（電腦版），
-    # 確保首次載入時共用主圖、三頁籤按鈕列與「指標」4 層副圖（含最下方乖離率）皆完整露出不被裁切；
-    # 切換頁籤時再由前端 ResizeObserver 與 streamlit:setFrameHeight 自動動態伸縮高度。
-    total_h = 1060 if is_mobile else 1120
-    components.html(html_content, height=total_h, scrolling=False)
+    components.html(html_top, height=top_frame_h, scrolling=False)
+
+    # =====================================================================
+    # 2. 下半部三頁籤各自獨立 Frame（指標 / 籌碼 / 分點）
+    # =====================================================================
+    tab_tech, tab_chip, tab_broker = st.tabs(["📊 指標", "💰 籌碼", "🏦 分點"])
+
+    with tab_tech:
+        tech_plot_h = 540 if is_mobile else 580
+        tech_frame_h = 615 if is_mobile else 655
+        html_tech = get_tech_tab_html(
+            fig_btm=fig_btm,
+            df=df,
+            chart_id=chart_uuid,
+            tech_height=tech_plot_h,
+            initial_disp_days=st.session_state.disp_days,
+            initial_end_idx=end_idx
+        )
+        components.html(html_tech, height=tech_frame_h, scrolling=False)
+
+    with tab_chip:
+        chip_plot_h = 780 if is_mobile else 820
+        chip_frame_h = 865 if is_mobile else 905
+        html_chip = get_chip_tab_html(
+            fig_btm=fig_btm,
+            df=df,
+            chart_id=chart_uuid,
+            chip_height=chip_plot_h,
+            initial_disp_days=st.session_state.disp_days,
+            initial_end_idx=end_idx,
+            m1_thresh=m1_thresh,
+            m2_thresh=m2_thresh
+        )
+        components.html(html_chip, height=chip_frame_h, scrolling=False)
+
+    with tab_broker:
+        html_broker = get_broker_tab_html(
+            df=df,
+            chart_id=chart_uuid,
+            initial_end_idx=end_idx,
+            is_index=is_idx,
+            broker_payload=broker_payload
+        )
+        components.html(html_broker, height=1600, scrolling=True)
 
 col_nav_b1, col_nav_b2 = st.columns(2)
 with col_nav_b1:
