@@ -1,6 +1,6 @@
 """
-app.py - 主應用程式介面與生命週期控制 (修正上一檔/下一檔不改動歷史順序、緊湊留白與底部安全墊高版) 
-版本: 202611122115
+app.py - 主應用程式介面與生命週期控制 (三頁籤分流、乖離率副圖與券商分點統計柱狀圖整合版)
+版本: 202611132040
 """
 
 import os
@@ -11,7 +11,7 @@ import streamlit.components.v1 as components
 import cloud_sync
 
 MODULE_NAME = "app"
-MODULE_VERSION = "202611122115"
+MODULE_VERSION = "202611132040"
 
 # 【防呆防錯備註 2026-11-07】：版本控制權由 app.py 作為唯一權威源，動態掃描所有模組最大版本號，杜絕多頭覆寫與重工
 def get_system_version() -> str:
@@ -48,6 +48,7 @@ from storage import (
 )
 from chart_builder import build_split_figures
 from frontend import get_legend_html, get_component_html
+from data_fetcher import fetch_stock_broker_range_ranking, fetch_single_broker_daily_series
 
 INDEX_MAP = {
     # 台股
@@ -87,6 +88,114 @@ def get_cached_figures(stock_id, period, disp_days, base_date, m1_thresh, m2_thr
         status_placeholder=None,
         force_refresh=force_refresh
     )
+
+
+@st.cache_data(ttl=600, show_spinner=False)
+def get_cached_broker_payload(stock_id: str, trade_dates_tuple: tuple, target_end_idx: int) -> dict:
+    """
+    【修訂說明 2026-11-13】【修改目的與防呆防錯原因】：
+    依據關注交易日（target_end_idx）與實際台股交易日曆，一次建構：
+    1. 當日、前 10 日、前 20 日、前 60 日分點買超前 10 名與賣超前 10 名排行榜。
+    2. 10 / 20 / 60 日區間累計買賣超各前 5 名分點之逐日買賣超柱狀圖序列。
+    防呆機制：對同一分點跨區間去重抓取最大覆蓋區間（60日）再本地日期切片，降低遠端請求數並避免限流。
+    """
+    code = str(stock_id).strip()
+    if not code or code.startswith("^") or not code.isdigit() or not trade_dates_tuple:
+        return {"by_date": {}}
+
+    n_dates = len(trade_dates_tuple)
+    safe_idx = min(max(0, int(target_end_idx)), n_dates - 1)
+    end_date_str = trade_dates_tuple[safe_idx]
+
+    def get_start_date_by_window(win_days: int) -> str:
+        s_i = max(0, safe_idx - win_days + 1)
+        return trade_dates_tuple[s_i]
+
+    win_starts = {
+        1: end_date_str,
+        10: get_start_date_by_window(10),
+        20: get_start_date_by_window(20),
+        60: get_start_date_by_window(60),
+    }
+
+    def df_to_rank_records(df_rank):
+        if df_rank is None or df_rank.empty:
+            return []
+        recs = []
+        for _, r in df_rank.head(10).iterrows():
+            recs.append({
+                "name": str(r.get("分點名稱", "")),
+                "sys": str(r.get("體系", "")),
+                "buy": int(r.get("買進(張)", 0)),
+                "sell": int(r.get("賣出(張)", 0)),
+                "net": int(r.get("買賣超(張)", 0)),
+                "ratio": str(r.get("佔比", "-")),
+            })
+        return recs
+
+    rank_dfs = {}
+    for w, s_str in win_starts.items():
+        df_b, df_s = fetch_stock_broker_range_ranking(code, s_str, end_date_str)
+        rank_dfs[w] = (df_b, df_s)
+
+    # 收集 10/20/60 日前 5 名分點之明細網址，去重後統一抓取最長區間（w60 起日 ~ end_date）逐日明細
+    earliest_start = win_starts[60]
+    broker_url_map = {}
+    for w in (10, 20, 60):
+        df_b, df_s = rank_dfs[w]
+        for df_side in (df_b, df_s):
+            if df_side is not None and not df_side.empty:
+                for _, row in df_side.head(5).iterrows():
+                    b_name = str(row.get("分點名稱", "")).strip()
+                    d_url = str(row.get("明細網址", "")).strip()
+                    if b_name and d_url and b_name not in broker_url_map:
+                        broker_url_map[b_name] = d_url
+
+    daily_cache_by_broker = {}
+    for b_name, d_url in broker_url_map.items():
+        df_daily = fetch_single_broker_daily_series(d_url, earliest_start, end_date_str)
+        daily_cache_by_broker[b_name] = df_daily
+        time.sleep(0.08)
+
+    def build_top5_series(df_side, s_str: str):
+        if df_side is None or df_side.empty:
+            return []
+        out_list = []
+        for _, row in df_side.head(5).iterrows():
+            b_name = str(row.get("分點名稱", "")).strip()
+            tot_net = int(row.get("買賣超(張)", 0))
+            df_d = daily_cache_by_broker.get(b_name)
+            if df_d is not None and not df_d.empty:
+                sub_d = df_d[(df_d["日期"] >= s_str) & (df_d["日期"] <= end_date_str)]
+                dates_arr = sub_d["日期"].tolist()
+                nets_arr = [int(v) for v in sub_d["買賣超(張)"].tolist()]
+            else:
+                dates_arr, nets_arr = [], []
+            out_list.append({
+                "name": b_name,
+                "total_net": tot_net,
+                "dates": dates_arr,
+                "nets": nets_arr
+            })
+        return out_list
+
+    day_bundle = {}
+    for w in (1, 10, 20, 60):
+        s_str = win_starts[w]
+        df_b, df_s = rank_dfs[w]
+        label = end_date_str if w == 1 else f"{s_str} ~ {end_date_str}"
+        entry = {
+            "range_label": label,
+            "buy": df_to_rank_records(df_b),
+            "sell": df_to_rank_records(df_s),
+        }
+        if w in (10, 20, 60):
+            entry["top5_buy_series"] = build_top5_series(df_b, s_str)
+            entry["top5_sell_series"] = build_top5_series(df_s, s_str)
+        day_bundle[f"w{w}"] = entry
+
+    return {"by_date": {end_date_str: day_bundle}}
+
 
 st.set_page_config(
     page_title="台股多指標+籌碼技術分析",
@@ -290,6 +399,7 @@ with st.sidebar:
     )
     if force_refresh:
         get_cached_figures.clear()
+        get_cached_broker_payload.clear()
 
     if st.button("查詢", use_container_width=True):
         input_code = st.session_state.stock_input_box.strip()
@@ -446,7 +556,6 @@ def navigate_stock(direction: int):
     else:
         target_code = codes[0]
     st.session_state.stock_id = target_code
-    # 【已移除 save_stock_history(target_code)】避免上一檔／下一檔時清單順序被動態置頂改動
 
 col_nav1, col_nav2 = st.columns(2)
 with col_nav1:
@@ -480,6 +589,12 @@ else:
     if real_c_name and real_c_name != pure_code:
         update_stock_name_only(pure_code, real_c_name)
 
+    trade_dates_tuple = tuple(d.strftime('%Y-%m-%d') for d in df.index)
+    broker_payload = {"by_date": {}}
+    if pure_code.isdigit() and not pure_code.startswith("^"):
+        with st.spinner(f"正在彙整 {pure_code} 券商分點區間統計與前五大分點逐日明細..."):
+            broker_payload = get_cached_broker_payload(pure_code, trade_dates_tuple, end_idx)
+
     chart_uuid = f"chart_{pure_code.replace('^', '').replace('.', '_')}"
     html_content = get_component_html(
         fig_top=fig_top,
@@ -490,14 +605,14 @@ else:
         initial_disp_days=st.session_state.disp_days,
         initial_end_idx=end_idx,
         m1_thresh=m1_thresh,
-        m2_thresh=m2_thresh
+        m2_thresh=m2_thresh,
+        broker_payload=broker_payload
     )
     
-    # 【修訂說明 2026-11-11】：
-    # 修改目的：緊縮 components.html 高度，解決底部的上/下一檔與資訊條之間空白過大的問題。
-    # 防呆防錯原因：原先 2100px 超出實體圖表與資訊條總高，造成 iframe 底部溢出約 250px 空白；
-    #               調整為 1800px / 1780px 緊密包覆內容，且不影響 Plotly 手勢操作。
-    total_h = 1800 if is_mobile else 1780
+    # 【修訂說明 2026-11-13】：
+    # 配合三頁籤切換架構，預設首屏為「指標」頁籤（共用主圖 270/310px + 頁籤列 + 指標副圖 540/580px），
+    # 初始高度設為 920px / 980px，切換頁籤時由前端 Streamlit.setFrameHeight 動態自動伸縮。
+    total_h = 920 if is_mobile else 980
     components.html(html_content, height=total_h, scrolling=False)
 
 col_nav_b1, col_nav_b2 = st.columns(2)
