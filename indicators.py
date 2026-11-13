@@ -1,13 +1,13 @@
 """
-indicators.py - 技術指標與籌碼計算模組 (向下傳遞 full_ticker 市場別版) 
-版本: 202611102235
+indicators.py - 技術指標與籌碼計算模組 (新增 20/120/240/1200 日乖離率計算版)
+版本: 202611132020
 """
 
 import numpy as np
 import pandas as pd
 
 MODULE_NAME = "indicators"
-MODULE_VERSION = "202611102235"
+MODULE_VERSION = "202611132020"
 
 HOLDING_LEVEL_MAP = {
     100: [8, 9, 10, 11, 12, 13, 14, 15],
@@ -17,6 +17,7 @@ HOLDING_LEVEL_MAP = {
     800: [13, 14, 15],
     1000: [15]
 }
+
 
 def calculate_all_indicators(
     df,
@@ -34,10 +35,21 @@ def calculate_all_indicators(
     if df.index.tz is not None:
         df.index = df.index.tz_localize(None)
 
-    # 1. 均線 MA5, MA20, MA60
+    # 1. 均線 MA5, MA20, MA60 及乖離率基準均線 MA120, MA240, MA1200
     df['MA5'] = df['Close'].rolling(window=5).mean()
     df['MA20'] = df['Close'].rolling(window=20).mean()
     df['MA60'] = df['Close'].rolling(window=60).mean()
+    df['MA120'] = df['Close'].rolling(window=120).mean()
+    df['MA240'] = df['Close'].rolling(window=240).mean()
+    df['MA1200'] = df['Close'].rolling(window=1200).mean()
+
+    # 【修訂說明 2026-11-13】【修改目的與防呆防錯原因】：
+    # 新增相對於 20日、120日、240日、1200日均價的乖離率 (%)，公式：(收盤價 - N日均價) / N日均價 * 100。
+    # 將均價為 0 替換為 NaN 防止除以零異常；若歷史資料長度不足（如 1y 區間不足 1200 日），自然保留 NaN 避免誤導。
+    df['BIAS_20'] = ((df['Close'] - df['MA20']) / df['MA20'].replace(0, np.nan)) * 100.0
+    df['BIAS_120'] = ((df['Close'] - df['MA120']) / df['MA120'].replace(0, np.nan)) * 100.0
+    df['BIAS_240'] = ((df['Close'] - df['MA240']) / df['MA240'].replace(0, np.nan)) * 100.0
+    df['BIAS_1200'] = ((df['Close'] - df['MA1200']) / df['MA1200'].replace(0, np.nan)) * 100.0
 
     # 2. KD(9)
     low_min9 = df['Low'].rolling(window=9).min()
@@ -50,8 +62,8 @@ def calculate_all_indicators(
             k_list.append(np.nan)
             d_list.append(np.nan)
         else:
-            k = (2/3) * k_prev + (1/3) * r
-            d = (2/3) * d_prev + (1/3) * k
+            k = (2 / 3) * k_prev + (1 / 3) * r
+            d = (2 / 3) * d_prev + (1 / 3) * k
             k_list.append(k)
             d_list.append(d)
             k_prev, d_prev = k, d
@@ -69,7 +81,10 @@ def calculate_all_indicators(
     df['Volume_Sheets'] = df['Volume'] / 1000.0
 
     # 5. OBV (180 日基準歸零)
-    direction = np.where(df['Close'] > df['Close'].shift(1), 1, np.where(df['Close'] < df['Close'].shift(1), -1, 0))
+    direction = np.where(
+        df['Close'] > df['Close'].shift(1), 1,
+        np.where(df['Close'] < df['Close'].shift(1), -1, 0)
+    )
     direction[0] = 0
     df['OBV'] = (direction * df['Volume_Sheets']).cumsum()
     base_idx = -min(180, len(df))
@@ -182,7 +197,6 @@ def calculate_all_indicators(
 
         m1_dict = calc_major_weekly_dict(m1_levels)
         m2_dict = calc_major_weekly_dict(m2_levels)
-
         m1_vals, m2_vals = [], []
         for d in df.index:
             iso_cal = pd.to_datetime(d).isocalendar()
@@ -205,7 +219,6 @@ def calculate_all_indicators(
             free_float_ratio = (100.0 - filled_major).clip(lower=10.0, upper=100.0) / 100.0
         else:
             free_float_ratio = 1.0
-
         free_float_shares = shares_outstanding * free_float_ratio
         df['Turnover_Rate'] = (df['Volume'] / free_float_shares) * 100.0
     else:
