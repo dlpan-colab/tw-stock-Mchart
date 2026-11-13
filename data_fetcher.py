@@ -1,6 +1,6 @@
 """
-data_fetcher.py - 整合技術與籌碼資料擷取模組 (台灣時區校正自動補抓、市場別精確分流與 MoneyDJ 券商分點引擎版)
-版本: 202611132025
+data_fetcher.py - 整合技術與籌碼資料擷取模組 (台灣時區校正自動補抓、市場別精確分流與 MoneyDJ 分段全區間券商分點引擎版)
+版本: 202611132135
 """
 
 import os
@@ -16,7 +16,7 @@ from datetime import datetime, timedelta
 from urllib.parse import urljoin, urlparse, parse_qs, urlencode, urlunparse
 
 MODULE_NAME = "data_fetcher"
-MODULE_VERSION = "202611132025"
+MODULE_VERSION = "202611132135"
 
 from storage import (
     StockChipStorage,
@@ -78,7 +78,6 @@ def fetch_stock_daily_k(raw_ticker: str, period: str = "1y", base_date: str = No
     last_k_date = storage.get_latest_daily_k_date()
     shares_outstanding = None
 
-    # 日 K 線永遠保留本地完整歷史，杜絕清空破壞
     ticker = yf.Ticker(target_ticker)
     if pure_code.isdigit():
         try:
@@ -106,7 +105,7 @@ def fetch_stock_daily_k(raw_ticker: str, period: str = "1y", base_date: str = No
                 shares_outstanding = t_alt.info.get("sharesOutstanding")
                 df_new = t_alt.history(period=fetch_period)
                 if df_new is not None and not df_new.empty:
-                    full_ticker = alt_ticker  # 成功切換為上櫃代碼
+                    full_ticker = alt_ticker
             except Exception:
                 pass
 
@@ -153,37 +152,28 @@ def sync_chip_data(
     last_holding_date = storage.get_latest_holding_date()
     latest_trade_date_str = df_dates[-1].strftime('%Y-%m-%d')
 
-    # 【防呆防錯備註 2026-11-10】【修訂目的與防呆防錯原因】：
-    # Streamlit Cloud 伺服器運行於 UTC 時區 (落後台灣 8 小時)。
-    # 若直接使用 datetime.now() 會導致台灣晚上 21:00 時系統時間誤判為 13:00 (尚未收盤)，
-    # 進而強制將今日籌碼自待爬清單中剃除。此處強制使用 UTC+8 台灣時間進行盤後公告時間比對。
     now_tw = datetime.utcnow() + timedelta(hours=8)
     now_tw_date_str = now_tw.strftime('%Y-%m-%d')
 
-    # 1. 三大法人判斷 (差額比對)
     existing_inst_df = storage.load_institutional_df()
     existing_dates = set(existing_inst_df['date'].dt.strftime('%Y-%m-%d')) if not existing_inst_df.empty else set()
     recent_k_dates = [d.strftime('%Y-%m-%d') for d in df_dates[-30:]]
     missing_inst_dates = [d for d in recent_k_dates if d not in existing_dates]
 
-    # 法人通常於台灣時間 15:30 前後全數公告，16:00 之後必定可抓
     if now_tw_date_str in missing_inst_dates and now_tw.hour < 16:
         missing_inst_dates.remove(now_tw_date_str)
     should_fetch_inst = force_refresh or (len(missing_inst_dates) > 0)
 
-    # 2. 資券判斷
     should_fetch_margin = force_refresh
     if not should_fetch_margin:
         if not last_margin_date:
             should_fetch_margin = True
         elif last_margin_date < latest_trade_date_str:
-            # 資券通常於台灣時間 21:00 前後產出，21:00 前不發出無效請求
             if now_tw_date_str == latest_trade_date_str and now_tw.hour < 21:
                 should_fetch_margin = False
             else:
                 should_fetch_margin = True
 
-    # 3. 集保大戶判斷
     should_fetch_holding = force_refresh
     if not should_fetch_holding:
         if not last_holding_date:
@@ -196,7 +186,6 @@ def sync_chip_data(
             elif is_weekend_publish and diff_days >= 1:
                 should_fetch_holding = True
 
-    # 執行精準擷取與入庫
     if should_fetch_inst:
         target_dates = [d for d in df_dates if d.strftime('%Y-%m-%d') in missing_inst_dates] if not force_refresh else df_dates
         if force_refresh and not missing_inst_dates:
@@ -238,18 +227,6 @@ def fetch_institutional_investors(
     explicit_missing_dates: list = None,
     full_ticker: str = None
 ) -> list:
-    """
-    【防呆防錯備註 2026-11-10】【修改目的與潛在風險說明】：
-    1. 修改目的：依據 full_ticker 後綴 (.TW 或 .TWO) 精確分流證交所與櫃買中心。
-       - 上市標的 (.TW，例如 2374)：只爬取 TWSE，絕不向 TPEx 發出無效請求，消除跨市場白等。
-       - 上櫃標的 (.TWO，例如 6425)：只爬取 TPEx，絕不向 TWSE 發出無效請求。
-    2. 防呆防錯原因（潛在風險註記）：
-       - 【重要風險警告】：Yahoo Finance 係透過代號試錯判定 (.TW 失敗才換 .TWO)。
-         若因網路逾時或快取殘缺，導致 full_ticker 市場別判定錯誤，此處的單邊分流將直接導致
-         「上市被誤當上櫃、或上櫃被誤當上市」，致使官方爬蟲全數槓龜而無法取得法人籌碼！
-       - 【保護機制】：一旦官方專屬分流查無資料時，程式自動發動「軌道二：FinMind API」作為備援
-         補破網（FinMind 依股票代號自動通吃上市與上櫃），確保即便市場別誤判，依然 100% 順利還原法人籌碼。
-    """
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
         "Referer": "https://www.tpex.org.tw/"
@@ -272,11 +249,9 @@ def fetch_institutional_investors(
         except Exception:
             return 0.0
 
-    # 判斷市場屬性 (若未傳入則預設先試 TWSE)
     is_tpex_only = bool(full_ticker and full_ticker.endswith(".TWO"))
     is_twse_only = bool(full_ticker and full_ticker.endswith(".TW"))
 
-    # 軌道一：依市場別精確爬取
     for dt in sample_dates:
         if dt.weekday() >= 5:
             continue
@@ -284,7 +259,6 @@ def fetch_institutional_investors(
         date_str = dt.strftime('%Y-%m-%d')
         found = False
 
-        # 1. 爬上市 (TWSE) - 僅非上櫃標的執行
         if not is_tpex_only:
             url_twse = f"https://www.twse.com.tw/rwd/zh/fund/T86?date={date_twse}&selectType=ALLBUT0999&response=json"
             try:
@@ -305,7 +279,6 @@ def fetch_institutional_investors(
             except Exception:
                 pass
 
-        # 2. 爬上櫃 (TPEx) - 僅非上市標的執行
         if not found and not is_twse_only:
             try:
                 year_tw = dt.year - 1911
@@ -337,7 +310,6 @@ def fetch_institutional_investors(
             missing_dates.append(date_str)
         time.sleep(0.01)
 
-    # 軌道二：【重要備援機制】若專屬分流因判定錯誤未取到，由 FinMind API 全域精準補齊
     if missing_dates:
         try:
             query_start = min(missing_dates)
@@ -375,7 +347,6 @@ def fetch_institutional_investors(
 
 
 def fetch_margin_short_data(pure_code: str, df_dates: pd.DatetimeIndex, start_date_exclusive: str = None) -> list:
-    """擷取融資融券買賣超與餘額資料 (FinMind API 架構)"""
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
     }
@@ -427,7 +398,6 @@ def fetch_margin_short_data(pure_code: str, df_dates: pd.DatetimeIndex, start_da
 
 
 def fetch_tdcc_holding_data(pure_code: str) -> list:
-    """擷取集保大戶持股分級資料 (集保結算所 TDCC 官方來源 - 最新單週)"""
     records = []
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
@@ -454,7 +424,6 @@ def fetch_tdcc_holding_data(pure_code: str) -> list:
 
 
 def fetch_tdcc_holding_history(pure_code: str, weeks: int = 6) -> list:
-    """擷取集保大戶近 N 週歷史分級 (FinMind API 歷史備援)"""
     records = []
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
@@ -509,16 +478,14 @@ def fetch_tdcc_holding_history(pure_code: str, weeks: int = 6) -> list:
 
 
 # =====================================================================
-# 【修訂說明 2026-11-13】個股券商分點進出排行與逐日明細引擎 (MoneyDJ zco / zco0)
+# 【修訂說明 2026-11-13】個股券商分點進出排行與分段全區間逐日明細引擎
 # =====================================================================
 def is_gov_broker_branch(broker_name: str) -> bool:
-    """判斷分點名稱是否隸屬於八大官股體系（涵蓋總公司與各地分公司）"""
     clean_name = str(broker_name).strip()
     return any(clean_name.startswith(prefix) for prefix in GOV_BROKER_PREFIXES)
 
 
 def _clean_broker_int(val_str: str) -> int:
-    """清理千分位逗號與空白並轉為整數張數"""
     cleaned = re.sub(r"[,\s\xa0張]", "", str(val_str or ""))
     if cleaned in ("", "-", "--", "—"):
         return 0
@@ -529,7 +496,6 @@ def _clean_broker_int(val_str: str) -> int:
 
 
 def _normalize_tw_date(date_str: str) -> str:
-    """將民國年 (115/10/07) 或西元年 (2026/10/07) 統一轉為 YYYY-MM-DD"""
     s = str(date_str).strip()
     m = re.match(r"^(\d{2,4})[/\-](\d{1,2})[/\-](\d{1,2})$", s)
     if not m:
@@ -541,7 +507,6 @@ def _normalize_tw_date(date_str: str) -> str:
 
 
 def _build_detail_url_with_range(raw_href: str, s_mdj: str, e_mdj: str) -> str:
-    """解析分點明細連結並強制帶入指定起迄日期參數 e 與 f"""
     full_url = urljoin(MDJ_BASE_DOMAIN, raw_href)
     parsed = urlparse(full_url)
     qs = parse_qs(parsed.query)
@@ -552,12 +517,6 @@ def _build_detail_url_with_range(raw_href: str, s_mdj: str, e_mdj: str) -> str:
 
 
 def fetch_stock_broker_range_ranking(stock_id: str, start_date: str, end_date: str) -> tuple[pd.DataFrame, pd.DataFrame]:
-    """
-    【修改目的與防呆防錯原因 2026-11-13】：
-    抓取單一股票在指定期間（start_date ~ end_date，支援單日與多日區間）的買超與賣超分點排行榜。
-    若為指數標的（^ 開頭）或非純數字個股代碼，直接防呆回傳空 DataFrame。
-    回傳: (df_buy, df_sell)，內含分點名稱、體系、買進(張)、賣出(張)、買賣超(張)、佔比、明細網址。
-    """
     code_str = str(stock_id).strip()
     if not code_str or code_str.startswith("^") or not code_str.isdigit():
         return pd.DataFrame(), pd.DataFrame()
@@ -589,7 +548,6 @@ def fetch_stock_broker_range_ranking(stock_id: str, start_date: str, end_date: s
                     left_cells = cells[:half]
                     right_cells = cells[half:]
 
-                    # 左側：買超分點
                     if left_txt[0] and left_txt[0] not in ("買超券商", "券商名稱", "分點") and any(c.isdigit() for c in left_txt[-1]):
                         a_tag = left_cells[0].find("a", href=True)
                         detail_url = _build_detail_url_with_range(a_tag["href"], s_mdj, e_mdj) if a_tag else ""
@@ -604,7 +562,6 @@ def fetch_stock_broker_range_ranking(stock_id: str, start_date: str, end_date: s
                             "明細網址": detail_url
                         })
 
-                    # 右側：賣超分點
                     if right_txt[0] and right_txt[0] not in ("賣超券商", "券商名稱", "分點") and any(c.isdigit() for c in right_txt[-1]):
                         a_tag = right_cells[0].find("a", href=True)
                         detail_url = _build_detail_url_with_range(a_tag["href"], s_mdj, e_mdj) if a_tag else ""
@@ -626,33 +583,18 @@ def fetch_stock_broker_range_ranking(stock_id: str, start_date: str, end_date: s
         return pd.DataFrame(), pd.DataFrame()
 
 
-def fetch_single_broker_daily_series(detail_url: str, start_date: str, end_date: str) -> pd.DataFrame:
-    """
-    【修改目的與防呆防錯原因 2026-11-13】：
-    抓取單一分點於指定區間（start_date ~ end_date）內的逐日買賣超明細（MoneyDJ zco0.djhtm）。
-    防呆要點：
-    1. 絕不抓第 4 欄總成交張數（買進+賣出），直接以「買進(張) - 賣出(張)」計算每日真實淨買賣超張數。
-    2. 強制執行日期區間過濾（start_date <= 日期 <= end_date），剔除伺服器附帶的區間外最新交易日。
-    """
-    if not detail_url:
-        return pd.DataFrame()
-
-    s_iso = str(start_date)[:10]
-    e_iso = str(end_date)[:10]
+def _parse_single_zco0_chunk(detail_url: str, chunk_start_dt, chunk_end_dt, s_iso: str, e_iso: str) -> list:
+    """抓取單一段落（不超過 20 個交易日）之 zco0.djhtm 逐日明細"""
+    s_mdj = f"{chunk_start_dt.year}-{chunk_start_dt.month}-{chunk_start_dt.day}"
+    e_mdj = f"{chunk_end_dt.year}-{chunk_end_dt.month}-{chunk_end_dt.day}"
+    target_url = _build_detail_url_with_range(detail_url, s_mdj, e_mdj)
+    rows_out = []
     try:
-        s_dt = datetime.strptime(s_iso, "%Y-%m-%d").date()
-        e_dt = datetime.strptime(e_iso, "%Y-%m-%d").date()
-        s_mdj = f"{s_dt.year}-{s_dt.month}-{s_dt.day}"
-        e_mdj = f"{e_dt.year}-{e_dt.month}-{e_dt.day}"
-        target_url = _build_detail_url_with_range(detail_url, s_mdj, e_mdj)
-
         resp = requests.get(target_url, headers=MDJ_HEADERS, timeout=12)
         resp.encoding = "big5"
         if resp.status_code != 200:
-            return pd.DataFrame()
-
+            return rows_out
         soup = BeautifulSoup(resp.text, "html.parser")
-        daily_rows = []
         for tbl in soup.find_all("table"):
             for tr in tbl.find_all("tr"):
                 tds = [td.get_text(strip=True) for td in tr.find_all(["td", "th"])]
@@ -663,16 +605,61 @@ def fetch_single_broker_daily_series(detail_url: str, start_date: str, end_date:
                     buy_vol = _clean_broker_int(tds[1])
                     sell_vol = _clean_broker_int(tds[2])
                     net_vol = buy_vol - sell_vol
-                    daily_rows.append({
+                    rows_out.append({
                         "日期": norm_date,
                         "買進(張)": buy_vol,
                         "賣出(張)": sell_vol,
                         "買賣超(張)": net_vol
                     })
+    except Exception:
+        pass
+    return rows_out
 
-        if not daily_rows:
+
+def fetch_single_broker_daily_series(detail_url: str, start_date: str, end_date: str) -> pd.DataFrame:
+    """
+    【修改目的與防呆防錯原因 2026-11-13】：
+    抓取單一分點於指定區間（start_date ~ end_date）內的逐日買賣超明細（MoneyDJ zco0.djhtm）。
+    防呆要點：
+    1. 因應 MoneyDJ zco0.djhtm 單頁最多回傳 20 個交易日之伺服器硬限制，
+       若查詢區間超過 24 個日曆日（例如 60 交易日），自動以每段 24 日曆日由迄日往起日分段請求並合併去重。
+    2. 絕不抓第 4 欄總成交張數（買進+賣出），直接以「買進(張) - 賣出(張)」計算每日真實淨買賣超張數。
+    """
+    if not detail_url:
+        return pd.DataFrame()
+
+    s_iso = str(start_date)[:10]
+    e_iso = str(end_date)[:10]
+    try:
+        s_dt = datetime.strptime(s_iso, "%Y-%m-%d").date()
+        e_dt = datetime.strptime(e_iso, "%Y-%m-%d").date()
+        if s_dt > e_dt:
             return pd.DataFrame()
-        df_d = pd.DataFrame(daily_rows).drop_duplicates(subset=["日期"]).sort_values("日期", ascending=True).reset_index(drop=True)
+
+        # 由迄日往回以每段 24 個日曆日（約 16~18 個交易日，嚴格低於 20 筆上限）分段抓取
+        chunk_days = 24
+        cur_end = e_dt
+        all_daily_rows = []
+        guard_count = 0
+
+        while cur_end >= s_dt and guard_count < 8:
+            cur_start = max(s_dt, cur_end - timedelta(days=chunk_days - 1))
+            chunk_rows = _parse_single_zco0_chunk(detail_url, cur_start, cur_end, s_iso, e_iso)
+            all_daily_rows.extend(chunk_rows)
+            cur_end = cur_start - timedelta(days=1)
+            guard_count += 1
+            if cur_end >= s_dt:
+                time.sleep(0.06)
+
+        if not all_daily_rows:
+            return pd.DataFrame()
+
+        df_d = (
+            pd.DataFrame(all_daily_rows)
+            .drop_duplicates(subset=["日期"], keep="last")
+            .sort_values("日期", ascending=True)
+            .reset_index(drop=True)
+        )
         return df_d
     except Exception:
         return pd.DataFrame()
