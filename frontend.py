@@ -1,5 +1,5 @@
 """
-frontend.py - 前端 HTML/CSS 渲染模組 (共用主圖 Frame + 三頁籤各自獨立 Frame + 分點柱狀圖橫軸日期去年份版)
+frontend.py - 前端 HTML/CSS 渲染模組 (共用主圖 Frame + 三頁籤各自獨立 Frame + 分點柱狀圖橫軸日期去年份版) 
 版本: 202611132125
 """
 
