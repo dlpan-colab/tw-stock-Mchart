@@ -1,6 +1,6 @@
 """
-frontend.py - 前端 HTML/CSS 渲染與手勢/游標跨圖同步模組 (三頁籤強制可見、ResizeObserver自動撐高與分點統計柱狀圖版)
-版本: 202611132050
+frontend.py - 前端 HTML/CSS 渲染與手勢/游標跨圖同步模組 (三頁籤延遲首次繪圖防塌陷、ResizeObserver自動撐高與分點統計柱狀圖版)
+版本: 202611132100
 """
 
 import json
@@ -8,10 +8,10 @@ import uuid
 import pandas as pd
 
 MODULE_NAME = "frontend"
-MODULE_VERSION = "202611132050"
+MODULE_VERSION = "202611132100"
 
 
-def get_legend_html(version_tag: str = "202611132050") -> str:
+def get_legend_html(version_tag: str = "202611132100") -> str:
     return f"""
     <div style="font-size: 14px; margin-bottom: 4px; padding: 2px 8px; display: inline-flex; align-items: center; background: #f8fafc; border-radius: 4px; border: 1px solid #e2e8f0;">
         <span style="background:#2c3e50; color:#ffffff; padding: 2px 8px; border-radius: 4px; font-weight:bold; font-size:12px;">台股技術與籌碼分析 v{version_tag}</span>
@@ -52,7 +52,7 @@ js_template = """
 .val-dn { color: #2ecc71; font-weight: bold; }
 .tag-lbl { margin-right: 4px; }
 
-/* 【修訂說明 2026-11-13】三頁籤切換導航列：鎖定最小高度、獨立區塊與最高層級，確保成交量下方清晰可見 */
+/* 三頁籤切換導航列 */
 .sub-tab-bar {
     display: flex !important;
     flex-direction: row !important;
@@ -94,13 +94,15 @@ js_template = """
     border-color: #1e293b !important;
     box-shadow: 0 1px 3px rgba(0,0,0,0.2) !important;
 }
+
+/* 【修訂說明 2026-11-13】強制面板互斥顯示，避免切換頁籤時原副圖殘留重疊 */
 .tab-panel {
-    display: none;
-    width: 100%;
-    box-sizing: border-box;
+    display: none !important;
+    width: 100% !important;
+    box-sizing: border-box !important;
 }
 .tab-panel.active {
-    display: block;
+    display: block !important;
 }
 
 /* 分點統計表格與柱狀圖樣式 */
@@ -316,12 +318,15 @@ js_template = """
     var watchdogTimer = null;
     var activeTab = 'tech';
     var currentFocusIdx = __INITIAL_END_IDX__;
+    var chipPlotReady = false;
+    var chipPlotInitInProgress = false;
 
     var targetDays = Number(__INITIAL_DISP_DAYS__) || 20;
     var initEnd = __INITIAL_END_IDX__;
     var initStart = Math.max(0, initEnd - targetDays + 1);
     var currentR0 = initStart - 0.5;
     var currentR1 = initEnd + 0.5;
+    var cfg = { responsive: true, displayModeBar: false, scrollZoom: false };
 
     function postFrameHeightNow() {
         if (!container) return;
@@ -539,7 +544,7 @@ js_template = """
                 yaxis: { tickfont: { size: 10 }, fixedrange: true, zeroline: true, zerolinecolor: '#94a3b8' },
                 showlegend: false
             };
-            Plotly.newPlot(dom, [trace], layout, { responsive: true, displayModeBar: false, scrollZoom: false });
+            Plotly.newPlot(dom, [trace], layout, cfg);
         }
 
         for (var bi2 = 0; bi2 < top5Buy.length; bi2++) {
@@ -603,6 +608,107 @@ js_template = """
         renderBrokerTab(idx);
     }
 
+    function applyRangeToAllPlots(r0, r1) {
+        var visibleBounds = calcVisibleBounds(r0, r1);
+        var topXUpd = { 'xaxis.range': [r0, r1], 'xaxis.autorange': false };
+        if (elTop.layout && elTop.layout.xaxis2) {
+            topXUpd['xaxis2.range'] = [r0, r1];
+            topXUpd['xaxis2.autorange'] = false;
+        }
+        var techUpd = {};
+        for (var i = 1; i <= 4; i++) {
+            var ax = (i === 1) ? 'xaxis' : 'xaxis' + i;
+            if (elTech.layout && elTech.layout[ax]) {
+                techUpd[ax + '.range'] = [r0, r1];
+                techUpd[ax + '.autorange'] = false;
+            }
+        }
+        var tasks = [
+            Plotly.relayout(elTop, topXUpd),
+            Plotly.relayout(elTech, techUpd)
+        ];
+        if (chipPlotReady && elChip && elChip.layout) {
+            var chipUpd = {};
+            for (var j = 1; j <= 6; j++) {
+                var axc = (j === 1) ? 'xaxis' : 'xaxis' + j;
+                if (elChip.layout[axc]) {
+                    chipUpd[axc + '.range'] = [r0, r1];
+                    chipUpd[axc + '.autorange'] = false;
+                }
+            }
+            tasks.push(Plotly.relayout(elChip, chipUpd));
+        }
+        Promise.all(tasks).then(function() {
+            return requestAnimationFrame(function() {
+                Plotly.relayout(elTop, {
+                    'yaxis.range': visibleBounds.priceRange,
+                    'yaxis.autorange': false,
+                    'yaxis2.range': visibleBounds.volRange,
+                    'yaxis2.autorange': false
+                });
+            });
+        }).finally(function() {
+            setTimeout(function() { isUpdating = false; }, 20);
+        });
+    }
+
+    function bindSyncXAxis(srcEl, maxAxes) {
+        srcEl.on('plotly_relayout', function(ed) {
+            if (isUpdating) return;
+            var r0 = null, r1 = null;
+            for (var k = 1; k <= maxAxes; k++) {
+                var prefix = (k === 1) ? 'xaxis' : 'xaxis' + k;
+                if (ed[prefix + '.range[0]'] !== undefined) r0 = ed[prefix + '.range[0]'];
+                else if (ed[prefix + '.range']) r0 = ed[prefix + '.range'][0];
+                if (ed[prefix + '.range[1]'] !== undefined) r1 = ed[prefix + '.range[1]'];
+                else if (ed[prefix + '.range']) r1 = ed[prefix + '.range'][1];
+            }
+            if (r0 === null || r1 === null) return;
+            if (Math.abs(r0 - currentR0) < 0.001 && Math.abs(r1 - currentR1) < 0.001) return;
+
+            isUpdating = true;
+            if (watchdogTimer) clearTimeout(watchdogTimer);
+            watchdogTimer = setTimeout(function() { isUpdating = false; }, 140);
+
+            var span = r1 - r0;
+            var maxBound = (totalPoints - 1) + 0.5;
+            if (r1 > maxBound) {
+                r1 = maxBound;
+                r0 = r1 - span;
+            }
+            currentR0 = r0;
+            currentR1 = r1;
+            setTimeout(function() { applyRangeToAllPlots(r0, r1); }, 0);
+        });
+    }
+
+    function ensureChipPlotInitialized() {
+        if (chipPlotReady) {
+            Plotly.Plots.resize(elChip);
+            var chipUpd = {};
+            for (var j = 1; j <= 6; j++) {
+                var axc = (j === 1) ? 'xaxis' : 'xaxis' + j;
+                chipUpd[axc + '.range'] = [currentR0, currentR1];
+            }
+            Plotly.relayout(elChip, chipUpd);
+            notifyIframeHeight();
+            return;
+        }
+        if (chipPlotInitInProgress) return;
+        chipPlotInitInProgress = true;
+        for (var c = 1; c <= 6; c++) {
+            var kc = (c === 1) ? 'xaxis' : 'xaxis' + c;
+            if (pChip.layout && pChip.layout[kc]) pChip.layout[kc].range = [currentR0, currentR1];
+        }
+        Plotly.newPlot(elChip, pChip.data, pChip.layout, cfg).then(function() {
+            chipPlotReady = true;
+            chipPlotInitInProgress = false;
+            bindSyncXAxis(elChip, 6);
+            Plotly.Plots.resize(elChip);
+            notifyIframeHeight();
+        });
+    }
+
     function switchTab(tabName) {
         activeTab = tabName;
         var btns = document.querySelectorAll('#__CHART_ID___tabbar .sub-tab-btn');
@@ -627,18 +733,15 @@ js_template = """
                 techUpd[ax + '.range'] = [currentR0, currentR1];
             }
             Plotly.relayout(elTech, techUpd);
+            notifyIframeHeight();
         } else if (tabName === 'chip' && elChip) {
-            Plotly.Plots.resize(elChip);
-            var chipUpd = {};
-            for (var j = 1; j <= 6; j++) {
-                var axc = (j === 1) ? 'xaxis' : 'xaxis' + j;
-                chipUpd[axc + '.range'] = [currentR0, currentR1];
-            }
-            Plotly.relayout(elChip, chipUpd);
+            requestAnimationFrame(function() {
+                ensureChipPlotInitialized();
+            });
         } else if (tabName === 'broker') {
             renderBrokerTab(currentFocusIdx);
+            notifyIframeHeight();
         }
-        notifyIframeHeight();
     }
 
     document.querySelectorAll('#__CHART_ID___tabbar .sub-tab-btn').forEach(function(btn) {
@@ -655,88 +758,15 @@ js_template = """
         });
     }
 
-    var cfg = { responsive: true, displayModeBar: false, scrollZoom: false };
+    // 初次只渲染目前可見的 elTop 與 elTech，隱藏分頁 elChip 於首次點擊「籌碼」時再建立，避免寬高塌陷
     Plotly.newPlot(elTop, pTop.data, pTop.layout, cfg).then(function() {
         return Plotly.newPlot(elTech, pTech.data, pTech.layout, cfg);
-    }).then(function() {
-        return Plotly.newPlot(elChip, pChip.data, pChip.layout, cfg);
     }).then(function() {
         updateAllPanes(initEnd);
         notifyIframeHeight();
 
-        function applyRangeToAllPlots(r0, r1) {
-            var visibleBounds = calcVisibleBounds(r0, r1);
-            var topXUpd = { 'xaxis.range': [r0, r1], 'xaxis.autorange': false };
-            if (elTop.layout && elTop.layout.xaxis2) {
-                topXUpd['xaxis2.range'] = [r0, r1];
-                topXUpd['xaxis2.autorange'] = false;
-            }
-            var techUpd = {};
-            for (var i = 1; i <= 4; i++) {
-                var ax = (i === 1) ? 'xaxis' : 'xaxis' + i;
-                if (elTech.layout && elTech.layout[ax]) {
-                    techUpd[ax + '.range'] = [r0, r1];
-                    techUpd[ax + '.autorange'] = false;
-                }
-            }
-            var chipUpd = {};
-            for (var j = 1; j <= 6; j++) {
-                var axc = (j === 1) ? 'xaxis' : 'xaxis' + j;
-                if (elChip.layout && elChip.layout[axc]) {
-                    chipUpd[axc + '.range'] = [r0, r1];
-                    chipUpd[axc + '.autorange'] = false;
-                }
-            }
-            var p1 = Plotly.relayout(elTop, topXUpd);
-            var p2 = Plotly.relayout(elTech, techUpd);
-            var p3 = Plotly.relayout(elChip, chipUpd);
-            Promise.all([p1, p2, p3]).then(function() {
-                return requestAnimationFrame(function() {
-                    Plotly.relayout(elTop, {
-                        'yaxis.range': visibleBounds.priceRange,
-                        'yaxis.autorange': false,
-                        'yaxis2.range': visibleBounds.volRange,
-                        'yaxis2.autorange': false
-                    });
-                });
-            }).finally(function() {
-                setTimeout(function() { isUpdating = false; }, 20);
-            });
-        }
-
-        function bindSyncXAxis(srcEl, maxAxes) {
-            srcEl.on('plotly_relayout', function(ed) {
-                if (isUpdating) return;
-                var r0 = null, r1 = null;
-                for (var k = 1; k <= maxAxes; k++) {
-                    var prefix = (k === 1) ? 'xaxis' : 'xaxis' + k;
-                    if (ed[prefix + '.range[0]'] !== undefined) r0 = ed[prefix + '.range[0]'];
-                    else if (ed[prefix + '.range']) r0 = ed[prefix + '.range'][0];
-                    if (ed[prefix + '.range[1]'] !== undefined) r1 = ed[prefix + '.range[1]'];
-                    else if (ed[prefix + '.range']) r1 = ed[prefix + '.range'][1];
-                }
-                if (r0 === null || r1 === null) return;
-                if (Math.abs(r0 - currentR0) < 0.001 && Math.abs(r1 - currentR1) < 0.001) return;
-
-                isUpdating = true;
-                if (watchdogTimer) clearTimeout(watchdogTimer);
-                watchdogTimer = setTimeout(function() { isUpdating = false; }, 140);
-
-                var span = r1 - r0;
-                var maxBound = (totalPoints - 1) + 0.5;
-                if (r1 > maxBound) {
-                    r1 = maxBound;
-                    r0 = r1 - span;
-                }
-                currentR0 = r0;
-                currentR1 = r1;
-                setTimeout(function() { applyRangeToAllPlots(r0, r1); }, 0);
-            });
-        }
-
         bindSyncXAxis(elTop, 2);
         bindSyncXAxis(elTech, 4);
-        bindSyncXAxis(elChip, 6);
 
         function processPointer(clientX) {
             var rect = elTop.getBoundingClientRect();
@@ -810,7 +840,7 @@ def render_interactive_chart_html(
     chip_height=760,
     initial_disp_days=20,
     initial_end_idx=None,
-    version_tag="202611132050",
+    version_tag="202611132100",
     is_index=False,
     chart_id=None,
     broker_payload=None
