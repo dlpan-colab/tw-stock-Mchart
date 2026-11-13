@@ -1,5 +1,5 @@
 """
-indicators.py - 技術指標與籌碼計算模組 (向下傳遞 full_ticker 市場別版)
+indicators.py - 技術指標與籌碼計算模組 (向下傳遞 full_ticker 市場別版) 
 版本: 202611102235
 """
 
