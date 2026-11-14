@@ -1,6 +1,6 @@
 """
-app.py - 主應用程式介面與生命週期控制 (支援含英文後綴台股ETF + 雙按鈕精準歷史切換與單筆刪除 + 雲端分點累積版)
-版本: 202611141235
+app.py - 主應用程式介面與生命週期控制 (支援含英文後綴台股ETF + 上下檔瀏覽不亂序 + 雲端分點累積版)
+版本: 202611141300
 """
 
 import os
@@ -11,7 +11,7 @@ import streamlit.components.v1 as components
 import cloud_sync
 
 MODULE_NAME = "app"
-MODULE_VERSION = "202611141235"
+MODULE_VERSION = "202611141300"
 
 # 【防呆防錯備註 2026-11-07】：版本控制權由 app.py 作為唯一權威源，動態掃描所有模組最大版本號，杜絕多頭覆寫與重工
 def get_system_version() -> str:
@@ -313,12 +313,15 @@ if "index_select_box" not in st.session_state:
     st.session_state.index_select_box = "選擇主要市場指數..."
 if "ms_counter" not in st.session_state:
     st.session_state.ms_counter = 0
+if "promote_to_top" not in st.session_state:
+    st.session_state.promote_to_top = False
 
 def on_stock_input_change():
     val = st.session_state.stock_input_box.strip()
     if val:
         resolved = resolve_ticker_code(val)
         st.session_state.stock_id = resolved
+        st.session_state.promote_to_top = True
 
 def on_index_select_change():
     sel = st.session_state.index_select_box
@@ -327,6 +330,7 @@ def on_index_select_change():
         if m:
             idx_code = m.group(1)
             st.session_state.stock_id = idx_code
+            st.session_state.promote_to_top = False
         st.session_state.index_select_box = "選擇主要市場指數..."
 
 with st.sidebar:
@@ -354,7 +358,6 @@ with st.sidebar:
         if history_codes:
             history_display = [f"{h.get('code')} {h.get('name', '')}".strip() for h in history_records]
             current_ms_key = f"history_multiselect_{st.session_state.ms_counter}"
-            # 【修訂說明 2026-11-14】移除勾選時自動 ms_counter+=1 清空邏輯，讓勾選項目穩穩保留在框內
             selected_history = st.multiselect(
                 "點擊展開並勾選標的...",
                 options=history_display,
@@ -371,6 +374,7 @@ with st.sidebar:
                         for c in all_codes:
                             save_stock_history(c)
                         st.session_state.stock_id = target_code
+                        st.session_state.promote_to_top = True
                         st.session_state.confirm_clear_all = False
                         st.session_state.ms_counter += 1
                         st.rerun()
@@ -388,6 +392,7 @@ with st.sidebar:
                                     pass
                         if str(st.session_state.stock_id).strip().upper() in target_codes:
                             st.session_state.stock_id = remained[0]["code"] if remained else "2330"
+                        st.session_state.promote_to_top = False
                         st.session_state.confirm_clear_all = False
                         st.session_state.ms_counter += 1
                         st.rerun()
@@ -404,6 +409,7 @@ with st.sidebar:
                 if st.button("確認全刪", key="btn_confirm_delete_all", use_container_width=True):
                     clear_stock_history()
                     st.session_state.stock_id = "2330"
+                    st.session_state.promote_to_top = False
                     st.session_state.confirm_clear_all = False
                     st.session_state.ms_counter += 1
                     st.rerun()
@@ -463,6 +469,7 @@ with st.sidebar:
         if input_code:
             resolved = resolve_ticker_code(input_code)
             st.session_state.stock_id = resolved
+            st.session_state.promote_to_top = True
         st.rerun()
 
     st.markdown("---")
@@ -587,6 +594,7 @@ else:
 st.markdown(f"### 台股技術與籌碼分析 v{SYSTEM_VERSION} {status_icon}")
 
 def navigate_stock(direction: int):
+    """【修訂說明 2026-11-14】上一檔/下一檔僅依目前歷史清單順序循環瀏覽，絕不更動歷史排序"""
     history_records = load_stock_history()
     codes = [str(item.get("code")).strip().upper() for item in history_records if item.get("code")]
     if not codes:
@@ -599,6 +607,7 @@ def navigate_stock(direction: int):
     else:
         target_code = codes[0]
     st.session_state.stock_id = target_code
+    st.session_state.promote_to_top = False
 
 col_nav1, col_nav2 = st.columns(2)
 with col_nav1:
@@ -623,15 +632,17 @@ with st.spinner(f"正在載入 {st.session_state.stock_id} 圖表資料..."):
     )
 
 if fig_top is None or fig_btm is None or df is None or df.empty:
+    st.session_state.promote_to_top = False
     st.error(f"無法載入標的【{st.session_state.stock_id}】的技術指標資料，請確認代號是否正確。")
 else:
     pure_code = str(st.session_state.stock_id).strip().upper()
     real_c_name = c_name or get_stock_chinese_name(pure_code)
-    # 【修訂說明 2026-11-14】確認有效載入 K 線後才寫入/置頂歷史紀錄，防止無效代號污染清單
-    if not pure_code.startswith("^"):
+    # 【修訂說明 2026-11-14】僅在主動查詢/切換查詢時才置頂歷史紀錄；上一檔/下一檔瀏覽時僅更新中文名稱不改排序
+    if not pure_code.startswith("^") and st.session_state.get("promote_to_top", False):
         save_stock_history(pure_code, real_c_name)
     elif real_c_name and real_c_name != pure_code:
         update_stock_name_only(pure_code, real_c_name)
+    st.session_state.promote_to_top = False
 
     trade_dates_tuple = tuple(d.strftime('%Y-%m-%d') for d in df.index)
     broker_payload = {"by_date": {}}
