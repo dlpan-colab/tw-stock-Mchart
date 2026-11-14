@@ -1,6 +1,6 @@
 """
-app.py - 主應用程式介面與生命週期控制 (支援含英文後綴台股ETF + 共用主圖 Frame + 三頁籤獨立 Frame + 雲端分點累積版)
-版本: 202611141220
+app.py - 主應用程式介面與生命週期控制 (支援含英文後綴台股ETF + 精準單筆刪除歷史紀錄 + 雲端分點累積版)
+版本: 202611141230
 """
 
 import os
@@ -11,7 +11,7 @@ import streamlit.components.v1 as components
 import cloud_sync
 
 MODULE_NAME = "app"
-MODULE_VERSION = "202611141220"
+MODULE_VERSION = "202611141230"
 
 # 【防呆防錯備註 2026-11-07】：版本控制權由 app.py 作為唯一權威源，動態掃描所有模組最大版本號，杜絕多頭覆寫與重工
 def get_system_version() -> str:
@@ -321,8 +321,6 @@ def on_stock_input_change():
     if val:
         resolved = resolve_ticker_code(val)
         st.session_state.stock_id = resolved
-        if not resolved.startswith("^"):
-            save_stock_history(resolved)
 
 def on_index_select_change():
     sel = st.session_state.index_select_box
@@ -364,7 +362,29 @@ with st.sidebar:
                 default=[],
                 key=current_ms_key
             )
-            
+
+            # 【修訂說明 2026-11-14】優先處理「清除歷史記錄」按鈕，防止被下方 newly_selected 搶先攔截重跑
+            if st.button("清除歷史記錄", use_container_width=True):
+                if selected_history:
+                    target_codes = [item.split()[0].upper() for item in selected_history]
+                    remained = remove_stocks_from_history(target_codes)
+                    for tc in target_codes:
+                        local_db = f"data_{tc}.db"
+                        if os.path.exists(local_db):
+                            try:
+                                os.remove(local_db)
+                            except Exception:
+                                pass
+                    if str(st.session_state.stock_id).strip().upper() in target_codes:
+                        st.session_state.stock_id = remained[0]["code"] if remained else "2330"
+                    st.session_state.confirm_clear_all = False
+                    st.session_state.history_multiselect_prev = []
+                    st.session_state.ms_counter += 1
+                    st.rerun()
+                else:
+                    st.session_state.confirm_clear_all = True
+                    st.rerun()
+
             newly_selected = [item for item in selected_history if item not in st.session_state.history_multiselect_prev]
             if newly_selected:
                 latest_clicked_code = newly_selected[-1].split()[0].upper()
@@ -379,18 +399,6 @@ with st.sidebar:
                 st.rerun()
 
             st.session_state.history_multiselect_prev = selected_history
-
-            if st.button("清除歷史記錄", use_container_width=True):
-                if selected_history:
-                    target_codes = [item.split()[0].upper() for item in selected_history]
-                    remove_stocks_from_history(target_codes)
-                    st.session_state.confirm_clear_all = False
-                    st.session_state.history_multiselect_prev = []
-                    st.session_state.ms_counter += 1
-                    st.rerun()
-                else:
-                    st.session_state.confirm_clear_all = True
-                    st.rerun()
         else:
             st.caption("目前無歷史紀錄")
 
@@ -461,8 +469,6 @@ with st.sidebar:
         if input_code:
             resolved = resolve_ticker_code(input_code)
             st.session_state.stock_id = resolved
-            if not resolved.startswith("^"):
-                save_stock_history(resolved)
         st.rerun()
 
     st.markdown("---")
@@ -627,7 +633,10 @@ if fig_top is None or fig_btm is None or df is None or df.empty:
 else:
     pure_code = str(st.session_state.stock_id).strip().upper()
     real_c_name = c_name or get_stock_chinese_name(pure_code)
-    if real_c_name and real_c_name != pure_code:
+    # 【修訂說明 2026-11-14】確認有效載入 K 線後才寫入/置頂歷史紀錄，防止無效代號污染清單
+    if not pure_code.startswith("^"):
+        save_stock_history(pure_code, real_c_name)
+    elif real_c_name and real_c_name != pure_code:
         update_stock_name_only(pure_code, real_c_name)
 
     trade_dates_tuple = tuple(d.strftime('%Y-%m-%d') for d in df.index)
