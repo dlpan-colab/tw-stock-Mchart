@@ -1,6 +1,6 @@
 """
-app.py - 主應用程式介面與生命週期控制 (共用主圖 Frame + 三頁籤各自獨立 Frame + 雲端分點持久化累積版)
-版本: 202611132200
+app.py - 主應用程式介面與生命週期控制 (支援含英文後綴台股ETF + 共用主圖 Frame + 三頁籤獨立 Frame + 雲端分點累積版)
+版本: 202611141220
 """
 
 import os
@@ -11,7 +11,7 @@ import streamlit.components.v1 as components
 import cloud_sync
 
 MODULE_NAME = "app"
-MODULE_VERSION = "202611132200"
+MODULE_VERSION = "202611141220"
 
 # 【防呆防錯備註 2026-11-07】：版本控制權由 app.py 作為唯一權威源，動態掃描所有模組最大版本號，杜絕多頭覆寫與重工
 def get_system_version() -> str:
@@ -45,7 +45,8 @@ from storage import (
     update_stock_name_only,
     get_stock_chinese_name,
     clear_recent_margin_data,
-    clear_recent_institutional_data
+    clear_recent_institutional_data,
+    is_tw_stock_or_etf
 )
 from chart_builder import build_split_figures
 from frontend import (
@@ -83,7 +84,7 @@ def resolve_ticker_code(raw_input: str) -> str:
     upper = cleaned.upper()
     if upper in INDEX_MAP:
         return INDEX_MAP[upper]
-    return cleaned
+    return upper
 
 @st.cache_data(ttl=180, show_spinner=False)
 def get_cached_figures(stock_id, period, disp_days, base_date, m1_thresh, m2_thresh, is_mobile, force_refresh):
@@ -108,13 +109,12 @@ def get_cached_broker_payload(
     force_refresh: bool = False
 ) -> dict:
     """
-    【修訂說明 2026-11-13】【修改目的與防呆防錯原因】：
-    1. 優先讀取個股雲端 SQLite（broker_range_rank + broker_daily_trades），已收錄基準日零網路請求秒開。
-    2. 若為新交易日或強制更新，向 MoneyDJ 發送單次精簡請求抓回排行榜與最新 20 日逐日明細，
-       寫入本地 SQLite 並一次背景同步上傳至 Google 雲端硬碟，隨時間逐步累積滿 60 個交易日。
+    【修訂說明 2026-11-14】【修改目的與防呆防錯原因】：
+    1. 支援台股個股及含英文後綴之 ETF（如 00632R、00664R、00676R、00631L）。
+    2. 優先讀取個股雲端 SQLite（broker_range_rank + broker_daily_trades），已收錄基準日零網路請求秒開。
     """
-    code = str(stock_id).strip()
-    if not code or code.startswith("^") or not code.isdigit() or not trade_dates_tuple:
+    code = str(stock_id).strip().upper()
+    if not code or code.startswith("^") or not is_tw_stock_or_etf(code) or not trade_dates_tuple:
         return {"by_date": {}}
 
     n_dates = len(trade_dates_tuple)
@@ -164,14 +164,12 @@ def get_cached_broker_payload(
                 w_obj[series_key] = out_series
         return bundle
 
-    # 1. 若非強制更新，優先檢查雲端 SQLite 是否已收錄該基準日排行榜
     if not force_refresh:
         cached_rank = storage.load_broker_range_rank(end_date_str)
         if cached_rank is not None:
             hydrated = attach_cloud_series_to_bundle(cached_rank)
             return {"by_date": {end_date_str: hydrated}}
 
-    # 2. 尚未收錄或強制更新：向遠端發送單次精簡請求並寫入雲端 SQLite 增量累積
     def df_to_rank_records(df_rank):
         if df_rank is None or df_rank.empty:
             return []
@@ -203,7 +201,6 @@ def get_cached_broker_payload(
                     if b_name and d_url and b_name not in broker_url_map:
                         broker_url_map[b_name] = d_url
 
-    # 每個分點只打 1 次 zco0.djhtm 抓最新 20 日明細，並增量存入 SQLite（關閉單筆上傳，最後統一上傳 1 次）
     for b_name, d_url in broker_url_map.items():
         df_fresh = fetch_single_broker_daily_series(d_url, earliest_start, end_date_str)
         if df_fresh is not None and not df_fresh.empty:
@@ -226,7 +223,6 @@ def get_cached_broker_payload(
             "sell": s_recs,
         }
 
-    # 僅在成功取得有效排行榜時才存入雲端 SQLite 並觸發背景同步上傳
     if has_any_rank:
         storage.save_broker_range_rank(end_date_str, day_bundle, sync_cloud=True)
 
@@ -274,7 +270,6 @@ footer {visibility: hidden;}
     white-space: nowrap !important;
 }
 
-/* 【修訂說明 2026-11-13】三頁籤樣式強化：均分滿版、防被窄按鈕樣式影響 */
 [data-testid="stTabs"] [role="tablist"] {
     display: flex !important;
     width: 100% !important;
@@ -302,7 +297,7 @@ footer {visibility: hidden;}
 initial_history = load_stock_history()
 default_code = "2330"
 if initial_history:
-    first_code = str(initial_history[0].get("code", "")).strip()
+    first_code = str(initial_history[0].get("code", "")).strip().upper()
     if first_code:
         default_code = first_code
 
@@ -357,7 +352,7 @@ with st.sidebar:
     st.selectbox("主要市場指數", INDEX_CHOICES, key="index_select_box", on_change=on_index_select_change)
 
     history_records = load_stock_history()
-    history_codes = [str(item.get("code")).strip() for item in history_records if item.get("code")]
+    history_codes = [str(item.get("code")).strip().upper() for item in history_records if item.get("code")]
     
     with st.expander("查詢歷史紀錄", expanded=False):
         if history_codes:
@@ -372,8 +367,8 @@ with st.sidebar:
             
             newly_selected = [item for item in selected_history if item not in st.session_state.history_multiselect_prev]
             if newly_selected:
-                latest_clicked_code = newly_selected[-1].split()[0]
-                all_codes = [item.split()[0] for item in selected_history]
+                latest_clicked_code = newly_selected[-1].split()[0].upper()
+                all_codes = [item.split()[0].upper() for item in selected_history]
                 other_codes = [c for c in all_codes if c != latest_clicked_code]
                 for c in other_codes:
                     save_stock_history(c)
@@ -387,7 +382,7 @@ with st.sidebar:
 
             if st.button("清除歷史記錄", use_container_width=True):
                 if selected_history:
-                    target_codes = [item.split()[0] for item in selected_history]
+                    target_codes = [item.split()[0].upper() for item in selected_history]
                     remove_stocks_from_history(target_codes)
                     st.session_state.confirm_clear_all = False
                     st.session_state.history_multiselect_prev = []
@@ -474,7 +469,7 @@ with st.sidebar:
     st.subheader("法人籌碼維護")
     refetch_inst_weeks = st.number_input("重抓法人週數", min_value=1, max_value=24, value=1, step=1)
     if st.button("🛠️ 清除並重抓近N週法人籌碼", use_container_width=True):
-        cur_code = str(st.session_state.stock_id).strip()
+        cur_code = str(st.session_state.stock_id).strip().upper()
         if cur_code.startswith("^"):
             st.sidebar.warning("指數標的無三大法人買賣超資料。")
         else:
@@ -517,7 +512,7 @@ with st.sidebar:
     st.subheader("資券維護")
     refetch_weeks = st.number_input("重抓週數", min_value=1, max_value=24, value=1, step=1)
     if st.button("🛠️ 清除並重抓近N週資券", use_container_width=True):
-        cur_code = str(st.session_state.stock_id).strip()
+        cur_code = str(st.session_state.stock_id).strip().upper()
         if cur_code.startswith("^"):
             st.sidebar.warning("指數標的無資券資料。")
         else:
@@ -559,7 +554,7 @@ with st.sidebar:
     st.caption("ℹ️ 集保於當週各交易日不予公告，直到當週最後交易日之次日（週六）公布。")
     refetch_holding_weeks = st.number_input("重抓集保週數", min_value=1, max_value=24, value=6, step=1)
     if st.button("🛠️ 增補近N週集保歷史", use_container_width=True):
-        cur_code = str(st.session_state.stock_id).strip()
+        cur_code = str(st.session_state.stock_id).strip().upper()
         if cur_code.startswith("^"):
             st.sidebar.warning("指數標的無集保大戶資料。")
         else:
@@ -593,10 +588,10 @@ st.markdown(f"### 台股技術與籌碼分析 v{SYSTEM_VERSION} {status_icon}")
 
 def navigate_stock(direction: int):
     history_records = load_stock_history()
-    codes = [str(item.get("code")).strip() for item in history_records if item.get("code")]
+    codes = [str(item.get("code")).strip().upper() for item in history_records if item.get("code")]
     if not codes:
         return
-    cur_code = str(st.session_state.stock_id).strip()
+    cur_code = str(st.session_state.stock_id).strip().upper()
     if cur_code in codes:
         idx = codes.index(cur_code)
         next_idx = (idx + direction) % len(codes)
@@ -637,7 +632,7 @@ else:
 
     trade_dates_tuple = tuple(d.strftime('%Y-%m-%d') for d in df.index)
     broker_payload = {"by_date": {}}
-    if pure_code.isdigit() and not pure_code.startswith("^"):
+    if is_tw_stock_or_etf(pure_code) and not pure_code.startswith("^"):
         with st.spinner(f"正在彙整 {pure_code} 券商分點區間統計與雲端逐日明細..."):
             broker_payload = get_cached_broker_payload(
                 pure_code,
@@ -717,8 +712,5 @@ with col_nav_b2:
         navigate_stock(1)
         st.rerun()
 
-# 【修訂說明 2026-11-12】：
-# 修改目的：在「上一檔／下一檔」底部按鈕列下方增加一行空白安全高度，避開右下角官方懸浮的 Manage app 黑條。
-# 防呆防錯原因：手機瀏覽時「Manage app」固定於視窗右下角底緣（position: fixed; bottom: 0; right: 0），
-#               若無此空白墊高區，滑到底部時「下一檔 ▶」會直接被黑條遮蓋無法點擊。
 st.markdown('<div style="height: 48px;"></div>', unsafe_allow_html=True)
+# EOF app.py
