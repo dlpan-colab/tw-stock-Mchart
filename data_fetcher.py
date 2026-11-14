@@ -1,6 +1,6 @@
 """
-data_fetcher.py - 整合技術與籌碼資料擷取模組 (台灣時區校正自動補抓、市場別精確分流與單次精簡+雲端增量累積分點引擎版)
-版本: 202611132155
+data_fetcher.py - 整合技術與籌碼資料擷取模組 (支援含英文後綴台股ETF + 台灣時區校正 + 雲端增量累積分點引擎版)
+版本: 202611141215
 """
 
 import os
@@ -16,13 +16,14 @@ from datetime import datetime, timedelta
 from urllib.parse import urljoin, urlparse, parse_qs, urlencode, urlunparse
 
 MODULE_NAME = "data_fetcher"
-MODULE_VERSION = "202611132155"
+MODULE_VERSION = "202611141215"
 
 from storage import (
     StockChipStorage,
     COMMON_STOCK_NAMES,
     load_stock_names_dict,
-    get_stock_chinese_name
+    get_stock_chinese_name,
+    is_tw_stock_or_etf
 )
 
 FINMIND_TOKEN = ""
@@ -49,13 +50,14 @@ def fetch_stock_name(pure_code: str) -> str:
 def fetch_stock_daily_k(raw_ticker: str, period: str = "1y", base_date: str = None, force_refresh: bool = False):
     """
     自本地 SQLite 或官方 API / Yahoo Finance 擷取歷史日 K 線資料。
-    若本地已存在歷史，則抓取最新資料進行增量合併。
+    支援台股個股及含英文後綴之 ETF（如 00632R、00664R、00676R、00631L）。
     """
     raw_str = str(raw_ticker).strip()
     if not raw_str:
         return None
     pure_code = raw_str.upper()
     is_index = pure_code.startswith("^")
+    is_tw_etf_or_stk = is_tw_stock_or_etf(pure_code)
 
     if pure_code == "^TWII":
         target_ticker = "^TWII"
@@ -66,7 +68,7 @@ def fetch_stock_daily_k(raw_ticker: str, period: str = "1y", base_date: str = No
     elif is_index:
         target_ticker = pure_code
         full_ticker = pure_code
-    elif pure_code.isdigit():
+    elif is_tw_etf_or_stk:
         target_ticker = f"{pure_code}.TW"
         full_ticker = f"{pure_code}.TW"
     else:
@@ -79,7 +81,7 @@ def fetch_stock_daily_k(raw_ticker: str, period: str = "1y", base_date: str = No
     shares_outstanding = None
 
     ticker = yf.Ticker(target_ticker)
-    if pure_code.isdigit():
+    if is_tw_etf_or_stk:
         try:
             shares_outstanding = ticker.info.get("sharesOutstanding")
         except Exception:
@@ -98,7 +100,7 @@ def fetch_stock_daily_k(raw_ticker: str, period: str = "1y", base_date: str = No
                 df_new = yf.Ticker(alt_ticker).history(period=fetch_period)
             except Exception:
                 pass
-        elif pure_code.isdigit() and target_ticker.endswith(".TW"):
+        elif is_tw_etf_or_stk and target_ticker.endswith(".TW"):
             alt_ticker = f"{pure_code}.TWO"
             try:
                 t_alt = yf.Ticker(alt_ticker)
@@ -138,12 +140,11 @@ def sync_chip_data(
     full_ticker: str = None
 ):
     """
-    智慧增量同步三大法人、資券與集保大戶。
-    引入台灣時區 (UTC+8) 校正，解除伺服器盤後時間差死鎖，使當日法人與資券自動抓取。
+    智慧增量同步三大法人、資券與集保大戶（支援台股個股及含英文後綴之 ETF）。
     """
-    pure_code = str(pure_code).strip()
+    pure_code = str(pure_code).strip().upper()
     storage = StockChipStorage(pure_code)
-    if pure_code.startswith("^") or not pure_code.isdigit():
+    if pure_code.startswith("^") or not is_tw_stock_or_etf(pure_code):
         return (pd.DataFrame(), pd.DataFrame(), pd.DataFrame())
     if len(df_dates) == 0:
         return (pd.DataFrame(), pd.DataFrame(), pd.DataFrame())
@@ -267,7 +268,7 @@ def fetch_institutional_investors(
                     data = res.json()
                     if data.get("stat") == "OK" and "data" in data:
                         for row in data["data"]:
-                            if str(row[0]).strip() == pure_code:
+                            if str(row[0]).strip().upper() == pure_code:
                                 f_net = clean_val(row[4])
                                 t_net = clean_val(row[10])
                                 d_net = clean_val(row[11])
@@ -290,7 +291,7 @@ def fetch_institutional_investors(
                     rows = data.get("aaData") or data.get("tables", [{}])[0].get("data", [])
                     if rows:
                         for row in rows:
-                            if str(row[0]).strip() == pure_code:
+                            if str(row[0]).strip().upper() == pure_code:
                                 num_cols = len(row)
                                 f_net = clean_val(row[10]) if num_cols > 10 else clean_val(row[7])
                                 t_net = clean_val(row[13]) if num_cols > 13 else clean_val(row[8])
@@ -409,7 +410,7 @@ def fetch_tdcc_holding_data(pure_code: str) -> list:
             lines = res.text.splitlines()
             for line in lines:
                 parts = line.strip().split(",")
-                if len(parts) >= 6 and parts[1].strip() == pure_code:
+                if len(parts) >= 6 and parts[1].strip().upper() == pure_code:
                     d_raw = parts[0].strip()
                     try:
                         d_str = datetime.strptime(d_raw, '%Y%m%d').strftime('%Y-%m-%d')
@@ -478,7 +479,7 @@ def fetch_tdcc_holding_history(pure_code: str, weeks: int = 6) -> list:
 
 
 # =====================================================================
-# 【修訂說明 2026-11-13】個股券商分點進出排行與單次查詢+雲端增量累積引擎
+# 個股與ETF券商分點進出排行與單次查詢+雲端增量累積引擎
 # =====================================================================
 def is_gov_broker_branch(broker_name: str) -> bool:
     clean_name = str(broker_name).strip()
@@ -517,8 +518,8 @@ def _build_detail_url_with_range(raw_href: str, s_mdj: str, e_mdj: str) -> str:
 
 
 def fetch_stock_broker_range_ranking(stock_id: str, start_date: str, end_date: str) -> tuple[pd.DataFrame, pd.DataFrame]:
-    code_str = str(stock_id).strip()
-    if not code_str or code_str.startswith("^") or not code_str.isdigit():
+    code_str = str(stock_id).strip().upper()
+    if not code_str or code_str.startswith("^") or not is_tw_stock_or_etf(code_str):
         return pd.DataFrame(), pd.DataFrame()
 
     try:
@@ -584,11 +585,6 @@ def fetch_stock_broker_range_ranking(stock_id: str, start_date: str, end_date: s
 
 
 def fetch_single_broker_daily_series(detail_url: str, start_date: str, end_date: str) -> pd.DataFrame:
-    """
-    【修改目的與防呆防錯原因 2026-11-13】：
-    向 MoneyDJ zco0.djhtm 發送單次精簡請求，取得該分點最新 20 個交易日明細。
-    絕不重複分段打多次請求（避免伺服器限流），超出 20 日的歷史由系統逐步存入雲端 SQLite 累積。
-    """
     if not detail_url:
         return pd.DataFrame()
 
@@ -646,14 +642,10 @@ def fetch_and_sync_broker_daily_series(
     end_date: str,
     sync_cloud: bool = True
 ) -> pd.DataFrame:
-    """
-    【修訂說明 2026-11-13】：
-    抓回最新 20 日分點逐日明細後，立即寫入個股 SQLite（broker_daily_trades）並同步至 Google 雲端，
-    再從資料庫讀取 start_date ~ end_date 全區間累積紀錄，逐步突破 20 日限制並湊滿 60 日。
-    """
     storage = StockChipStorage(stock_id)
     df_fresh = fetch_single_broker_daily_series(detail_url, start_date, end_date)
     if df_fresh is not None and not df_fresh.empty:
         storage.save_broker_daily_trades(broker_name, df_fresh, sync_cloud=sync_cloud)
     df_merged = storage.load_broker_daily_series(broker_name, start_date, end_date)
     return df_merged if not df_merged.empty else df_fresh
+# EOF data_fetcher.py
