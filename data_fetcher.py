@@ -1,6 +1,6 @@
 """
-data_fetcher.py - 整合技術與籌碼資料擷取模組 (支援含英文後綴台股ETF + 台灣時區校正 + 雲端增量累積分點引擎版)
-版本: 202611141215
+data_fetcher.py - 整合技術與籌碼資料擷取模組 (支援含英文後綴台股ETF + TWSE/TPEx官方日K即時補齊 + 雲端增量累積分點引擎版)
+版本: 202611141245
 """
 
 import os
@@ -16,7 +16,7 @@ from datetime import datetime, timedelta
 from urllib.parse import urljoin, urlparse, parse_qs, urlencode, urlunparse
 
 MODULE_NAME = "data_fetcher"
-MODULE_VERSION = "202611141215"
+MODULE_VERSION = "202611141245"
 
 from storage import (
     StockChipStorage,
@@ -47,10 +47,100 @@ def fetch_stock_name(pure_code: str) -> str:
     return get_stock_chinese_name(pure_code)
 
 
+def _fetch_tw_official_month_k(pure_code: str, full_ticker: str = None) -> pd.DataFrame:
+    """
+    【修訂說明 2026-11-14】向台灣證交所(TWSE STOCK_DAY)或櫃買中心(TPEx)擷取當月完整四價日K線，
+    補齊 Yahoo Finance 偶發延遲更新的最新交易日（含開、高、低、收、成交量）。
+    """
+    code = str(pure_code or "").strip().upper()
+    if not is_tw_stock_or_etf(code):
+        return pd.DataFrame()
+
+    now_tw = datetime.utcnow() + timedelta(hours=8)
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36"
+    }
+    rows = []
+
+    def parse_float(v):
+        s = str(v or "").replace(",", "").strip()
+        if s in ("", "-", "--", "—", "X"):
+            return None
+        try:
+            return float(s)
+        except Exception:
+            return None
+
+    is_tpex_only = bool(full_ticker and full_ticker.endswith(".TWO"))
+    is_twse_only = bool(full_ticker and full_ticker.endswith(".TW"))
+
+    # 1. 上市 TWSE STOCK_DAY（含上市個股與 00632R 等上市 ETF）
+    if not is_tpex_only:
+        date_param = now_tw.strftime("%Y%m01")
+        url_twse = f"https://www.twse.com.tw/exchangeReport/STOCK_DAY?response=json&date={date_param}&stockNo={code}"
+        try:
+            res = requests.get(url_twse, headers=headers, timeout=4)
+            if res.status_code == 200:
+                js = res.json()
+                if js.get("stat") == "OK" and js.get("data"):
+                    for r in js["data"]:
+                        if len(r) < 7:
+                            continue
+                        d_parts = str(r[0]).strip().split("/")
+                        if len(d_parts) != 3:
+                            continue
+                        y = int(d_parts[0]) + 1911
+                        d_iso = f"{y:04d}-{int(d_parts[1]):02d}-{int(d_parts[2]):02d}"
+                        vol_shares = parse_float(r[1])
+                        o_p = parse_float(r[3])
+                        h_p = parse_float(r[4])
+                        l_p = parse_float(r[5])
+                        c_p = parse_float(r[6])
+                        if None not in (o_p, h_p, l_p, c_p) and vol_shares and vol_shares > 0:
+                            rows.append((pd.to_datetime(d_iso), o_p, h_p, l_p, c_p, vol_shares))
+        except Exception:
+            pass
+
+    # 2. 上櫃 TPEx daily_trading_info（若上市查無且非限定上市）
+    if not rows and not is_twse_only:
+        roc_ym = f"{now_tw.year - 1911}/{now_tw.month:02d}"
+        url_tpex = f"https://www.tpex.org.tw/web/stock/aftertrading/daily_trading_info/st43_result.php?l=zh-tw&d={roc_ym}&stkno={code}"
+        try:
+            res_t = requests.get(url_tpex, headers=headers, timeout=4)
+            if res_t.status_code == 200:
+                js_t = res_t.json()
+                aa = js_t.get("aaData") or js_t.get("tables", [{}])[0].get("data", [])
+                for r in aa:
+                    if len(r) < 7:
+                        continue
+                    d_parts = str(r[0]).strip().split("/")
+                    if len(d_parts) != 3:
+                        continue
+                    y = int(d_parts[0]) + 1911
+                    d_iso = f"{y:04d}-{int(d_parts[1]):02d}-{int(d_parts[2]):02d}"
+                    vol_k = parse_float(r[1])
+                    o_p = parse_float(r[3])
+                    h_p = parse_float(r[4])
+                    l_p = parse_float(r[5])
+                    c_p = parse_float(r[6])
+                    if None not in (o_p, h_p, l_p, c_p) and vol_k and vol_k > 0:
+                        rows.append((pd.to_datetime(d_iso), o_p, h_p, l_p, c_p, vol_k * 1000.0))
+        except Exception:
+            pass
+
+    if not rows:
+        return pd.DataFrame()
+
+    df_off = pd.DataFrame(rows, columns=["Date", "Open", "High", "Low", "Close", "Volume"])
+    df_off.set_index("Date", inplace=True)
+    df_off = df_off[~df_off.index.duplicated(keep="last")].sort_index()
+    return df_off
+
+
 def fetch_stock_daily_k(raw_ticker: str, period: str = "1y", base_date: str = None, force_refresh: bool = False):
     """
     自本地 SQLite 或官方 API / Yahoo Finance 擷取歷史日 K 線資料。
-    支援台股個股及含英文後綴之 ETF（如 00632R、00664R、00676R、00631L）。
+    支援台股個股及含英文後綴之 ETF（如 00632R、00664R、00676R、00631L），並以證交所/櫃買官方日K補齊延遲資料。
     """
     raw_str = str(raw_ticker).strip()
     if not raw_str:
@@ -111,6 +201,7 @@ def fetch_stock_daily_k(raw_ticker: str, period: str = "1y", base_date: str = No
             except Exception:
                 pass
 
+    combined = db_df.copy() if not db_df.empty else pd.DataFrame()
     if df_new is not None and not df_new.empty:
         if df_new.index.tz is not None:
             df_new.index = df_new.index.tz_localize(None)
@@ -120,15 +211,35 @@ def fetch_stock_daily_k(raw_ticker: str, period: str = "1y", base_date: str = No
         if not is_index and 'Volume' in df_new.columns:
             df_new = df_new[df_new['Volume'] > 0]
 
-        if not db_df.empty and not force_refresh:
-            combined = pd.concat([db_df, df_new])
+        if not combined.empty and not force_refresh:
+            combined = pd.concat([combined, df_new])
             combined = combined[~combined.index.duplicated(keep='last')].sort_index()
         else:
             combined = df_new.sort_index()
+
+    # 若為台股個股/ETF，檢查最新交易日是否落後於台灣最近平日收盤日，若落後則向證交所/櫃買補齊當月完整日K
+    if is_tw_etf_or_stk and not combined.empty:
+        now_tw = datetime.utcnow() + timedelta(hours=8)
+        expected_latest = now_tw.date()
+        if expected_latest.weekday() == 5:
+            expected_latest -= timedelta(days=1)
+        elif expected_latest.weekday() == 6:
+            expected_latest -= timedelta(days=2)
+        elif now_tw.hour < 14:
+            expected_latest -= timedelta(days=1)
+            while expected_latest.weekday() >= 5:
+                expected_latest -= timedelta(days=1)
+
+        latest_in_df = combined.index[-1].date()
+        if force_refresh or latest_in_df < expected_latest:
+            df_official = _fetch_tw_official_month_k(pure_code, full_ticker=full_ticker)
+            if df_official is not None and not df_official.empty:
+                combined = pd.concat([combined, df_official])
+                combined = combined[~combined.index.duplicated(keep='last')].sort_index()
+
+    if not combined.empty:
         storage.save_daily_k_df(combined)
         return combined, full_ticker, shares_outstanding
-    elif not db_df.empty:
-        return db_df, full_ticker, shares_outstanding
     return None
 
 
