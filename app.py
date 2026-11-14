@@ -1,6 +1,6 @@
 """
-app.py - 主應用程式介面與生命週期控制 (支援含英文後綴台股ETF + 精準單筆刪除歷史紀錄 + 雲端分點累積版)
-版本: 202611141230
+app.py - 主應用程式介面與生命週期控制 (支援含英文後綴台股ETF + 雙按鈕精準歷史切換與單筆刪除 + 雲端分點累積版)
+版本: 202611141235
 """
 
 import os
@@ -11,7 +11,7 @@ import streamlit.components.v1 as components
 import cloud_sync
 
 MODULE_NAME = "app"
-MODULE_VERSION = "202611141230"
+MODULE_VERSION = "202611141235"
 
 # 【防呆防錯備註 2026-11-07】：版本控制權由 app.py 作為唯一權威源，動態掃描所有模組最大版本號，杜絕多頭覆寫與重工
 def get_system_version() -> str:
@@ -313,8 +313,6 @@ if "index_select_box" not in st.session_state:
     st.session_state.index_select_box = "選擇主要市場指數..."
 if "ms_counter" not in st.session_state:
     st.session_state.ms_counter = 0
-if "history_multiselect_prev" not in st.session_state:
-    st.session_state.history_multiselect_prev = []
 
 def on_stock_input_change():
     val = st.session_state.stock_input_box.strip()
@@ -356,6 +354,7 @@ with st.sidebar:
         if history_codes:
             history_display = [f"{h.get('code')} {h.get('name', '')}".strip() for h in history_records]
             current_ms_key = f"history_multiselect_{st.session_state.ms_counter}"
+            # 【修訂說明 2026-11-14】移除勾選時自動 ms_counter+=1 清空邏輯，讓勾選項目穩穩保留在框內
             selected_history = st.multiselect(
                 "點擊展開並勾選標的...",
                 options=history_display,
@@ -363,42 +362,38 @@ with st.sidebar:
                 key=current_ms_key
             )
 
-            # 【修訂說明 2026-11-14】優先處理「清除歷史記錄」按鈕，防止被下方 newly_selected 搶先攔截重跑
-            if st.button("清除歷史記錄", use_container_width=True):
-                if selected_history:
-                    target_codes = [item.split()[0].upper() for item in selected_history]
-                    remained = remove_stocks_from_history(target_codes)
-                    for tc in target_codes:
-                        local_db = f"data_{tc}.db"
-                        if os.path.exists(local_db):
-                            try:
-                                os.remove(local_db)
-                            except Exception:
-                                pass
-                    if str(st.session_state.stock_id).strip().upper() in target_codes:
-                        st.session_state.stock_id = remained[0]["code"] if remained else "2330"
-                    st.session_state.confirm_clear_all = False
-                    st.session_state.history_multiselect_prev = []
-                    st.session_state.ms_counter += 1
-                    st.rerun()
-                else:
-                    st.session_state.confirm_clear_all = True
-                    st.rerun()
-
-            newly_selected = [item for item in selected_history if item not in st.session_state.history_multiselect_prev]
-            if newly_selected:
-                latest_clicked_code = newly_selected[-1].split()[0].upper()
-                all_codes = [item.split()[0].upper() for item in selected_history]
-                other_codes = [c for c in all_codes if c != latest_clicked_code]
-                for c in other_codes:
-                    save_stock_history(c)
-                save_stock_history(latest_clicked_code)
-                st.session_state.stock_id = latest_clicked_code
-                st.session_state.history_multiselect_prev = []
-                st.session_state.ms_counter += 1
-                st.rerun()
-
-            st.session_state.history_multiselect_prev = selected_history
+            col_h1, col_h2 = st.columns(2)
+            with col_h1:
+                if st.button("切換查詢", key="btn_switch_hist", use_container_width=True):
+                    if selected_history:
+                        all_codes = [item.split()[0].upper() for item in selected_history]
+                        target_code = all_codes[-1]
+                        for c in all_codes:
+                            save_stock_history(c)
+                        st.session_state.stock_id = target_code
+                        st.session_state.confirm_clear_all = False
+                        st.session_state.ms_counter += 1
+                        st.rerun()
+            with col_h2:
+                if st.button("清除紀錄", key="btn_clear_hist", use_container_width=True):
+                    if selected_history:
+                        target_codes = [item.split()[0].upper() for item in selected_history]
+                        remained = remove_stocks_from_history(target_codes)
+                        for tc in target_codes:
+                            local_db = f"data_{tc}.db"
+                            if os.path.exists(local_db):
+                                try:
+                                    os.remove(local_db)
+                                except Exception:
+                                    pass
+                        if str(st.session_state.stock_id).strip().upper() in target_codes:
+                            st.session_state.stock_id = remained[0]["code"] if remained else "2330"
+                        st.session_state.confirm_clear_all = False
+                        st.session_state.ms_counter += 1
+                        st.rerun()
+                    else:
+                        st.session_state.confirm_clear_all = True
+                        st.rerun()
         else:
             st.caption("目前無歷史紀錄")
 
@@ -410,7 +405,6 @@ with st.sidebar:
                     clear_stock_history()
                     st.session_state.stock_id = "2330"
                     st.session_state.confirm_clear_all = False
-                    st.session_state.history_multiselect_prev = []
                     st.session_state.ms_counter += 1
                     st.rerun()
             with c_del2:
