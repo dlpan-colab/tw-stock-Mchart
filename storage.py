@@ -1,10 +1,11 @@
 """
-storage.py - 本地 SQLite 資料庫與股票歷史紀錄管理器 (新增雲端分點排行榜與逐日明細增量累積版)
-版本: 202611132150
+storage.py - 本地 SQLite 資料庫與股票歷史紀錄管理器 (支援含英文後綴台股ETF與雲端分點增量累積版)
+版本: 202611141210
 """
 
 import os
 import io
+import re
 import json
 import glob
 import sqlite3
@@ -16,11 +17,20 @@ from datetime import datetime, timedelta
 import pandas as pd
 
 MODULE_NAME = "storage"
-MODULE_VERSION = "202611132150"
+MODULE_VERSION = "202611141210"
 
 STORAGE_DIR = "."
 HISTORY_FILE = os.path.join(STORAGE_DIR, "stock_history.json")
 NAMES_CACHE_FILE = os.path.join(STORAGE_DIR, "tw_stock_names.json")
+
+
+def is_tw_stock_or_etf(code: str) -> bool:
+    """【修訂說明 2026-11-14】識別台股個股與含英文後綴之ETF（如 00632R、00664R、00679B、00631L）"""
+    c = str(code or "").strip().upper()
+    if not c or c.startswith("^"):
+        return False
+    return bool(re.match(r"^\d{4,6}[A-Z]{0,2}$", c))
+
 
 COMMON_STOCK_NAMES = {
     # 主要市場指數
@@ -28,6 +38,14 @@ COMMON_STOCK_NAMES = {
     "^DJI": "道瓊指數", "^IXIC": "那斯達克", "^SOX": "費城半導體",
     "^GSPC": "標普500", "^N225": "日經225", "^KS11": "韓國綜合",
     "^FTSE": "英國富時100", "^GDAXI": "德國DAX", "^FCHI": "法國CAC40",
+    # 常用台股 ETF（含反向與槓桿型）
+    "0050": "元大台灣50", "0056": "元大高股息", "00878": "國泰永續高股息",
+    "00919": "群益台灣精選高息", "00929": "復華台灣科技優息", "00940": "元大台灣價值高息",
+    "006208": "富邦台50", "00631L": "元大台灣50正2", "00632R": "元大台灣50反1",
+    "00663L": "國泰臺灣加權正2", "00664R": "國泰臺灣加權反1",
+    "00675L": "富邦臺灣加權正2", "00676R": "富邦臺灣加權反1",
+    "00685L": "群益臺灣加權正2", "00686R": "群益臺灣加權反1",
+    "00691R": "兆豐藍籌30反1", "00679B": "元大美債20年", "00687B": "國泰20年美債",
     # 常用個股
     "1101": "台泥", "1102": "亞泥", "1104": "環泥", "1216": "統一",
     "1301": "台塑", "1303": "南亞", "1312": "國喬", "1326": "台化",
@@ -132,7 +150,7 @@ def _load_name_cache() -> dict:
 
 
 def _save_name_cache(code: str, name: str):
-    code = str(code).strip()
+    code = str(code).strip().upper()
     name = str(name).strip()
     if not code or not name or name == code:
         return
@@ -157,7 +175,7 @@ def load_stock_names_dict() -> dict:
 
 
 def get_stock_chinese_name(pure_code: str) -> str:
-    pure_code = str(pure_code).strip()
+    pure_code = str(pure_code).strip().upper()
     if not pure_code:
         return ""
     if pure_code in COMMON_STOCK_NAMES:
@@ -179,7 +197,7 @@ def get_stock_chinese_name(pure_code: str) -> str:
                 soup = BeautifulSoup(res.text, "html.parser")
                 for r in soup.find_all("tr"):
                     cols = [td.text.replace("\u3000", " ").strip() for td in r.find_all("td")]
-                    if len(cols) >= 4 and cols[2] == pure_code:
+                    if len(cols) >= 4 and cols[2].upper() == pure_code:
                         c_name = cols[3].strip()
                         if c_name and c_name != pure_code:
                             _save_name_cache(pure_code, c_name)
@@ -196,7 +214,7 @@ def get_stock_chinese_name(pure_code: str) -> str:
             data = res_o.json()
             if isinstance(data, list):
                 for row in data:
-                    c = str(row.get("Code", "")).strip()
+                    c = str(row.get("Code", "")).strip().upper()
                     n = str(row.get("Name", "")).replace("\u3000", " ").strip()
                     if c and n:
                         COMMON_STOCK_NAMES[c] = n
@@ -255,8 +273,8 @@ def _recover_history_from_databases() -> list:
             files = res.get("files", [])
             for f in files:
                 fname = f.get("name", "")
-                pure = fname.replace("data_", "").replace(".db", "").strip()
-                if (pure.isdigit() or pure.startswith("^")) and pure not in seen:
+                pure = fname.replace("data_", "").replace(".db", "").strip().upper()
+                if (is_tw_stock_or_etf(pure) or pure.startswith("^")) and pure not in seen:
                     seen.add(pure)
                     recovered.append({"code": pure, "name": get_stock_chinese_name(pure)})
     except Exception as e:
@@ -266,8 +284,8 @@ def _recover_history_from_databases() -> list:
     local_files.sort(key=os.path.getmtime, reverse=True)
     for p in local_files:
         base = os.path.basename(p)
-        pure = base.replace("data_", "").replace(".db", "").strip()
-        if (pure.isdigit() or pure.startswith("^")) and pure not in seen:
+        pure = base.replace("data_", "").replace(".db", "").strip().upper()
+        if (is_tw_stock_or_etf(pure) or pure.startswith("^")) and pure not in seen:
             seen.add(pure)
             recovered.append({"code": pure, "name": get_stock_chinese_name(pure)})
 
@@ -295,7 +313,8 @@ def load_stock_history():
     if not data:
         data = _recover_history_from_databases()
     for item in data:
-        code = str(item.get("code", "")).strip()
+        code = str(item.get("code", "")).strip().upper()
+        item["code"] = code
         curr_name = str(item.get("name", "")).strip()
         if not curr_name or curr_name == code:
             item["name"] = get_stock_chinese_name(code)
@@ -303,12 +322,12 @@ def load_stock_history():
 
 
 def save_stock_history(code: str, name: str = None):
-    code = str(code).strip()
+    code = str(code).strip().upper()
     if not code:
         return load_stock_history()
     c_name = name.strip() if name and name.strip() != code else get_stock_chinese_name(code)
     history = load_stock_history()
-    new_hist = [h for h in history if str(h.get("code")).strip() != code]
+    new_hist = [h for h in history if str(h.get("code")).strip().upper() != code]
     new_hist.insert(0, {"code": code, "name": c_name})
     new_hist = new_hist[:30]
     try:
@@ -321,13 +340,13 @@ def save_stock_history(code: str, name: str = None):
 
 
 def update_stock_name_only(code: str, name: str):
-    code = str(code).strip()
+    code = str(code).strip().upper()
     if not code or not name or name.strip() == code:
         return
     history = load_stock_history()
     changed = False
     for item in history:
-        if str(item.get("code")).strip() == code:
+        if str(item.get("code")).strip().upper() == code:
             if item.get("name") != name:
                 item["name"] = name
                 changed = True
@@ -355,8 +374,8 @@ def clear_stock_history():
 
 def remove_stocks_from_history(target_codes: list) -> list:
     history = load_stock_history()
-    target_set = set(str(c).strip() for c in target_codes)
-    new_history = [h for h in history if str(h.get("code")).strip() not in target_set]
+    target_set = set(str(c).strip().upper() for c in target_codes)
+    new_history = [h for h in history if str(h.get("code")).strip().upper() not in target_set]
     try:
         with open(HISTORY_FILE, "w", encoding="utf-8") as f:
             json.dump(new_history, f, ensure_ascii=False, indent=2)
@@ -368,7 +387,7 @@ def remove_stocks_from_history(target_codes: list) -> list:
 
 def clear_recent_margin_data(pure_code: str, weeks: int = 2) -> str:
     """清除指定週數內之資券紀錄，供重新爬取覆蓋"""
-    pure_code = str(pure_code).strip()
+    pure_code = str(pure_code).strip().upper()
     db_name = f"data_{pure_code}.db"
     db_path = os.path.join(STORAGE_DIR, db_name)
     sync_db_pull(pure_code)
@@ -386,11 +405,8 @@ def clear_recent_margin_data(pure_code: str, weeks: int = 2) -> str:
         return f"清除資券紀錄失敗: {e}"
 
 
-# 【防呆防錯備註 2026-11-10】【修訂目的與防呆防錯原因】：
-# 新增法人籌碼清理函式，比照資券維護模式，僅針對近 N 週資料執行精確 DELETE，
-# 嚴禁破壞性刪除整張資料表，保留遠期歷史資料完整性，避免引發全面重爬或歷史斷層。
 def clear_recent_institutional_data(pure_code: str, weeks: int = 6) -> str:
-    pure_code = str(pure_code).strip()
+    pure_code = str(pure_code).strip().upper()
     db_name = f"data_{pure_code}.db"
     db_path = os.path.join(STORAGE_DIR, db_name)
     sync_db_pull(pure_code)
@@ -410,7 +426,7 @@ def clear_recent_institutional_data(pure_code: str, weeks: int = 6) -> str:
 
 class StockChipStorage:
     def __init__(self, pure_code: str):
-        self.pure_code = str(pure_code).strip()
+        self.pure_code = str(pure_code).strip().upper()
         self.is_index = self.pure_code.startswith("^")
         self.db_name = f"data_{self.pure_code}.db"
         self.db_path = os.path.join(STORAGE_DIR, self.db_name)
@@ -455,7 +471,6 @@ class StockChipStorage:
                     short_bal REAL
                 )
             """)
-            # 【修訂說明 2026-11-13】新增雲端券商分點區間排行表與單一分點逐日明細增量累積表
             cur.execute("""
                 CREATE TABLE IF NOT EXISTS broker_range_rank (
                     base_date TEXT PRIMARY KEY,
@@ -635,9 +650,6 @@ class StockChipStorage:
             df['date'] = pd.to_datetime(df['date'])
         return df
 
-    # =====================================================================
-    # 【修訂說明 2026-11-13】券商分點區間排行榜與逐日明細雲端 SQLite 存取介面
-    # =====================================================================
     def save_broker_range_rank(self, base_date: str, rank_bundle: dict, sync_cloud: bool = True):
         if not base_date or not isinstance(rank_bundle, dict):
             return
@@ -712,3 +724,4 @@ class StockChipStorage:
                 ORDER BY date ASC
             """, conn, params=(b_name, s_iso, e_iso))
         return df
+# EOF storage.py
