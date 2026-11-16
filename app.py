@@ -1,6 +1,6 @@
 """
-app.py - 主應用程式介面與生命週期控制 (支援含英文後綴台股ETF + 上下檔瀏覽不亂序 + 雲端分點累積 + 查詢歷史單選 + 集保批次作業版)
-版本: 202611162102
+app.py - 主應用程式介面與生命週期控制 (支援含英文後綴台股ETF + 上下檔瀏覽不亂序 + 雲端分點預設20日與60日按需載入版)
+版本: 202611162152
 """
 import os
 import time
@@ -10,7 +10,7 @@ import streamlit.components.v1 as components
 import cloud_sync
 
 MODULE_NAME = "app"
-MODULE_VERSION = "202611162102"
+MODULE_VERSION = "202611162152"
 
 
 # 【防呆防錯備註 2026-11-07】：版本控制權由 app.py 作為唯一權威源，動態掃描所有模組最大版本號，杜絕多頭覆寫與重工
@@ -77,7 +77,7 @@ INDEX_MAP = {
     # 歐股
     "FTSE": "^FTSE", "富時": "^FTSE", "英國富時100": "^FTSE", "^FTSE": "^FTSE",
     "GDAXI": "^GDAXI", "DAX": "^GDAXI", "德國DAX": "^GDAXI", "^GDAXI": "^GDAXI",
-    "FCHI": "^FCHI", "CAC": "^FCHI", "法國CAC40": "^FCHI", "^FCHI": "^FCHI",
+    "FCHI": "^FCHI", "CAC40": "^FCHI", "法國CAC40": "^FCHI", "^FCHI": "^FCHI",
 }
 
 
@@ -109,12 +109,16 @@ def get_cached_broker_payload(
     stock_id: str,
     trade_dates_tuple: tuple,
     target_end_idx: int,
-    force_refresh: bool = False
+    force_refresh: bool = False,
+    include_60d: bool = False
 ) -> dict:
     """
-    【修訂說明 2026-11-14】【修改目的與防呆防錯原因】：
-    1. 支援台股個股及含英文後綴之 ETF（如 00632R、00664R、00676R、00631L）。
-    2. 優先讀取個股雲端 SQLite（broker_range_rank + broker_daily_trades），已收錄基準日零網路請求秒開。
+    【修訂說明 2026-11-16】【修改目的與防呆防錯原因】：
+    1. 修改目的：首次查詢預設僅抓取 1、10、20 日排行及前五大分點 20 日逐日明細（include_60d=False）；
+       僅當使用者點擊「載入近 60 日分點統計與明細」（include_60d=True）時，才補抓 60 日排行與逐日明細並合併寫回雲端。
+    2. 防呆防錯原因：
+       - 各區間排行請求加入 0.15s 間隔與空值重試 1 次，解決第 3 次連線（20 日）偶發瞬斷空值問題。
+       - 若既有快取存在殘缺（如 w20 為空）或按需請求 include_60d=True 尚無 w60，自動精準補抓並與既有快取合併寫回。
     """
     code = str(stock_id).strip().upper()
     if not code or code.startswith("^") or not is_tw_stock_or_etf(code) or not trade_dates_tuple:
@@ -134,8 +138,18 @@ def get_cached_broker_payload(
         20: get_start_date_by_window(20),
         60: get_start_date_by_window(60),
     }
-    earliest_start = win_starts[60]
+    target_windows = (1, 10, 20, 60) if include_60d else (1, 10, 20)
+    series_windows = (10, 20, 60) if include_60d else (10, 20)
+    earliest_start = win_starts[60] if include_60d else win_starts[20]
     storage = StockChipStorage(code)
+
+    def _has_valid_win(bundle_obj: dict, w_num: int) -> bool:
+        if not isinstance(bundle_obj, dict):
+            return False
+        w_item = bundle_obj.get(f"w{w_num}")
+        if not isinstance(w_item, dict):
+            return False
+        return bool(w_item.get("buy") or w_item.get("sell"))
 
     def attach_cloud_series_to_bundle(bundle: dict) -> dict:
         """從雲端 SQLite 讀取各分點已累積之全區間逐日買賣超明細並組裝柱狀圖序列"""
@@ -166,9 +180,11 @@ def get_cached_broker_payload(
                 w_obj[series_key] = out_series
         return bundle
 
-    if not force_refresh:
-        cached_rank = storage.load_broker_range_rank(end_date_str)
-        if cached_rank is not None:
+    cached_rank = None if force_refresh else storage.load_broker_range_rank(end_date_str)
+    if cached_rank is not None:
+        base_ok = all(_has_valid_win(cached_rank, w) for w in (1, 10, 20))
+        need_60_missing = include_60d and (not _has_valid_win(cached_rank, 60))
+        if base_ok and not need_60_missing:
             hydrated = attach_cloud_series_to_bundle(cached_rank)
             return {"by_date": {end_date_str: hydrated}}
 
@@ -187,14 +203,30 @@ def get_cached_broker_payload(
             })
         return recs
 
+    # 決定本次實際需向遠端抓取的視窗清單（若快取已有完整 1/10/20 日且僅按需載入 60 日，只抓 w60）
+    if cached_rank is not None and not force_refresh:
+        fetch_windows = [w for w in target_windows if not _has_valid_win(cached_rank, w)]
+        if not fetch_windows:
+            fetch_windows = list(target_windows)
+    else:
+        fetch_windows = list(target_windows)
+
     rank_dfs = {}
-    for w, s_str in win_starts.items():
+    for idx_w, w in enumerate(fetch_windows):
+        s_str = win_starts[w]
         df_b, df_s = fetch_stock_broker_range_ranking(code, s_str, end_date_str)
+        if (df_b is None or df_b.empty) and (df_s is None or df_s.empty):
+            time.sleep(0.35)
+            df_b, df_s = fetch_stock_broker_range_ranking(code, s_str, end_date_str)
         rank_dfs[w] = (df_b, df_s)
+        if idx_w < len(fetch_windows) - 1:
+            time.sleep(0.15)
 
     broker_url_map = {}
-    for w in (10, 20, 60):
-        df_b, df_s = rank_dfs[w]
+    for w in fetch_windows:
+        if w not in series_windows:
+            continue
+        df_b, df_s = rank_dfs.get(w, (None, None))
         for df_side in (df_b, df_s):
             if df_side is not None and not df_side.empty:
                 for _, row in df_side.head(5).iterrows():
@@ -207,25 +239,25 @@ def get_cached_broker_payload(
         df_fresh = fetch_single_broker_daily_series(d_url, earliest_start, end_date_str)
         if df_fresh is not None and not df_fresh.empty:
             storage.save_broker_daily_trades(b_name, df_fresh, sync_cloud=False)
-        time.sleep(0.06)
+        time.sleep(0.08)
 
-    day_bundle = {}
+    day_bundle = dict(cached_rank) if (isinstance(cached_rank, dict) and not force_refresh) else {}
     has_any_rank = False
-    for w in (1, 10, 20, 60):
+    for w in fetch_windows:
         s_str = win_starts[w]
-        df_b, df_s = rank_dfs[w]
+        df_b, df_s = rank_dfs.get(w, (None, None))
         b_recs = df_to_rank_records(df_b)
         s_recs = df_to_rank_records(df_s)
         if b_recs or s_recs:
             has_any_rank = True
-        label = end_date_str if w == 1 else f"{s_str} ~ {end_date_str}"
-        day_bundle[f"w{w}"] = {
-            "range_label": label,
-            "buy": b_recs,
-            "sell": s_recs,
-        }
+            label = end_date_str if w == 1 else f"{s_str} ~ {end_date_str}"
+            day_bundle[f"w{w}"] = {
+                "range_label": label,
+                "buy": b_recs,
+                "sell": s_recs,
+            }
 
-    if has_any_rank:
+    if has_any_rank or day_bundle:
         storage.save_broker_range_rank(end_date_str, day_bundle, sync_cloud=True)
         hydrated_new = attach_cloud_series_to_bundle(day_bundle)
         return {"by_date": {end_date_str: hydrated_new}}
@@ -240,57 +272,16 @@ st.set_page_config(
 )
 
 st.markdown("""
-    <style>
-    .block-container {
-        padding-top: 3.5rem;
-        padding-bottom: 0rem;
-        padding-left: 1rem;
-        padding-right: 1rem;
-    }
+<style>
+    .block-container {padding-top: 3.5rem; padding-bottom: 0rem; padding-left: 1rem; padding-right: 1rem;}
     footer {visibility: hidden;}
-    [data-testid="stHorizontalBlock"] {
-        display: flex !important;
-        flex-direction: row !important;
-        flex-wrap: nowrap !important;
-        justify-content: center !important;
-        align-items: center !important;
-        gap: 8px !important;
-    }
-    [data-testid="stHorizontalBlock"] > div {
-        flex: 0 0 65px !important;
-        width: 65px !important;
-        min-width: 65px !important;
-        max-width: 65px !important;
-    }
-    [data-testid="stHorizontalBlock"] button {
-        width: 100% !important;
-        min-width: 65px !important;
-        padding: 2px 4px !important;
-        font-size: 12px !important;
-        white-space: nowrap !important;
-    }
-    [data-testid="stTabs"] [role="tablist"] {
-        display: flex !important;
-        width: 100% !important;
-        gap: 4px !important;
-        background: #eef2f6 !important;
-        padding: 3px !important;
-        border-radius: 6px !important;
-        border: 1px solid #cbd5e1 !important;
-    }
-    [data-testid="stTabs"] [role="tab"] {
-        flex: 1 1 0 !important;
-        justify-content: center !important;
-        font-weight: 700 !important;
-        font-size: 13.5px !important;
-        padding: 6px 8px !important;
-        border-radius: 4px !important;
-    }
-    [data-testid="stTabs"] [aria-selected="true"] {
-        background-color: #1e293b !important;
-        color: #ffffff !important;
-    }
-    </style>
+    [data-testid="stHorizontalBlock"] {display: flex !important; flex-direction: row !important; flex-wrap: nowrap !important; justify-content: center !important; align-items: center !important; gap: 8px !important;}
+    [data-testid="stHorizontalBlock"] > div {flex: 0 0 65px !important; width: 65px !important; min-width: 65px !important; max-width: 65px !important;}
+    [data-testid="stHorizontalBlock"] button {width: 100% !important; min-width: 65px !important; padding: 2px 4px !important; font-size: 12px !important; white-space: nowrap !important;}
+    [data-testid="stTabs"] [role="tablist"] {display: flex !important; width: 100% !important; gap: 4px !important; background: #eef2f6 !important; padding: 3px !important; border-radius: 6px !important; border: 1px solid #cbd5e1 !important;}
+    [data-testid="stTabs"] [role="tab"] {flex: 1 1 0 !important; justify-content: center !important; font-weight: 700 !important; font-size: 13.5px !important; padding: 6px 8px !important; border-radius: 4px !important;}
+    [data-testid="stTabs"] [aria-selected="true"] {background-color: #1e293b !important; color: #ffffff !important;}
+</style>
 """, unsafe_allow_html=True)
 
 initial_history = load_stock_history()
@@ -314,6 +305,8 @@ if "ms_counter" not in st.session_state:
     st.session_state.ms_counter = 0
 if "promote_to_top" not in st.session_state:
     st.session_state.promote_to_top = False
+if "broker_60d_requests" not in st.session_state:
+    st.session_state.broker_60d_requests = set()
 
 
 def on_stock_input_change():
@@ -336,9 +329,6 @@ def on_index_select_change():
 
 
 def on_history_select_change():
-    # 【修訂說明 2026-11-16】【修改目的與防呆防錯原因】：
-    # 查詢歷史紀錄改為單選下拉選單，選取單一標的時自動同步帶入「股票代號 (直接鍵入)」輸入框，
-    # 供使用者決定按「清除紀錄」刪除該筆，或按下方主要「查詢」載入並將該單一個股置頂。
     cur_key = f"history_selectbox_{st.session_state.ms_counter}"
     sel = st.session_state.get(cur_key, "選擇歷史紀錄...")
     if sel and sel != "選擇歷史紀錄...":
@@ -350,20 +340,10 @@ def on_history_select_change():
 
 with st.sidebar:
     st.header("參數設定")
-
     INDEX_CHOICES = [
-        "選擇主要市場指數...",
-        "加權指數 (^TWII)",
-        "櫃買指數 (^TWOII)",
-        "那斯達克 (^IXIC)",
-        "費城半導體 (^SOX)",
-        "道瓊工業 (^DJI)",
-        "標普500 (^GSPC)",
-        "日經225 (^N225)",
-        "韓國綜合 (^KS11)",
-        "英國富時100 (^FTSE)",
-        "德國DAX (^GDAXI)",
-        "法國CAC40 (^FCHI)"
+        "選擇主要市場指數...", "加權指數 (^TWII)", "櫃買指數 (^TWOII)",
+        "那斯達克 (^IXIC)", "費城半導體 (^SOX)", "道瓊工業 (^DJI)", "標普500 (^GSPC)",
+        "日經225 (^N225)", "韓國綜合 (^KS11)", "英國富時100 (^FTSE)", "德國DAX (^GDAXI)", "法國CAC40 (^FCHI)"
     ]
     st.selectbox("主要市場指數", INDEX_CHOICES, key="index_select_box", on_change=on_index_select_change)
 
@@ -372,9 +352,6 @@ with st.sidebar:
 
     with st.expander("查詢歷史紀錄", expanded=False):
         if history_codes:
-            # 【修訂說明 2026-11-16】【修改目的與防呆防錯原因】：
-            # 1. 將多選框改為 st.selectbox 單選，一次僅選一檔標的並同步帶入下方「股票代號 (直接鍵入)」。
-            # 2. 移除重複功能的「切換查詢」鍵，保留「清除紀錄」支援單筆刪除與未選全刪二次確認防呆。
             history_options = ["選擇歷史紀錄..."] + [f"{h.get('code')} {h.get('name', '')}".strip() for h in history_records]
             current_sb_key = f"history_selectbox_{st.session_state.ms_counter}"
             selected_history = st.selectbox(
@@ -398,7 +375,7 @@ with st.sidebar:
                         next_code = remained[0]["code"] if remained else "2330"
                         st.session_state.stock_id = next_code
                         st.session_state.stock_input_box = next_code
-                    st.session_state.promote_to_top = False
+                        st.session_state.promote_to_top = False
                     st.session_state.confirm_clear_all = False
                     st.session_state.ms_counter += 1
                     st.rerun()
@@ -439,7 +416,6 @@ with st.sidebar:
     )
     is_mobile = "手機版" in mode_switch
     default_days = 20 if is_mobile else 60
-
     st.session_state.disp_days = st.number_input(
         "顯示日數", min_value=10, max_value=240, value=default_days, step=5
     )
@@ -459,7 +435,6 @@ with st.sidebar:
         value=False,
         help="勾選後將穿透記憶體快取 (Cache) 與本地資料庫，強制發動網路爬蟲重抓籌碼資料。"
     )
-
     if force_refresh:
         get_cached_figures.clear()
         get_cached_broker_payload.clear()
@@ -485,7 +460,6 @@ with st.sidebar:
                     from data_fetcher import fetch_stock_daily_k, fetch_institutional_investors
                     from storage import StockChipStorage
                     from datetime import datetime, timedelta
-
                     k_res = fetch_stock_daily_k(cur_code, period="1y", force_refresh=False)
                     if k_res and k_res[0] is not None and not k_res[0].empty:
                         df_k = k_res[0]
@@ -529,7 +503,6 @@ with st.sidebar:
                     from data_fetcher import fetch_stock_daily_k, fetch_margin_short_data
                     from storage import StockChipStorage
                     from datetime import datetime, timedelta
-
                     k_res = fetch_stock_daily_k(cur_code, period="1y", force_refresh=False)
                     if k_res and k_res[0] is not None and not k_res[0].empty:
                         df_k = k_res[0]
@@ -559,9 +532,6 @@ with st.sidebar:
                     st.sidebar.error(f"資券重抓失敗: {e}")
 
     st.markdown("---")
-    # 【修訂說明 2026-11-16】【修改目的與防呆防錯原因】：
-    # 將原「大戶持股維護」明確標示為「大戶持股維護[個股/Findmind]」（單一個股歷史增補），
-    # 並以雙橫線區隔「[上市/上櫃]批次作業」，透過集保總表一次下載並寫入所有已收錄個股資料庫。
     st.subheader("大戶持股維護[個股/Findmind]")
     st.caption("ℹ️ 集保於當週各交易日不予公告，直到當週最後交易日之次日（週六）公布。")
     refetch_holding_weeks = st.number_input("重抓集保週數", min_value=1, max_value=24, value=6, step=1)
@@ -574,7 +544,6 @@ with st.sidebar:
                 try:
                     from data_fetcher import fetch_tdcc_holding_history
                     from storage import StockChipStorage
-
                     fresh_holdings = fetch_tdcc_holding_history(cur_code, weeks=int(refetch_holding_weeks))
                     if fresh_holdings:
                         storage = StockChipStorage(cur_code)
@@ -595,186 +564,169 @@ with st.sidebar:
         with st.spinner("正在連線集保結算所下載全市場最新一週大戶持股總表並批次寫入..."):
             try:
                 from data_fetcher import batch_fetch_and_save_latest_tdcc_holding
-
                 batch_res = batch_fetch_and_save_latest_tdcc_holding()
                 if batch_res.get("ok"):
-                    st.sidebar.success(batch_res.get("msg", "批次擷取並寫入完成！"))
+                    st.sidebar.success(batch_res.get("msg", "批次更新完成！"))
                     get_cached_figures.clear()
                     time.sleep(0.6)
                     st.rerun()
                 else:
-                    st.sidebar.warning(batch_res.get("msg", "批次擷取未取得資料。"))
+                    st.sidebar.warning(batch_res.get("msg", "批次更新未取得新資料。"))
             except Exception as e:
-                st.sidebar.error(f"批次擷取大戶持股失敗: {e}")
-
-auth_status = cloud_sync.get_auth_status()
-if auth_status == 2:
-    status_icon = "🟡"
-elif auth_status == 1:
-    status_icon = "🔵"
-else:
-    status_icon = "⚪"
-
-st.markdown(f"### 台股技術與籌碼分析 v{SYSTEM_VERSION} {status_icon}")
+                st.sidebar.error(f"批次作業異常: {e}")
 
 
-def navigate_stock(direction: int):
-    """
-    【修訂說明 2026-11-16】【修改目的與防呆防錯原因】：
-    1. 修改目的：上一檔/下一檔僅依目前歷史清單順序循環切換 stock_id 瀏覽圖表，絕不更動歷史排序。
-    2. 防呆防錯原因：移除多餘的 st.session_state.stock_input_box = target_code 賦值，避免底部導覽按鈕
-       在側邊欄輸入框已實例化後寫入其 session_state 鍵而觸發 StreamlitWidgetAlreadyInstantiatedError。
-    """
-    history_records = load_stock_history()
-    codes = [str(item.get("code")).strip().upper() for item in history_records if item.get("code")]
-    if not codes:
-        return
-    cur_code = str(st.session_state.stock_id).strip().upper()
-    if cur_code in codes:
-        idx = codes.index(cur_code)
-        next_idx = (idx + direction) % len(codes)
-        target_code = codes[next_idx]
+# ==============================================================================
+# 主畫面執行流程
+# ==============================================================================
+current_stock = st.session_state.stock_id
+should_promote = st.session_state.get("promote_to_top", False)
+
+fig_top, fig_btm_dict, df_res, title_label, top_h, btm_h = get_cached_figures(
+    current_stock,
+    st.session_state.period,
+    st.session_state.disp_days,
+    target_date_val,
+    m1_thresh,
+    m2_thresh,
+    is_mobile,
+    force_refresh
+)
+
+if fig_top is not None and df_res is not None:
+    if not current_stock.startswith("^"):
+        clean_name = title_label.split("(")[0].strip() if title_label else current_stock
+        if should_promote:
+            save_stock_history(current_stock, clean_name)
+            st.session_state.promote_to_top = False
+        else:
+            update_stock_name_only(current_stock, clean_name)
+
+    auth_state = cloud_sync.get_auth_status()
+    status_light = "🟡" if auth_state == 2 else ("🔵" if auth_state == 1 else "⚪")
+    st.markdown(
+        f"<div style='font-size:15px; font-weight:bold; color:#1e293b; margin-bottom:2px; text-align:center;'>"
+        f"台股技術與籌碼分析 v{SYSTEM_VERSION} {status_light}</div>",
+        unsafe_allow_html=True
+    )
+
+    nav_codes = [str(item.get("code")).strip().upper() for item in load_stock_history() if item.get("code")]
+    cur_upper = current_stock.strip().upper()
+    if cur_upper in nav_codes:
+        cur_idx = nav_codes.index(cur_upper)
     else:
-        target_code = codes[0]
-    st.session_state.stock_id = target_code
-    st.session_state.promote_to_top = False
+        cur_idx = -1
 
+    total_nav = len(nav_codes)
 
-nav_col1, nav_col2 = st.columns([1, 1])
-with nav_col1:
-    if st.button("◀ 上一檔", key="btn_prev_stock"):
-        navigate_stock(-1)
-        st.rerun()
-with nav_col2:
-    if st.button("下一檔 ▶", key="btn_next_stock"):
-        navigate_stock(1)
-        st.rerun()
+    def nav_prev():
+        if total_nav > 0:
+            prev_idx = (cur_idx - 1) % total_nav if cur_idx != -1 else 0
+            target = nav_codes[prev_idx]
+            st.session_state.stock_id = target
+            st.session_state.stock_input_box = target
+            st.session_state.promote_to_top = False
 
-active_code = str(st.session_state.stock_id).strip().upper()
-if active_code:
-    with st.spinner(f"正在載入 {active_code} 技術與籌碼數據..."):
-        fig_top, fig_bundle, df, c_name, end_idx, disp_n = get_cached_figures(
-            active_code,
-            st.session_state.period,
-            st.session_state.disp_days,
-            target_date_val,
-            m1_thresh,
-            m2_thresh,
-            is_mobile,
-            force_refresh
-        )
+    def nav_next():
+        if total_nav > 0:
+            next_idx = (cur_idx + 1) % total_nav if cur_idx != -1 else 0
+            target = nav_codes[next_idx]
+            st.session_state.stock_id = target
+            st.session_state.stock_input_box = target
+            st.session_state.promote_to_top = False
 
-    if fig_top is not None and df is not None and not df.empty:
-        resolved_name = c_name if c_name else get_stock_chinese_name(active_code)
-        should_promote = st.session_state.get("promote_to_top", False)
+    if total_nav > 0:
+        col_prev, col_next = st.columns(2)
+        with col_prev:
+            st.button("◀ 上一檔", key="btn_prev_stock", on_click=nav_prev)
+        with col_next:
+            st.button("下一檔 ▶", key="btn_next_stock", on_click=nav_next)
 
-        # 【修訂說明 2026-11-14】【修改目的與防呆防錯原因】：
-        # 只有使用者明確從「直接鍵入/查詢/切換」操作時，才將該標的寫入歷史清單最上方；
-        # 若為「上一檔/下一檔」循環瀏覽或重新整理，僅在歷史清單中存在時靜默更新中文名稱，絕不破壞排序。
-        if not active_code.startswith("^") and is_tw_stock_or_etf(active_code):
-            if should_promote:
-                save_stock_history(active_code, resolved_name)
-                st.session_state.promote_to_top = False
-            elif active_code in history_codes:
-                update_stock_name_only(active_code, resolved_name)
+    end_idx = len(df_res) - 1
+    if target_date_val:
+        try:
+            import pandas as pd
+            import numpy as np
+            t_ts = pd.to_datetime(target_date_val)
+            v_idx = np.where(df_res.index <= t_ts)[0]
+            if len(v_idx) > 0:
+                end_idx = int(v_idx[-1])
+        except Exception:
+            pass
 
-        top_h = 270 if is_mobile else 310
+    cid = f"mc_{current_stock.replace('^', 'IDX_')}"
+
+    top_html = get_top_chart_html(
+        fig_top=fig_top,
+        df=df_res,
+        chart_id=cid,
+        top_height=top_h,
+        initial_disp_days=st.session_state.disp_days,
+        initial_end_idx=end_idx
+    )
+    components.html(top_html, height=top_h + 38, scrolling=False)
+
+    tab_tech, tab_chip, tab_broker = st.tabs(["📊 指標", "💰 籌碼", "🏦 分點"])
+
+    with tab_tech:
         tech_h = 540 if is_mobile else 580
-        chip_h = 760 if is_mobile else 800
-
-        # 1. 上半部共用主圖 (K線 + 成交量)
-        top_html = get_top_chart_html(
-            fig_top=fig_top,
-            df=df,
-            chart_id=f"mchart_top_{active_code}",
-            top_height=top_h,
-            initial_disp_days=disp_n,
+        tech_html = get_tech_tab_html(
+            fig_btm=fig_btm_dict,
+            df=df_res,
+            chart_id=cid,
+            tech_height=tech_h,
+            initial_disp_days=st.session_state.disp_days,
             initial_end_idx=end_idx
         )
-        components.html(top_html, height=top_h + 36, scrolling=False)
+        components.html(tech_html, height=tech_h + 52, scrolling=False)
 
-        # 2. 下半部三頁籤切換：【指標】、【籌碼】、【分點】
-        is_index_ticker = active_code.startswith("^")
-        tab_tech, tab_chip, tab_broker = st.tabs(["📊 指標", "💰 籌碼", "🏦 分點"])
+    with tab_chip:
+        chip_h = 760 if is_mobile else 800
+        chip_html = get_chip_tab_html(
+            fig_btm=fig_btm_dict,
+            df=df_res,
+            chart_id=cid,
+            chip_height=chip_h,
+            initial_disp_days=st.session_state.disp_days,
+            initial_end_idx=end_idx,
+            m1_thresh=m1_thresh,
+            m2_thresh=m2_thresh
+        )
+        components.html(chip_html, height=chip_h + 68, scrolling=False)
 
-        with tab_tech:
-            tech_html = get_tech_tab_html(
-                fig_btm=fig_bundle,
-                df=df,
-                chart_id=f"mchart_tech_{active_code}",
-                tech_height=tech_h,
-                initial_disp_days=disp_n,
-                initial_end_idx=end_idx
-            )
-            components.html(tech_html, height=tech_h + 52, scrolling=False)
+    with tab_broker:
+        is_idx_flag = current_stock.startswith("^")
+        trade_dates_tup = tuple(d.strftime('%Y-%m-%d') for d in df_res.index)
+        target_end_date_str = trade_dates_tup[end_idx] if trade_dates_tup else ""
+        req_60d_key = f"{cur_upper}_{target_end_date_str}"
+        want_60d = req_60d_key in st.session_state.broker_60d_requests
 
-        with tab_chip:
-            if is_index_ticker:
-                st.info("指數標的不適用三大法人、資券與集保大戶籌碼分析。")
-            else:
-                chip_html = get_chip_tab_html(
-                    fig_btm=fig_bundle,
-                    df=df,
-                    chart_id=f"mchart_chip_{active_code}",
-                    chip_height=chip_h,
-                    initial_disp_days=disp_n,
-                    initial_end_idx=end_idx,
-                    m1_thresh=m1_thresh,
-                    m2_thresh=m2_thresh
-                )
-                components.html(chip_html, height=chip_h + 62, scrolling=False)
-
-        with tab_broker:
-            if is_index_ticker:
-                st.info("指數標的不適用券商分點進出統計。")
-            else:
-                trade_dates_tuple = tuple(d.strftime('%Y-%m-%d') for d in df.index)
-                with st.spinner(f"正在載入 {active_code} 券商分點統計與雲端逐日明細..."):
-                    broker_payload = get_cached_broker_payload(
-                        stock_id=active_code,
-                        trade_dates_tuple=trade_dates_tuple,
-                        target_end_idx=end_idx,
-                        force_refresh=force_refresh
-                    )
-                broker_html = get_broker_tab_html(
-                    df=df,
-                    chart_id=f"mchart_broker_{active_code}",
-                    initial_end_idx=end_idx,
-                    is_index=False,
-                    broker_payload=broker_payload
-                )
-                components.html(broker_html, height=1350, scrolling=True)
-
-        # 【修訂說明 2026-11-16】【修改目的與防呆防錯原因】：
-        # 1. 於三頁籤（月份軸）與底部換股按鈕之間增加置中標的資訊列，顯示「股票名稱 (股票代號) (上市/上櫃)」。
-        # 2. 於底部 [◀ 上一檔] / [下一檔 ▶] 按鈕下方新增 60px 空白行，避免手機瀏覽滑到底端時遭右下角 Manage app 遮擋。
-        bottom_title_text = ""
-        try:
-            if fig_top and fig_top.layout and fig_top.layout.title and fig_top.layout.title.text:
-                bottom_title_text = str(fig_top.layout.title.text).strip()
-        except Exception:
-            bottom_title_text = ""
-        if not bottom_title_text:
-            bottom_title_text = f"{resolved_name} ({active_code})"
-
-        st.markdown(
-            f"<div style='text-align:center; font-size:13px; font-weight:700; color:#1e293b; "
-            f"background:#f8fafc; border:1px solid #e2e8f0; border-radius:4px; "
-            f"padding:4px 8px; margin:4px auto 6px auto;'>{bottom_title_text}</div>",
-            unsafe_allow_html=True
+        broker_payload = {} if is_idx_flag else get_cached_broker_payload(
+            stock_id=current_stock,
+            trade_dates_tuple=trade_dates_tup,
+            target_end_idx=end_idx,
+            force_refresh=force_refresh,
+            include_60d=want_60d
         )
 
-        btm_col1, btm_col2 = st.columns([1, 1])
-        with btm_col1:
-            if st.button("◀ 上一檔", key="btn_prev_stock_bottom"):
-                navigate_stock(-1)
-                st.rerun()
-        with btm_col2:
-            if st.button("下一檔 ▶", key="btn_next_stock_bottom"):
-                navigate_stock(1)
-                st.rerun()
+        # 若當前基準日尚未收錄近 60 日分點統計與明細，提供按需載入按鈕（點擊後才抓取並寫回雲端）
+        if not is_idx_flag and target_end_date_str:
+            day_b = broker_payload.get("by_date", {}).get(target_end_date_str, {})
+            w60_obj = day_b.get("w60", {}) if isinstance(day_b, dict) else {}
+            has_60d_data = bool(isinstance(w60_obj, dict) and (w60_obj.get("buy") or w60_obj.get("sell")))
+            if not has_60d_data:
+                if st.button(f"📥 載入近 60 日分點統計與明細（基準日 {target_end_date_str}）", key=f"btn_load_60d_{req_60d_key}"):
+                    st.session_state.broker_60d_requests.add(req_60d_key)
+                    st.rerun()
 
-        st.markdown("<div style='height: 60px;'></div>", unsafe_allow_html=True)
-    else:
-        st.error(f"無法載入標的「{active_code}」之交易資料，請確認代號是否正確或稍後再試。")
+        broker_html = get_broker_tab_html(
+            df=df_res,
+            chart_id=cid,
+            initial_end_idx=end_idx,
+            is_index=is_idx_flag,
+            broker_payload=broker_payload
+        )
+        components.html(broker_html, height=1680, scrolling=True)
+else:
+    st.error(f"無法取得代號 `{current_stock}` 的市場資料，請確認輸入代號是否正確或稍後再試。")
 # EOF app.py
