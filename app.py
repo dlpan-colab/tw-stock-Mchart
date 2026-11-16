@@ -1,6 +1,6 @@
 """
-app.py - 主應用程式介面與生命週期控制 (支援含英文後綴台股ETF + 上下檔瀏覽不亂序 + 雲端分點累積 + 查詢歷史單選版)
-版本: 202611162020
+app.py - 主應用程式介面與生命週期控制 (支援含英文後綴台股ETF + 上下檔瀏覽不亂序 + 雲端分點累積 + 查詢歷史單選 + 集保批次作業版)
+版本: 202611162037
 """
 import os
 import time
@@ -10,7 +10,7 @@ import streamlit.components.v1 as components
 import cloud_sync
 
 MODULE_NAME = "app"
-MODULE_VERSION = "202611162020"
+MODULE_VERSION = "202611162037"
 
 
 # 【防呆防錯備註 2026-11-07】：版本控制權由 app.py 作為唯一權威源，動態掃描所有模組最大版本號，杜絕多頭覆寫與重工
@@ -559,7 +559,10 @@ with st.sidebar:
                     st.sidebar.error(f"資券重抓失敗: {e}")
 
     st.markdown("---")
-    st.subheader("大戶持股維護")
+    # 【修訂說明 2026-11-16】【修改目的與防呆防錯原因】：
+    # 將原「大戶持股維護」明確標示為「大戶持股維護[個股/Findmind]」（單一個股歷史增補），
+    # 並以雙橫線區隔「[上市/上櫃]批次作業」，透過集保總表一次下載並寫入所有已收錄個股資料庫。
+    st.subheader("大戶持股維護[個股/Findmind]")
     st.caption("ℹ️ 集保於當週各交易日不予公告，直到當週最後交易日之次日（週六）公布。")
     refetch_holding_weeks = st.number_input("重抓集保週數", min_value=1, max_value=24, value=6, step=1)
     if st.button("🛠️ 增補近N週集保歷史", use_container_width=True):
@@ -567,7 +570,7 @@ with st.sidebar:
         if cur_code.startswith("^"):
             st.sidebar.warning("指數標的無集保大戶資料。")
         else:
-            with st.spinner(f"正在連線集保結算所增補 {cur_code} 近 {refetch_holding_weeks} 週歷史分級..."):
+            with st.spinner(f"正在連線 FinMind 增補 {cur_code} 近 {refetch_holding_weeks} 週歷史分級..."):
                 try:
                     from data_fetcher import fetch_tdcc_holding_history
                     from storage import StockChipStorage
@@ -582,9 +585,27 @@ with st.sidebar:
                         time.sleep(0.5)
                         st.rerun()
                     else:
-                        st.sidebar.warning("集保伺服器未回傳歷史資料，請稍候重試。")
+                        st.sidebar.warning("FinMind 未回傳歷史資料，請稍候重試。")
                 except Exception as e:
                     st.sidebar.error(f"大戶持股增補失敗: {e}")
+
+    st.markdown("<hr style='border: none; border-top: 3px double #94a3b8; margin: 14px 0;'>", unsafe_allow_html=True)
+    st.subheader("[上市/上櫃]批次作業")
+    if st.button("📥 擷取最近一週大戶持股比例資料", use_container_width=True):
+        with st.spinner("正在連線集保結算所下載全市場最新一週大戶持股總表並批次寫入..."):
+            try:
+                from data_fetcher import batch_fetch_and_save_latest_tdcc_holding
+
+                batch_res = batch_fetch_and_save_latest_tdcc_holding()
+                if batch_res.get("ok"):
+                    st.sidebar.success(batch_res.get("msg", "批次擷取並寫入完成！"))
+                    get_cached_figures.clear()
+                    time.sleep(0.6)
+                    st.rerun()
+                else:
+                    st.sidebar.warning(batch_res.get("msg", "批次擷取未取得資料。"))
+            except Exception as e:
+                st.sidebar.error(f"批次擷取大戶持股失敗: {e}")
 
 auth_status = cloud_sync.get_auth_status()
 if auth_status == 2:
