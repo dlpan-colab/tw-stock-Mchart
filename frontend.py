@@ -1,15 +1,15 @@
 """
-frontend.py - 前端 HTML/CSS 渲染模組 (籌碼標準字典防快取遺失 + 分點柱狀圖X軸僅首日標示月份 + 分點60日按需載入提示版)
-版本: 202611162154
+frontend.py - 前端 HTML/CSS 渲染模組 (籌碼標準字典防快取遺失 + 分點柱狀圖X軸僅首日標示月份 + 分點60日下拉即時提示版)
+版本: 202611162200
 """
 import json
 import pandas as pd
 
 MODULE_NAME = "frontend"
-MODULE_VERSION = "202611162154"
+MODULE_VERSION = "202611162200"
 
 
-def get_legend_html(version_tag: str = "202611162154") -> str:
+def get_legend_html(version_tag: str = "202611162200") -> str:
     return f"""<div style="font-size:14px;margin-bottom:4px;padding:2px 8px;display:inline-flex;align-items:center;background:#f8fafc;border-radius:4px;border:1px solid #e2e8f0;"><span style="background:#2c3e50;color:#fff;padding:2px 8px;border-radius:4px;font-weight:bold;font-size:12px;">台股技術與籌碼分析 v{version_tag}</span></div>"""
 
 
@@ -289,7 +289,7 @@ def get_broker_tab_html(df: pd.DataFrame, chart_id: str, initial_end_idx: int = 
   <div id="__CID___b_tbls"></div>
   <div class="b-card">
     <div class="b-title">5. 區間買賣超統計各前 5 名分點 — 各日買賣超柱狀圖</div>
-    <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;flex-wrap:wrap;">
+    <div style="display:flex;align-items:center;gap:8px;margin-bottom:4px;flex-wrap:wrap;">
       <label for="__CID___b_sel" style="font-size:12.5px;font-weight:bold;color:#334155;">統計區間天數：</label>
       <select id="__CID___b_sel" style="padding:4px 8px;font-size:13px;border-radius:4px;border:1px solid #94a3b8;font-weight:bold;">
         <option value="10" selected>近 10 日（含關注交易日）</option>
@@ -297,6 +297,7 @@ def get_broker_tab_html(df: pd.DataFrame, chart_id: str, initial_end_idx: int = 
         <option value="60">近 60 日（含關注交易日）</option>
       </select>
     </div>
+    <div id="__CID___b_warn" style="font-size:12px;color:#d97706;background:#fffbeb;padding:4px 8px;border-radius:4px;border:1px solid #fde68a;margin-bottom:8px;display:none;"></div>
     <div id="__CID___b_bars"></div>
   </div>
 </div>
@@ -304,7 +305,7 @@ def get_broker_tab_html(df: pd.DataFrame, chart_id: str, initial_end_idx: int = 
 <script>(function(){var dates=__DATES__,isIndex=__IS_IDX__,payload=__BROKER_JSON__,curIdx=__INIT_END__;
 var cfg={responsive:true,displayModeBar:false,scrollZoom:false};
 var rootEl=document.getElementById('__CID___broker_root'),hdrEl=document.getElementById('__CID___b_hdr');
-var tblsEl=document.getElementById('__CID___b_tbls'),selEl=document.getElementById('__CID___b_sel'),barsEl=document.getElementById('__CID___b_bars');
+var tblsEl=document.getElementById('__CID___b_tbls'),selEl=document.getElementById('__CID___b_sel'),warnEl=document.getElementById('__CID___b_warn'),barsEl=document.getElementById('__CID___b_bars');
 var MSG_60D_ON_DEMAND='尚未載入近 60 日統計（預設僅載入至 20 日；請點擊上方「📥 載入近 60 日分點統計與明細」按鈕按需抓取）';
 function pushH(){if(!rootEl)return;var h=Math.ceil(rootEl.scrollHeight)+16;if(window.parent&&window.parent!==window)window.parent.postMessage({isStreamlitMessage:true,type:"streamlit:setFrameHeight",height:h},"*");}
 if(typeof ResizeObserver!=='undefined'&&rootEl)new ResizeObserver(pushH).observe(rootEl);
@@ -319,11 +320,11 @@ return h+'</tbody></table></div></div>';
 return'<div class="b-card"><div class="b-title">'+title+'</div><div class="b-grid">'+side('🔴 買超前 10 名 (張)',buyList,true)+side('🟢 賣超前 10 名 (張)',sellList,false)+'</div></div>';
 }
 function render(idx){if(idx<0||idx>=dates.length)return;curIdx=idx;var d=dates[idx];
-if(isIndex){hdrEl.innerHTML='<b>'+d+'</b> ｜ 指數標的不適用券商分點統計';tblsEl.innerHTML='';barsEl.innerHTML='';pushH();return;}
+if(isIndex){hdrEl.innerHTML='<b>'+d+'</b> ｜ 指數標人不適用券商分點統計';tblsEl.innerHTML='';barsEl.innerHTML='';if(warnEl)warnEl.style.display='none';pushH();return;}
 var byD=(payload&&payload.by_date)?payload.by_date:{},dayData=byD[d];
 if(!dayData){var ks=Object.keys(byD).sort(),fb=ks.length?ks[ks.length-1]:null;
 if(fb){dayData=byD[fb];hdrEl.innerHTML='<b>關注交易日：'+d+'</b>（目前顯示已收錄基準日 <b>'+fb+'</b> 之分點統計；若需指定歷史日請於側邊欄設定基準日）';}
-else{hdrEl.innerHTML='<b>關注交易日：'+d+'</b> ｜ 尚無分點明細資料';tblsEl.innerHTML='';barsEl.innerHTML='';pushH();return;}
+else{hdrEl.innerHTML='<b>關注交易日：'+d+'</b> ｜ 尚無分點明細資料';tblsEl.innerHTML='';barsEl.innerHTML='';if(warnEl)warnEl.style.display='none';pushH();return;}
 }else hdrEl.innerHTML='<b>關注交易日：'+d+'</b> ｜ 券商分點買賣超統計與雲端累積逐日明細（單位：張）';
 var r1=dayData.w1||{},r10=dayData.w10||{},r20=dayData.w20||{},r60=dayData.w60||{};
 var has60=(r60.buy&&r60.buy.length)||(r60.sell&&r60.sell.length);
@@ -331,10 +332,12 @@ tblsEl.innerHTML=makeTbl('1. 當日分點統計買賣超各前十名（'+(r1.ran
 +makeTbl('2. 前 10 日至關注交易日分點統計買賣超各前十名（'+(r10.range_label||'')+'）',r10.buy,r10.sell)
 +makeTbl('3. 前 20 日至關注交易日分點統計買賣超各前十名（'+(r20.range_label||'')+'）',r20.buy,r20.sell)
 +makeTbl('4. 前 60 日至關注交易日分點統計買賣超各前十名（'+(r60.range_label||'按需載入')+'）',r60.buy,r60.sell,has60?'無資料':MSG_60D_ON_DEMAND);
-var winDays=selEl?selEl.value:'10',winObj=dayData['w'+winDays]||{};
+var winDays=selEl?selEl.value:'10';
+if(winDays==='60'&&!has60){if(warnEl){warnEl.innerHTML='⚠️ <b>' + MSG_60D_ON_DEMAND + '</b>';warnEl.style.display='block';}barsEl.innerHTML='<div style="font-size:12px;color:#d97706;padding:6px;">尚未載入近 60 日明細資料。</div>';pushH();return;}
+else{if(warnEl)warnEl.style.display='none';}
+var winObj=dayData['w'+winDays]||{};
 var t5b=winObj.top5_buy_series||[],t5s=winObj.top5_sell_series||[];
-if(!t5b.length&&!t5s.length){var barEmptyMsg=(winDays==='60'&&!has60)?MSG_60D_ON_DEMAND:'此區間尚無前五大分點逐日柱狀圖資料。';
-barsEl.innerHTML='<div style="font-size:12px;color:#64748b;padding:6px;">'+barEmptyMsg+'</div>';pushH();return;}
+if(!t5b.length&&!t5s.length){barsEl.innerHTML='<div style="font-size:12px;color:#64748b;padding:6px;">此區間尚無前五大分點逐日柱狀圖資料。</div>';pushH();return;}
 var bHtml='<div style="font-size:12.5px;font-weight:bold;color:#eb4d4b;margin:4px 0;">🔴 區間累計買超前 5 名分點 — 每日買賣超柱狀圖</div>';
 for(var bi=0;bi<t5b.length;bi++)bHtml+='<div id="__CID___bb_'+bi+'" class="b-bar"></div>';
 bHtml+='<div style="font-size:12.5px;font-weight:bold;color:#16a085;margin:6px 0 4px 0;">🟢 區間累計賣超前 5 名分點 — 每日買賣超柱狀圖</div>';
