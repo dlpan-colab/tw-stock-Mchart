@@ -1,6 +1,6 @@
 """
-data_fetcher.py - 整合技術與籌碼資料擷取模組 (支援含英文後綴台股ETF + TWSE/TPEx官方日K即時補齊 + 雲端增量累積分點引擎 + 集保批次作業版)
-版本: 202611162037
+data_fetcher.py - 整合技術與籌碼資料擷取模組 (支援含英文後綴台股ETF + TWSE/TPEx官方日K即時補齊 + 雲端增量累積分點引擎 + 集保多線路批次作業版)
+版本: 202611162042
 """
 import os
 import re
@@ -16,7 +16,7 @@ from datetime import datetime, timedelta
 from urllib.parse import urljoin, urlparse, parse_qs, urlencode, urlunparse
 
 MODULE_NAME = "data_fetcher"
-MODULE_VERSION = "202611162037"
+MODULE_VERSION = "202611162042"
 
 from storage import (
     StockChipStorage,
@@ -536,16 +536,21 @@ def fetch_tdcc_holding_data(pure_code: str) -> list:
 def batch_fetch_and_save_latest_tdcc_holding(target_codes: list = None) -> dict:
     """
     【修訂說明 2026-11-16】【修改目的與防呆防錯原因】：
-    1. 修改目的：提供【上市/上櫃】批次作業，一次連線集保結算所公開資料總表（id=1-5）取得全市場最近一週
-       大戶持股分級比例，並批次寫入系統已收錄個股之 data_{code}.db（shareholding_distribution 資料表）及同步雲端。
+    1. 修改目的：提供【上市/上櫃】批次作業，優先嘗試集保官方開放資料網鏡像與主站（id=1-5）；
+       若因雲端主機位於海外遭集保官網阻擋逾時，自動切換至 FinMind 備援線路批次取得已收錄個股最近一週
+       大戶持股分級比例，寫入各檔個股之 data_{code}.db（shareholding_distribution 資料表）並同步雲端。
     2. 防呆防錯原因：
        - 僅保留 1 <= level <= 15 級距，嚴格排除第 16（其他）、17（合計）列，防止比例計算重複加總。
        - 僅針對系統已建立之台股個股/ETF（排除 ^ 開頭指數）寫入，避免無差別產生數千個無效 .db 檔。
+       - FinMind 備援模式僅擷取每檔回傳之最新單一公告日期（max(date)）紀錄寫入並加入 0.08s 節流防呆。
     """
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
     }
-    url = "https://smart.tdcc.com.tw/opendata/getOD.ashx?id=1-5"
+    tdcc_urls = [
+        "https://opendata.tdcc.com.tw/getOD.ashx?id=1-5",
+        "https://smart.tdcc.com.tw/opendata/getOD.ashx?id=1-5",
+    ]
 
     # 彙整系統已收錄之目標標的清單（查詢歷史紀錄 + 本機既有 data_*.db）
     candidate_set = set()
@@ -567,36 +572,60 @@ def batch_fetch_and_save_latest_tdcc_holding(target_codes: list = None) -> dict:
     if not candidate_set:
         return {"ok": False, "msg": "目前無已收錄之台股個股或 ETF 清單可供批次寫入。"}
 
-    try:
-        res = requests.get(url, headers=headers, timeout=15)
-        if res.status_code != 200 or not res.text:
-            return {"ok": False, "msg": f"集保伺服器連線異常（HTTP {res.status_code}），請稍後再試。"}
-    except Exception as e:
-        return {"ok": False, "msg": f"連線集保伺服器逾時或失敗：{e}"}
-
-    grouped_by_code = {}
-    latest_announce_date = ""
-    for line in res.text.splitlines():
-        parts = line.strip().split(",")
-        if len(parts) < 6:
-            continue
-        code = parts[1].strip().upper()
-        if code not in candidate_set:
-            continue
+    csv_text = ""
+    source_used = "集保開放資料總表"
+    for u in tdcc_urls:
         try:
-            d_str = datetime.strptime(parts[0].strip(), "%Y%m%d").strftime("%Y-%m-%d")
-            level = int(parts[2].strip())
-            if level < 1 or level > 15:
-                continue
-            percent = float(parts[5].strip())
-            grouped_by_code.setdefault(code, []).append((d_str, level, percent))
-            if d_str > latest_announce_date:
-                latest_announce_date = d_str
+            res = requests.get(u, headers=headers, timeout=6)
+            if res.status_code == 200 and res.text and "," in res.text[:200]:
+                csv_text = res.text
+                break
         except Exception:
             continue
 
+    grouped_by_code = {}
+    latest_announce_date = ""
+
+    # 線路 1：集保開放資料全市場總表成功連線
+    if csv_text:
+        for line in csv_text.splitlines():
+            parts = line.strip().split(",")
+            if len(parts) < 6:
+                continue
+            code = parts[1].strip().upper()
+            if code not in candidate_set:
+                continue
+            try:
+                d_str = datetime.strptime(parts[0].strip(), "%Y%m%d").strftime("%Y-%m-%d")
+                level = int(parts[2].strip())
+                if level < 1 or level > 15:
+                    continue
+                percent = float(parts[5].strip())
+                grouped_by_code.setdefault(code, []).append((d_str, level, percent))
+                if d_str > latest_announce_date:
+                    latest_announce_date = d_str
+            except Exception:
+                continue
+
+    # 線路 2：雲端機房直連集保逾時時，自動切換 FinMind 備援逐檔取最近一週公告分級
     if not grouped_by_code:
-        return {"ok": False, "msg": "集保總表未匹配到已收錄個股資料（可能適逢集保維護時段）。"}
+        source_used = "FinMind雲端備援線路"
+        for code in sorted(candidate_set):
+            try:
+                hist_recs = fetch_tdcc_holding_history(code, weeks=2)
+                if hist_recs:
+                    max_d = max(r[0] for r in hist_recs)
+                    latest_only = [(d, lvl, pct) for (d, lvl, pct) in hist_recs if d == max_d and 1 <= lvl <= 15]
+                    if latest_only:
+                        grouped_by_code[code] = latest_only
+                        if max_d > latest_announce_date:
+                            latest_announce_date = max_d
+            except Exception:
+                pass
+            time.sleep(0.08)
+
+    if not grouped_by_code:
+        return {"ok": False, "msg": "集保官網連線逾時且備援線路暫無最新週資料，請稍後再試。"}
 
     updated_codes = []
     for code, recs in sorted(grouped_by_code.items()):
@@ -613,7 +642,7 @@ def batch_fetch_and_save_latest_tdcc_holding(target_codes: list = None) -> dict:
         "updated_count": len(updated_codes),
         "total_candidates": len(candidate_set),
         "updated_codes": updated_codes,
-        "msg": f"已完成集保公告日 {latest_announce_date} 批次作業，共寫入 {len(updated_codes)}/{len(candidate_set)} 檔個股資料庫並同步雲端。"
+        "msg": f"已透過【{source_used}】完成公告日 {latest_announce_date} 批次作業，共寫入 {len(updated_codes)}/{len(candidate_set)} 檔個股資料庫並同步雲端。"
     }
 
 
