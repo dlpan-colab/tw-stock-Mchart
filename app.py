@@ -1,6 +1,6 @@
 """
 app.py - 主應用程式介面與生命週期控制 (支援含英文後綴台股ETF + 上下檔瀏覽不亂序 + 雲端分點累積 + 查詢歷史單選 + 集保批次作業版)
-版本: 202611162037
+版本: 202611162050
 """
 import os
 import time
@@ -10,7 +10,7 @@ import streamlit.components.v1 as components
 import cloud_sync
 
 MODULE_NAME = "app"
-MODULE_VERSION = "202611162037"
+MODULE_VERSION = "202611162050"
 
 
 # 【防呆防錯備註 2026-11-07】：版本控制權由 app.py 作為唯一權威源，動態掃描所有模組最大版本號，杜絕多頭覆寫與重工
@@ -75,7 +75,7 @@ INDEX_MAP = {
     "N225": "^N225", "NIKKEI": "^N225", "日經": "^N225", "^N225": "^N225",
     "KS11": "^KS11", "KOSPI": "^KS11", "韓綜": "^KS11", "^KS11": "^KS11",
     # 歐股
-    "FTSE": "^FTSE", "富時": "^FTSE", "英國富時": "^FTSE", "^FTSE": "^FTSE",
+    "FTSE": "^FTSE", "富時": "^FTSE", "英國富時100": "^FTSE", "^FTSE": "^FTSE",
     "GDAXI": "^GDAXI", "DAX": "^GDAXI", "德國DAX": "^GDAXI", "^GDAXI": "^GDAXI",
     "FCHI": "^FCHI", "CAC": "^FCHI", "法國CAC40": "^FCHI", "^FCHI": "^FCHI",
 }
@@ -740,6 +740,19 @@ if active_code:
                     broker_payload=broker_payload
                 )
                 components.html(broker_html, height=1350, scrolling=True)
+
+        # 【修訂說明 2026-11-16】【修改目的與防呆防錯原因】：
+        # 補回頁面最底部之並排置中 [◀ 上一檔] / [下一檔 ▶] 導覽按鈕（使用獨立 key 避免重複 ID 衝突），
+        # 方便手機瀏覽至頁面底端時直接換股。
+        btm_col1, btm_col2 = st.columns([1, 1])
+        with btm_col1:
+            if st.button("◀ 上一檔", key="btn_prev_stock_bottom"):
+                navigate_stock(-1)
+                st.rerun()
+        with btm_col2:
+            if st.button("下一檔 ▶", key="btn_next_stock_bottom"):
+                navigate_stock(1)
+                st.rerun()
     else:
         st.error(f"無法載入標的「{active_code}」之交易資料，請確認代號是否正確或稍後再試。")
 # EOF app.py
