@@ -1,6 +1,7 @@
+ [◀ 上一檔] [下一檔 ▶]
 """
 app.py - 主應用程式介面與生命週期控制 (支援含英文後綴台股ETF + 上下檔瀏覽不亂序 + 雲端分點累積 + 查詢歷史單選 + 集保批次作業版)
-版本: 202611162055
+版本: 202611162102
 """
 import os
 import time
@@ -10,7 +11,7 @@ import streamlit.components.v1 as components
 import cloud_sync
 
 MODULE_NAME = "app"
-MODULE_VERSION = "202611162055"
+MODULE_VERSION = "202611162102"
 
 
 # 【防呆防錯備註 2026-11-07】：版本控制權由 app.py 作為唯一權威源，動態掃描所有模組最大版本號，杜絕多頭覆寫與重工
@@ -746,8 +747,24 @@ if active_code:
                 components.html(broker_html, height=1350, scrolling=True)
 
         # 【修訂說明 2026-11-16】【修改目的與防呆防錯原因】：
-        # 補回頁面最底部之並排置中 [◀ 上一檔] / [下一檔 ▶] 導覽按鈕（使用獨立 key 避免重複 ID 衝突），
-        # 方便手機瀏覽至頁面底端時直接換股。
+        # 1. 於三頁籤（月份軸）與底部換股按鈕之間增加置中標的資訊列，顯示「股票名稱 (股票代號) (上市/上櫃)」。
+        # 2. 於底部 [◀ 上一檔] / [下一檔 ▶] 按鈕下方新增 60px 空白行，避免手機瀏覽滑到底端時遭右下角 Manage app 遮擋。
+        bottom_title_text = ""
+        try:
+            if fig_top and fig_top.layout and fig_top.layout.title and fig_top.layout.title.text:
+                bottom_title_text = str(fig_top.layout.title.text).strip()
+        except Exception:
+            bottom_title_text = ""
+        if not bottom_title_text:
+            bottom_title_text = f"{resolved_name} ({active_code})"
+
+        st.markdown(
+            f"<div style='text-align:center; font-size:13px; font-weight:700; color:#1e293b; "
+            f"background:#f8fafc; border:1px solid #e2e8f0; border-radius:4px; "
+            f"padding:4px 8px; margin:4px auto 6px auto;'>{bottom_title_text}</div>",
+            unsafe_allow_html=True
+        )
+
         btm_col1, btm_col2 = st.columns([1, 1])
         with btm_col1:
             if st.button("◀ 上一檔", key="btn_prev_stock_bottom"):
@@ -757,6 +774,8 @@ if active_code:
             if st.button("下一檔 ▶", key="btn_next_stock_bottom"):
                 navigate_stock(1)
                 st.rerun()
+
+        st.markdown("<div style='height: 60px;'></div>", unsafe_allow_html=True)
     else:
         st.error(f"無法載入標的「{active_code}」之交易資料，請確認代號是否正確或稍後再試。")
 # EOF app.py
