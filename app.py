@@ -1,6 +1,6 @@
 """
 app.py - 主應用程式介面與生命週期控制 (支援含英文後綴台股ETF + 上下檔瀏覽不亂序 + 雲端分點累積 + 查詢歷史單選 + 集保批次作業版)
-版本: 202611162050
+版本: 202611162055
 """
 import os
 import time
@@ -10,7 +10,7 @@ import streamlit.components.v1 as components
 import cloud_sync
 
 MODULE_NAME = "app"
-MODULE_VERSION = "202611162050"
+MODULE_VERSION = "202611162055"
 
 
 # 【防呆防錯備註 2026-11-07】：版本控制權由 app.py 作為唯一權威源，動態掃描所有模組最大版本號，杜絕多頭覆寫與重工
@@ -619,7 +619,12 @@ st.markdown(f"### 台股技術與籌碼分析 v{SYSTEM_VERSION} {status_icon}")
 
 
 def navigate_stock(direction: int):
-    """【修訂說明 2026-11-14】上一檔/下一檔僅依目前歷史清單順序循環瀏覽，絕不更動歷史排序"""
+    """
+    【修訂說明 2026-11-16】【修改目的與防呆防錯原因】：
+    1. 修改目的：上一檔/下一檔僅依目前歷史清單順序循環切換 stock_id 瀏覽圖表，絕不更動歷史排序。
+    2. 防呆防錯原因：移除多餘的 st.session_state.stock_input_box = target_code 賦值，避免底部導覽按鈕
+       在側邊欄輸入框已實例化後寫入其 session_state 鍵而觸發 StreamlitWidgetAlreadyInstantiatedError。
+    """
     history_records = load_stock_history()
     codes = [str(item.get("code")).strip().upper() for item in history_records if item.get("code")]
     if not codes:
@@ -632,7 +637,6 @@ def navigate_stock(direction: int):
     else:
         target_code = codes[0]
     st.session_state.stock_id = target_code
-    st.session_state.stock_input_box = target_code
     st.session_state.promote_to_top = False
 
 
