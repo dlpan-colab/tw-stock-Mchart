@@ -664,7 +664,7 @@ if fig_top is not None and df_res is not None:
         initial_disp_days=st.session_state.disp_days,
         initial_end_idx=end_idx
     )
-    components.html(top_html, height=top_h + 38, scrolling=False)
+    components.html(top_html, height=top_h + 62, scrolling=False)
 
     tab_tech, tab_chip, tab_broker = st.tabs(["📊 指標", "💰 籌碼", "🏦 分點"])
 
