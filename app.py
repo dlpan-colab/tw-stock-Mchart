@@ -1,6 +1,6 @@
 """
 app.py - 主應用程式介面與生命週期控制 (支援含英文後綴台股ETF + 上下檔瀏覽不亂序 + 雲端分點預設20日與60日按需載入版)
-版本: 202611180656
+版本: 202611180702
 """
 import os
 import time
@@ -10,7 +10,7 @@ import streamlit.components.v1 as components
 import cloud_sync
 
 MODULE_NAME = "app"
-MODULE_VERSION = "202611180656"
+MODULE_VERSION = "202611180702"
 
 
 # 【防呆防錯備註 2026-11-07】：版本控制權由 app.py 作為唯一權威源，動態掃描所有模組最大版本號，杜絕多頭覆寫與重工
@@ -273,9 +273,12 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
+# 【修訂說明 2026-11-18】【修改目的與防呆防錯原因】：
+# 修改目的：解除 [data-testid="stHorizontalBlock"] > div 強制所有欄位鎖死 65px 寬度，僅限定含 button 之欄位為 65px，讓標題欄位自動延展。
+# 防呆防錯原因：避免頂部「台股技術與籌碼分析 vYYYYMMDDHHMM 🟡」遭強制壓縮為 65px 而被「◀ 上一檔 / 下一檔 ▶」遮擋。
 st.markdown("""
 <style>
-    .block-container {padding-top: 3.5rem; padding-bottom: 0rem; padding-left: 1rem; padding-right: 1rem;}
+    .block-container {padding-top: 3.5rem; padding-bottom: 1.5rem; padding-left: 1rem; padding-right: 1rem;}
     footer {visibility: hidden;}
     [data-testid="stHorizontalBlock"] {
         display: flex !important;
@@ -285,11 +288,17 @@ st.markdown("""
         align-items: center !important;
         gap: 8px !important;
     }
-    [data-testid="stHorizontalBlock"] > div {
+    [data-testid="stHorizontalBlock"] > div:has(button) {
         flex: 0 0 65px !important;
         width: 65px !important;
         min-width: 65px !important;
         max-width: 65px !important;
+    }
+    [data-testid="stHorizontalBlock"] > div:not(:has(button)) {
+        flex: 1 1 auto !important;
+        width: auto !important;
+        min-width: 0 !important;
+        max-width: none !important;
     }
     [data-testid="stHorizontalBlock"] button {
         width: 100% !important;
@@ -787,4 +796,22 @@ if current_stock:
                 is_mobile=is_mobile
             )
             components.html(broker_html, height=1680, scrolling=True)
+
+        # 【修訂說明 2026-11-18】【修改目的與防呆防錯原因】：
+        # 修改目的：補回頁籤列最下方的「◀ 上一檔 / 下一檔 ▶」導覽按鈕列，維持上下對稱瀏覽操作。
+        # 防呆防錯原因：使用獨立 key="btn_prev_btm" / "btn_next_btm" 避免與頂部按鈕產生 DuplicateWidgetID 衝突，且設定 promote_to_top=False 維持歷史清單原序。
+        st.markdown("<div style='margin-top: 8px;'></div>", unsafe_allow_html=True)
+        btm_c1, btm_c2 = st.columns(2)
+        with btm_c1:
+            if st.button("◀ 上一檔", key="btn_prev_btm", use_container_width=True):
+                st.session_state.stock_id = prev_stock_code
+                st.session_state.stock_input_box = prev_stock_code
+                st.session_state.promote_to_top = False
+                st.rerun()
+        with btm_c2:
+            if st.button("下一檔 ▶", key="btn_next_btm", use_container_width=True):
+                st.session_state.stock_id = next_stock_code
+                st.session_state.stock_input_box = next_stock_code
+                st.session_state.promote_to_top = False
+                st.rerun()
 # EOF app.py
