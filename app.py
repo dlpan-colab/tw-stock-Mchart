@@ -1,6 +1,6 @@
 """
 app.py - 主應用程式介面與生命週期控制 (支援含英文後綴台股ETF + 上下檔瀏覽不亂序 + 雲端分點預設20日與60日按需載入版)
-版本: 202611172132
+版本: 202611172138
 """
 import os
 import time
@@ -10,7 +10,7 @@ import streamlit.components.v1 as components
 import cloud_sync
 
 MODULE_NAME = "app"
-MODULE_VERSION = "202611172132"
+MODULE_VERSION = "202611172138"
 
 
 # 【防呆防錯備註 2026-11-07】：版本控制權由 app.py 作為唯一權威源，動態掃描所有模組最大版本號，杜絕多頭覆寫與重工
@@ -660,7 +660,7 @@ if fig_top is not None and df_res is not None:
         fig_top=fig_top,
         df=df_res,
         chart_id=cid,
-        top_height=top_h,
+        top_height=top_h + 24,
         initial_disp_days=st.session_state.disp_days,
         initial_end_idx=end_idx
     )
