@@ -1,6 +1,6 @@
 """
-data_fetcher.py - 整合技術與籌碼資料擷取模組 (支援含英文後綴台股ETF + TWSE/TPEx官方日K即時補齊 + 雲端增量累積分點引擎 + 集保單檔FinMind與批次分離版)
-版本: 202611162134
+data_fetcher.py - 整合技術與籌碼資料擷取模組 (支援含英文後綴台股ETF + TWSE/TPEx官方日K即時補齊 + 雲端增量累積分點引擎 + 賣超負值排序修正版)
+版本: 202611172010
 """
 import os
 import re
@@ -16,7 +16,7 @@ from datetime import datetime, timedelta
 from urllib.parse import urljoin, urlparse, parse_qs, urlencode, urlunparse
 
 MODULE_NAME = "data_fetcher"
-MODULE_VERSION = "202611162134"
+MODULE_VERSION = "202611172010"
 
 from storage import (
     StockChipStorage,
@@ -28,7 +28,6 @@ from storage import (
 )
 
 FINMIND_TOKEN = ""
-
 MDJ_BASE_DOMAIN = "https://fubon-ebrokerdj.fbs.com.tw"
 MDJ_HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
@@ -131,7 +130,6 @@ def _fetch_tw_official_month_k(pure_code: str, full_ticker: str = None) -> pd.Da
 
     if not rows:
         return pd.DataFrame()
-
     df_off = pd.DataFrame(rows, columns=["Date", "Open", "High", "Low", "Close", "Volume"])
     df_off.set_index("Date", inplace=True)
     df_off = df_off[~df_off.index.duplicated(keep="last")].sort_index()
@@ -147,7 +145,6 @@ def fetch_stock_daily_k(raw_ticker: str, period: str = "1y", base_date: str = No
     if not raw_str:
         return None
     pure_code = raw_str.upper()
-
     is_index = pure_code.startswith("^")
     is_tw_etf_or_stk = is_tw_stock_or_etf(pure_code)
 
@@ -170,8 +167,8 @@ def fetch_stock_daily_k(raw_ticker: str, period: str = "1y", base_date: str = No
     storage = StockChipStorage(pure_code)
     db_df = storage.load_daily_k_df()
     last_k_date = storage.get_latest_daily_k_date()
-    shares_outstanding = None
 
+    shares_outstanding = None
     ticker = yf.Ticker(target_ticker)
     if is_tw_etf_or_stk:
         try:
@@ -271,12 +268,10 @@ def sync_chip_data(
     existing_dates = set(existing_inst_df['date'].dt.strftime('%Y-%m-%d')) if not existing_inst_df.empty else set()
     recent_k_dates = [d.strftime('%Y-%m-%d') for d in df_dates[-30:]]
     missing_inst_dates = [d for d in recent_k_dates if d not in existing_dates]
-
     if now_tw_date_str in missing_inst_dates and now_tw.hour < 16:
         missing_inst_dates.remove(now_tw_date_str)
 
     should_fetch_inst = force_refresh or (len(missing_inst_dates) > 0)
-
     should_fetch_margin = force_refresh
     if not should_fetch_margin:
         if not last_margin_date:
@@ -325,7 +320,6 @@ def sync_chip_data(
 
     if status_placeholder:
         status_placeholder.empty()
-
     return (
         storage.load_institutional_df(),
         storage.load_margin_df(),
@@ -350,7 +344,6 @@ def fetch_institutional_investors(
         sample_dates = [d for d in df_dates if d.strftime('%Y-%m-%d') > start_date_exclusive]
     else:
         sample_dates = list(df_dates[-5:])
-
     if not sample_dates:
         return []
 
@@ -650,11 +643,11 @@ def fetch_tdcc_holding_history(pure_code: str, weeks: int = 6) -> list:
             data = res.json().get("data", [])
             if data:
                 level_text_map = {
-                    "1-999": 1, "1,000-5,000": 2, "5,001-10,000": 3,
-                    "10,001-15,000": 4, "15,001-20,000": 5, "20,001-30,000": 6,
-                    "30,001-40,000": 7, "40,001-50,000": 8, "50,001-100,000": 9,
-                    "100,001-200,000": 10, "200,001-400,000": 11, "400,001-600,000": 12,
-                    "600,001-800,000": 13, "800,001-1,000,000": 14, "more than 1,000,001": 15
+                    "1-999": 1, "1,000-5,000": 2, "5,001-10,000": 3, "10,001-15,000": 4,
+                    "15,001-20,000": 5, "20,001-30,000": 6, "30,001-40,000": 7, "40,001-50,000": 8,
+                    "50,001-100,000": 9, "100,001-200,000": 10, "200,001-400,000": 11,
+                    "400,001-600,000": 12, "600,001-800,000": 13, "800,001-1,000,000": 14,
+                    "more than 1,000,001": 15
                 }
                 for row in data:
                     d_str = str(row.get("date", "")).strip()
@@ -663,7 +656,7 @@ def fetch_tdcc_holding_history(pure_code: str, weeks: int = 6) -> list:
                     lvl_num = level_text_map.get(lvl_raw)
                     if not lvl_num:
                         m = re.match(r"^(\d+)", lvl_raw)
-                        if m:
+                        if m and 1 <= int(m.group(1)) <= 15:
                             lvl_num = int(m.group(1))
                     if d_str and lvl_num and 1 <= lvl_num <= 15:
                         records.append((d_str, lvl_num, pct))
@@ -672,27 +665,12 @@ def fetch_tdcc_holding_history(pure_code: str, weeks: int = 6) -> list:
     return records
 
 
-# ==============================================================================
-# 券商分點進出買賣超資料擷取引擎 (富邦 eBroker / MoneyDJ)
-# ==============================================================================
+# =====================================================================
+# 券商分點區間排行與單一分點逐日明細爬蟲
+# =====================================================================
 
-def _parse_int_vol(val_str: str) -> int:
-    s = str(val_str or "").replace(",", "").replace("+", "").replace(" ", "").strip()
-    if not s or s in ("-", "--", "—"):
-        return 0
-    try:
-        return int(round(float(s)))
-    except Exception:
-        return 0
-
-
-def _is_gov_broker(broker_name: str) -> bool:
-    b = str(broker_name or "").strip()
-    return any(b.startswith(p) for p in GOV_BROKER_PREFIXES)
-
-
-def _decode_mdj_html(resp: requests.Response) -> str:
-    raw = resp.content
+def _decode_mdj_response(res: requests.Response) -> str:
+    raw = res.content
     for enc in ("cp950", "big5", "utf-8"):
         try:
             return raw.decode(enc)
@@ -701,186 +679,180 @@ def _decode_mdj_html(resp: requests.Response) -> str:
     return raw.decode("utf-8", errors="ignore")
 
 
-def _extract_td_text_and_link(td_tag, page_url: str) -> tuple:
-    txt = td_tag.get_text(strip=True).replace("\xa0", "").strip()
-    a_tag = td_tag.find("a", href=True)
-    href = urljoin(page_url, a_tag["href"]) if a_tag else ""
-    return txt, href
+def _parse_int_vol(txt: str) -> int:
+    s = re.sub(r"[^\d\-]", "", str(txt or "").replace(",", ""))
+    if s in ("", "-"):
+        return 0
+    try:
+        return int(s)
+    except Exception:
+        return 0
 
 
-def _parse_broker_ranking_html(html_text: str, page_url: str) -> tuple:
-    soup = BeautifulSoup(html_text, "html.parser")
-    buy_rows = []
-    sell_rows = []
-
-    for tr in soup.find_all("tr"):
-        tds = tr.find_all("td", recursive=False)
-        if not tds:
-            tds = tr.find_all("td")
-        if len(tds) >= 10:
-            b_name, b_href = _extract_td_text_and_link(tds[0], page_url)
-            b_buy = _parse_int_vol(tds[1].get_text(strip=True))
-            b_sell = _parse_int_vol(tds[2].get_text(strip=True))
-            b_net = _parse_int_vol(tds[3].get_text(strip=True))
-            b_ratio = tds[4].get_text(strip=True).replace("\xa0", "")
-
-            if b_name and b_name not in ("買超券商", "券商名稱", "合計", "總計") and (b_buy > 0 or b_sell > 0 or b_net != 0):
-                buy_rows.append({
-                    "分點名稱": b_name,
-                    "體系": "八大官股" if _is_gov_broker(b_name) else "一般券商",
-                    "買進(張)": b_buy,
-                    "賣出(張)": b_sell,
-                    "買賣超(張)": b_net,
-                    "佔比": b_ratio,
-                    "明細網址": b_href
-                })
-
-            s_name, s_href = _extract_td_text_and_link(tds[5], page_url)
-            s_buy = _parse_int_vol(tds[6].get_text(strip=True))
-            s_sell = _parse_int_vol(tds[7].get_text(strip=True))
-            s_net = _parse_int_vol(tds[8].get_text(strip=True))
-            s_ratio = tds[9].get_text(strip=True).replace("\xa0", "")
-
-            if s_name and s_name not in ("賣超券商", "券商名稱", "合計", "總計") and (s_buy > 0 or s_sell > 0 or s_net != 0):
-                sell_rows.append({
-                    "分點名稱": s_name,
-                    "體系": "八大官股" if _is_gov_broker(s_name) else "一般券商",
-                    "買進(張)": s_buy,
-                    "賣出(張)": s_sell,
-                    "買賣超(張)": s_net,
-                    "佔比": s_ratio,
-                    "明細網址": s_href
-                })
-        elif len(tds) == 5:
-            name, href = _extract_td_text_and_link(tds[0], page_url)
-            buy_v = _parse_int_vol(tds[1].get_text(strip=True))
-            sell_v = _parse_int_vol(tds[2].get_text(strip=True))
-            net_v = _parse_int_vol(tds[3].get_text(strip=True))
-            ratio_s = tds[4].get_text(strip=True).replace("\xa0", "")
-            if name and name not in ("買超券商", "賣超券商", "券商名稱", "合計", "總計") and (buy_v > 0 or sell_v > 0 or net_v != 0):
-                item = {
-                    "分點名稱": name,
-                    "體系": "八大官股" if _is_gov_broker(name) else "一般券商",
-                    "買進(張)": buy_v,
-                    "賣出(張)": sell_v,
-                    "買賣超(張)": net_v,
-                    "佔比": ratio_s,
-                    "明細網址": href
-                }
-                if net_v >= 0:
-                    buy_rows.append(item)
-                else:
-                    sell_rows.append(item)
-
-    df_buy = pd.DataFrame(buy_rows)
-    df_sell = pd.DataFrame(sell_rows)
-
-    if not df_buy.empty:
-        df_buy = df_buy.drop_duplicates(subset=["分點名稱"]).sort_values(by="買賣超(張)", ascending=False).reset_index(drop=True)
-    if not df_sell.empty:
-        df_sell = df_sell.drop_duplicates(subset=["分點名稱"]).sort_values(by="買賣超(張)", ascending=True).reset_index(drop=True)
-
-    return df_buy, df_sell
+def _classify_broker_system(broker_name: str) -> str:
+    b = str(broker_name or "").strip()
+    if any(b.startswith(p) for p in GOV_BROKER_PREFIXES):
+        return "八大官股"
+    return "一般券商"
 
 
-def fetch_stock_broker_range_ranking(pure_code: str, start_date: str, end_date: str) -> tuple:
+def fetch_stock_broker_range_ranking(pure_code: str, start_date: str, end_date: str):
     """
-    擷取指定股票在 [start_date, end_date] 區間的券商分點買超/賣超排行。
-    支援台股個股及含英文後綴之 ETF（如 00632R、00664R、00676R、00631L）。
+    自富邦券商 MoneyDJ 介面擷取指定區間買超前10名與賣超前10名分點清單。
+    【修訂說明 2026-11-17】【修改目的與防呆防錯原因】：
+    1. 修改目的：修正賣超前10名排行榜排序與負號表示，確保買賣超淨賣超統一為負值（< 0），
+       並依買賣超由小到大（ascending=True，最負賣超最多張排第一位）排序。
+    2. 防呆防錯原因：富邦券商「賣超排行」網頁表格的買賣超欄位偶爾以正數呈現賣超張數，
+       若未強制轉為負號並以 ascending=True 排序，會導致排行顛倒且前端誤顯示為紅柱正號。
+    回傳: (df_buy, df_sell)
     """
     code = str(pure_code or "").strip().upper()
     if not code or code.startswith("^") or not is_tw_stock_or_etf(code):
         return pd.DataFrame(), pd.DataFrame()
 
-    s_norm = str(start_date).strip().replace("/", "-")
-    e_norm = str(end_date).strip().replace("/", "-")
+    s_fmt = str(start_date).strip().replace("/", "-")
+    e_fmt = str(end_date).strip().replace("/", "-")
 
     candidate_urls = [
-        f"{MDJ_BASE_DOMAIN}/z/zc/zco/zco.djhtm?a={code}&e={s_norm}&f={e_norm}",
+        f"{MDJ_BASE_DOMAIN}/z/zc/zco/zco_{code}_{s_fmt}_{e_fmt}.djhtm",
+        f"{MDJ_BASE_DOMAIN}/z/zc/zco/zco.djhtm?a={code}&e={s_fmt}&f={e_fmt}",
         f"{MDJ_BASE_DOMAIN}/z/zc/zco/zco_{code}.djhtm",
     ]
 
-    for url in candidate_urls:
+    html_text = ""
+    used_url = candidate_urls[0]
+    for u in candidate_urls:
         try:
-            resp = requests.get(url, headers=MDJ_HEADERS, timeout=6)
-            if resp.status_code != 200:
-                continue
-            html_text = _decode_mdj_html(resp)
-            df_buy, df_sell = _parse_broker_ranking_html(html_text, url)
-            if not df_buy.empty or not df_sell.empty:
-                return df_buy, df_sell
+            res = requests.get(u, headers=MDJ_HEADERS, timeout=8)
+            if res.status_code == 200:
+                decoded = _decode_mdj_response(res)
+                if "買超" in decoded and "賣超" in decoded:
+                    html_text = decoded
+                    used_url = u
+                    break
         except Exception:
             continue
 
-    return pd.DataFrame(), pd.DataFrame()
+    if not html_text:
+        return pd.DataFrame(), pd.DataFrame()
 
+    soup = BeautifulSoup(html_text, "html.parser")
+    buy_rows, sell_rows = [], []
 
-def _normalize_tw_date_str(raw_d: str) -> str:
-    s = str(raw_d or "").strip()
-    m_roc = re.match(r"^(\d{2,3})[/-](\d{1,2})[/-](\d{1,2})$", s)
-    if m_roc:
-        y = int(m_roc.group(1)) + 1911
-        return f"{y:04d}-{int(m_roc.group(2)):02d}-{int(m_roc.group(3)):02d}"
-    m_ad = re.match(r"^(\d{4})[/-](\d{1,2})[/-](\d{1,2})$", s)
-    if m_ad:
-        return f"{int(m_ad.group(1)):04d}-{int(m_ad.group(2)):02d}-{int(m_ad.group(3)):02d}"
-    return ""
+    def build_detail_url(href: str) -> str:
+        full_u = urljoin(used_url, href)
+        parsed = urlparse(full_u)
+        qs = parse_qs(parsed.query)
+        qs["e"] = [s_fmt]
+        qs["f"] = [e_fmt]
+        new_q = urlencode(qs, doseq=True)
+        return urlunparse((parsed.scheme, parsed.netloc, parsed.path, parsed.params, new_q, parsed.fragment))
+
+    for tr in soup.find_all("tr"):
+        tds = tr.find_all("td")
+        if len(tds) >= 10:
+            left_link = tds[0].find("a")
+            if left_link and "zco0" in (left_link.get("href") or "").lower():
+                b_name = left_link.get_text(strip=True)
+                buy_v = _parse_int_vol(tds[1].get_text(strip=True))
+                sell_v = _parse_int_vol(tds[2].get_text(strip=True))
+                net_raw = _parse_int_vol(tds[3].get_text(strip=True))
+                net_v = abs(net_raw) if net_raw != 0 else max(0, buy_v - sell_v)
+                ratio_s = tds[4].get_text(strip=True)
+                if b_name and net_v > 0:
+                    buy_rows.append({
+                        "分點名稱": b_name,
+                        "體系": _classify_broker_system(b_name),
+                        "買進(張)": buy_v,
+                        "賣出(張)": sell_v,
+                        "買賣超(張)": net_v,
+                        "佔比": ratio_s,
+                        "明細網址": build_detail_url(left_link.get("href"))
+                    })
+
+            right_link = tds[5].find("a")
+            if right_link and "zco0" in (right_link.get("href") or "").lower():
+                s_name = right_link.get_text(strip=True)
+                buy_v2 = _parse_int_vol(tds[6].get_text(strip=True))
+                sell_v2 = _parse_int_vol(tds[7].get_text(strip=True))
+                net_raw2 = _parse_int_vol(tds[8].get_text(strip=True))
+                mag2 = abs(net_raw2) if net_raw2 != 0 else max(0, sell_v2 - buy_v2)
+                net_v2 = -mag2
+                ratio_s2 = tds[9].get_text(strip=True)
+                if s_name and net_v2 < 0:
+                    sell_rows.append({
+                        "分點名稱": s_name,
+                        "體系": _classify_broker_system(s_name),
+                        "買進(張)": buy_v2,
+                        "賣出(張)": sell_v2,
+                        "買賣超(張)": net_v2,
+                        "佔比": ratio_s2,
+                        "明細網址": build_detail_url(right_link.get("href"))
+                    })
+
+    df_buy = pd.DataFrame(buy_rows)
+    df_sell = pd.DataFrame(sell_rows)
+    if not df_buy.empty:
+        df_buy = df_buy.drop_duplicates(subset=["分點名稱"]).sort_values(by="買賣超(張)", ascending=False).head(10).reset_index(drop=True)
+    if not df_sell.empty:
+        df_sell = df_sell.drop_duplicates(subset=["分點名稱"]).sort_values(by="買賣超(張)", ascending=True).head(10).reset_index(drop=True)
+    return df_buy, df_sell
 
 
 def fetch_single_broker_daily_series(detail_url: str, start_date: str, end_date: str) -> pd.DataFrame:
     """
-    依據券商分點明細網址 (zco0.djhtm)，擷取該單一分點在 [start_date, end_date] 區間內的每日買進、賣出與買賣超張數。
+    擷取單一券商分點在指定區間內的每日買進、賣出與買賣超張數明細。
     """
     if not detail_url:
         return pd.DataFrame()
 
-    s_norm = str(start_date).strip().replace("/", "-")
-    e_norm = str(end_date).strip().replace("/", "-")
+    s_fmt = str(start_date).strip().replace("/", "-")
+    e_fmt = str(end_date).strip().replace("/", "-")
 
     parsed = urlparse(detail_url)
     qs = parse_qs(parsed.query)
-    qs["e"] = [s_norm]
-    qs["f"] = [e_norm]
-    new_query = urlencode(qs, doseq=True)
-    target_url = urlunparse((parsed.scheme, parsed.netloc, parsed.path, parsed.params, new_query, parsed.fragment))
+    qs["e"] = [s_fmt]
+    qs["f"] = [e_fmt]
+    target_url = urlunparse((parsed.scheme, parsed.netloc, parsed.path, parsed.params, urlencode(qs, doseq=True), parsed.fragment))
 
-    urls_to_try = [target_url]
-    if target_url != detail_url:
-        urls_to_try.append(detail_url)
+    try:
+        res = requests.get(target_url, headers=MDJ_HEADERS, timeout=8)
+        if res.status_code != 200:
+            return pd.DataFrame()
+        html_text = _decode_mdj_response(res)
+    except Exception:
+        return pd.DataFrame()
 
-    for url in urls_to_try:
-        try:
-            resp = requests.get(url, headers=MDJ_HEADERS, timeout=6)
-            if resp.status_code != 200:
-                continue
-            html_text = _decode_mdj_html(resp)
-            soup = BeautifulSoup(html_text, "html.parser")
-            records = []
-            for tr in soup.find_all("tr"):
-                tds = tr.find_all("td")
-                if len(tds) >= 4:
-                    d_iso = _normalize_tw_date_str(tds[0].get_text(strip=True))
-                    if not d_iso:
-                        continue
-                    buy_v = _parse_int_vol(tds[1].get_text(strip=True))
-                    sell_v = _parse_int_vol(tds[2].get_text(strip=True))
-                    net_v = _parse_int_vol(tds[3].get_text(strip=True))
-                    if net_v == 0 and (buy_v != 0 or sell_v != 0):
-                        net_v = buy_v - sell_v
-                    records.append({
-                        "日期": d_iso,
-                        "買進(張)": buy_v,
-                        "賣出(張)": sell_v,
-                        "買賣超(張)": net_v
-                    })
-            if records:
-                df_daily = pd.DataFrame(records)
-                df_daily = df_daily.drop_duplicates(subset=["日期"]).sort_values(by="日期", ascending=True).reset_index(drop=True)
-                df_daily = df_daily[(df_daily["日期"] >= s_norm) & (df_daily["日期"] <= e_norm)].reset_index(drop=True)
-                if not df_daily.empty:
-                    return df_daily
-        except Exception:
+    soup = BeautifulSoup(html_text, "html.parser")
+    records = []
+    for tr in soup.find_all("tr"):
+        tds = tr.find_all("td")
+        if len(tds) < 4:
             continue
+        d_txt = tds[0].get_text(strip=True)
+        m = re.match(r"^(\d{2,4})[/\-](\d{1,2})[/\-](\d{1,2})$", d_txt)
+        if not m:
+            continue
+        yr = int(m.group(1))
+        if yr < 1911:
+            yr += 1911
+        iso_d = f"{yr:04d}-{int(m.group(2)):02d}-{int(m.group(3)):02d}"
+        if iso_d < s_fmt or iso_d > e_fmt:
+            continue
+        buy_v = _parse_int_vol(tds[1].get_text(strip=True))
+        sell_v = _parse_int_vol(tds[2].get_text(strip=True))
+        net_v = _parse_int_vol(tds[3].get_text(strip=True))
+        if net_v == 0 and (buy_v != 0 or sell_v != 0):
+            net_v = buy_v - sell_v
+        records.append({
+            "日期": iso_d,
+            "買進(張)": buy_v,
+            "賣出(張)": sell_v,
+            "買賣超(張)": net_v
+        })
 
-    return pd.DataFrame()
+    if not records:
+        return pd.DataFrame()
+    df_out = pd.DataFrame(records).drop_duplicates(subset=["日期"]).sort_values(by="日期").reset_index(drop=True)
+    return df_out
 # EOF data_fetcher.py
