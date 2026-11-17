@@ -1,16 +1,16 @@
 """
 frontend.py - 前端 HTML/CSS 渲染模組
-(籌碼標準字典防快取遺失 + 分點柱狀圖X軸僅首日標示月份 + 分點60日下拉即時提示 + 賣超負號與綠柱修正版)
-版本: 202611172016
+(籌碼標準字典防快取遺失 + 分點柱狀圖X軸僅首日標示月份 + 分點60日下拉即時提示 + 賣超負號與綠柱 + 分點關注日防誤觸跳回首日修正版)
+版本: 202611172039
 """
 import json
 import pandas as pd
 
 MODULE_NAME = "frontend"
-MODULE_VERSION = "202611172016"
+MODULE_VERSION = "202611172039"
 
 
-def get_legend_html(version_tag: str = "202611172016") -> str:
+def get_legend_html(version_tag: str = "202611172039") -> str:
     return f"""<div style="font-size:14px;margin-bottom:4px;padding:2px 8px;display:inline-flex;align-items:center;background:#f8fafc;border-radius:4px;border:1px solid #e2e8f0;"><span style="background:#2c3e50;color:#fff;padding:2px 8px;border-radius:4px;font-weight:bold;font-size:12px;">台股技術與籌碼分析 v{version_tag}</span></div>"""
 
 
@@ -367,7 +367,9 @@ function render(idx){if(idx<0||idx>=dates.length)return;curIdx=idx;var d=dates[i
   pushH();
 }
 if(selEl)selEl.addEventListener('change',function(){render(curIdx);});
-window.addEventListener('message',function(ev){var msg=ev.data||{};if(msg.type==='MCHART_SYNC_FOCUS'&&msg.idx>=0)render(msg.idx);});
+// 【防呆防錯備註 2026-11-17 — 嚴禁誤刪或改動引發重工】：
+// 分點頁籤關注交易日固定由初始基準日 curIdx (__INIT_END__) 決定，不可監聽 MCHART_SYNC_FOCUS 連動改寫，
+// 避免手機上下滑動或切換頁籤時觸控事件算出 idx=0（1y區間首日，如 2025-12-04）而覆蓋關注交易日。
 render(curIdx);
 })();</script>"""
     return (tpl.replace("__CID__", chart_id).replace("__DATES__", json.dumps(dates_list))
