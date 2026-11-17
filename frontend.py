@@ -1,12 +1,12 @@
 """
 frontend.py - 前端圖表 HTML / JavaScript 互動渲染模組 (支援三頁籤完全解耦：主圖 + 指標頁籤 + 籌碼頁籤 + 分點頁籤預設20日與60日按需載入＋買超紅字正號/賣超綠字負號與紅綠柱狀圖版)
-版本: 202611180707
+版本: 202611180719
 """
 import json
 import pandas as pd
 
 MODULE_NAME = "frontend"
-MODULE_VERSION = "202611180707"
+MODULE_VERSION = "202611180719"
 
 COMMON_CSS = """
 html, body { margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: #ffffff; overflow-x: hidden; }
@@ -569,8 +569,10 @@ table.b-tbl td.val-dn { color: #16a085 !important; font-weight: 700 !important; 
   }
 
   // 【修訂說明 2026-11-18】【修改目的與防呆防錯原因】：
-  // 修改目的：逐日判斷買賣超正負值（v >= 0 紅柱 #eb4d4b、v < 0 綠柱 #16a085），並同步標示標題紅字(+)與綠字(-)。
-  // 防呆防錯原因：避免賣超分點或單日賣超數值全部渲染成單一紅色長條，確保圖表與表格紅買綠賣完全一致。
+  // 1. 修改目的：
+  //    (a) 賣超前五大分點（isBuyGroup === false）因原始明細數值以「賣超為正、買超為負」儲存，與圖表「買超正紅柱、賣超負綠柱」相反，故統一乘以 -1 反轉數值與柱狀方向，使有買有賣之每日柱狀體顏色（買超紅柱 #eb4d4b、賣超綠柱 #16a085）與數值正負完全一致。
+  //    (b) X 軸刻度比照主圖規則，僅在每月第一個交易日顯示月份（如「10月」、「11月」），移除冗餘年份與日期，避免 X 軸文字擁擠重疊。
+  // 2. 防呆防錯原因：使用 monthTicksVals / monthTicksText 精準對應 category 型態之 xArr 日期字串，確保 hover 仍顯示完整 YYYY-MM-DD，而軸線僅呈現簡潔月份標示。
   function renderBars(dayObj) {
     var wKey = 'w' + (selEl.value || '10');
     var wObj = dayObj[wKey] || {};
@@ -597,8 +599,31 @@ table.b-tbl td.val-dn { color: #16a085 !important; font-weight: 700 !important; 
         div.className = 'b-bar';
         host.appendChild(div);
         var xArr = item.dates || [];
-        var yArr = item.nets || [];
-        var barColors = yArr.map(function(v) { return Number(v) >= 0 ? '#eb4d4b' : '#16a085'; });
+        var rawYArr = item.nets || [];
+        // 賣超前五大原始明細為「賣超正、買超負」，反轉為「買超正(+)、賣超負(-)」以對齊紅買綠賣柱狀圖
+        var yArr = rawYArr.map(function(v) {
+          var num = Number(v || 0);
+          return isBuyGroup ? num : -num;
+        });
+        var barColors = yArr.map(function(v) { return v >= 0 ? '#eb4d4b' : '#16a085'; });
+
+        // 僅於每月第一個交易日顯示月份（例如：10月、11月），不需要年份與日
+        var monthTicksVals = [];
+        var monthTicksText = [];
+        var lastYm = '';
+        for (var k = 0; k < xArr.length; k++) {
+          var dStr = String(xArr[k] || '');
+          if (dStr.length >= 7) {
+            var ym = dStr.slice(0, 7);
+            if (ym !== lastYm) {
+              lastYm = ym;
+              var mNum = parseInt(dStr.slice(5, 7), 10);
+              monthTicksVals.push(dStr);
+              monthTicksText.push((isNaN(mNum) ? dStr.slice(5, 7) : String(mNum)) + '月');
+            }
+          }
+        }
+
         var rawTot = Math.abs(Number(item.total_net || 0));
         var signedTot = isBuyGroup ? rawTot : -rawTot;
         var titleColor = signedTot >= 0 ? '#eb4d4b' : '#16a085';
@@ -615,7 +640,14 @@ table.b-tbl td.val-dn { color: #16a085 !important; font-weight: 700 !important; 
           margin: { l: 42, r: 10, t: 26, b: 22 },
           height: 150,
           template: 'plotly_white',
-          xaxis: { type: 'category', tickfont: { size: 9.5 } },
+          xaxis: {
+            type: 'category',
+            tickmode: 'array',
+            tickvals: monthTicksVals,
+            ticktext: monthTicksText,
+            tickangle: 0,
+            tickfont: { size: 10 }
+          },
           yaxis: { tickfont: { size: 10 }, zeroline: true, zerolinecolor: '#94a3b8' }
         }, cfg);
       }
