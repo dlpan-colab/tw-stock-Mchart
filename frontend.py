@@ -1,13 +1,13 @@
 """
 frontend.py - 前端圖表 HTML / JavaScript 互動渲染模組
 (支援三頁籤完全解耦：主圖 + 指標頁籤 + 籌碼頁籤 + 分點頁籤預設20日與60日按需載入＋買超紅字正號/賣超綠字負號版)
-版本: 202611172146
+版本: 202611172155
 """
 import json
 import pandas as pd
 
 MODULE_NAME = "frontend"
-MODULE_VERSION = "202611172146"
+MODULE_VERSION = "202611172155"
 
 COMMON_CSS = """
 html, body { margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: #ffffff; overflow-x: hidden; }
@@ -447,9 +447,7 @@ def get_chip_tab_html(fig_btm: dict, df: pd.DataFrame, chart_id: str, chip_heigh
             .replace("__M1__", str(m1_thresh))
             .replace("__M2__", str(m2_thresh)))
 
-
-def get_broker_tab_html(df: pd.DataFrame, broker_payload: dict, chart_id: str,
-                        end_idx: int, is_mobile: bool = False) -> str:
+def get_broker_tab_html(df: pd.DataFrame, broker_payload: dict, chart_id: str, end_idx: int, disp_days: int = 20, is_mobile: bool = False) -> str:
     dates_list = [d.strftime('%Y-%m-%d') for d in df.index]
     is_index = len(dates_list) == 0 or (df['Turnover_Rate'].max() == 0 and df['Foreign_Net'].abs().max() == 0)
     safe_payload = broker_payload if isinstance(broker_payload, dict) else {"by_date": {}}
