@@ -1,370 +1,655 @@
 """
-frontend.py - 前端 HTML/CSS 渲染模組 (籌碼標準字典防快取遺失 + 分點柱狀圖X軸僅首日標示月份 + 分點60日下拉即時提示版)
-版本: 202611162200
+frontend.py - 前端圖表 HTML / JavaScript 互動渲染模組
+(支援三頁籤完全解耦：主圖 + 指標頁籤 + 籌碼頁籤 + 分點頁籤預設20日與60日按需載入＋買超紅字正號/賣超綠字負號版)
+版本: 202611172146
 """
 import json
 import pandas as pd
 
 MODULE_NAME = "frontend"
-MODULE_VERSION = "202611162200"
+MODULE_VERSION = "202611172146"
 
-
-def get_legend_html(version_tag: str = "202611162200") -> str:
-    return f"""<div style="font-size:14px;margin-bottom:4px;padding:2px 8px;display:inline-flex;align-items:center;background:#f8fafc;border-radius:4px;border:1px solid #e2e8f0;"><span style="background:#2c3e50;color:#fff;padding:2px 8px;border-radius:4px;font-weight:bold;font-size:12px;">台股技術與籌碼分析 v{version_tag}</span></div>"""
-
-
-def _series_to_json_nullable(df: pd.DataFrame, col: str, n_pts: int) -> str:
-    if col not in df.columns:
-        return json.dumps([None] * n_pts)
-    return json.dumps([None if pd.isna(v) else float(v) for v in df[col].tolist()])
-
-
-def _extract_dates_list(df: pd.DataFrame) -> list:
-    s = df['Date'] if 'Date' in df.columns else df.index
-    return s.strftime('%Y-%m-%d').tolist() if hasattr(s, 'strftime') else [str(x)[:10] for x in s]
-
-
-COMMON_CSS = """<style>
-html,body{margin:0;padding:0;background:transparent;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif}
-.frame-root{position:relative;width:100%;box-sizing:border-box;padding-bottom:4px}
-.touch-plot-box{position:relative;touch-action:pan-y!important;user-select:none!important;-webkit-user-select:none!important;width:100%!important;overflow:hidden}
-.pane-info-bar{font-size:13px;color:#2c3e50;background:#f8fafc;padding:4px 6px;border-radius:4px;border:1px solid #e2e8f0;white-space:normal;line-height:1.38;overflow-x:auto}
-@media(max-width:720px){.pane-info-bar{font-size:11.5px;line-height:1.32;padding:3px 5px}}
-.val-up{color:#eb4d4b;font-weight:bold}.val-dn{color:#2ecc71;font-weight:bold}.tag-lbl{margin-right:4px}
-.sync-crosshair-line{position:absolute;top:0;bottom:0;width:1px;border-left:1px dashed rgba(44,62,80,.85);pointer-events:none;display:none;z-index:999}
-.sync-price-line{position:absolute;left:80px;right:15px;height:1px;border-top:1px dashed rgba(44,62,80,.75);pointer-events:none;display:none;z-index:999}
-</style>"""
-
-SHARED_JS_HELPERS = """
-function broadcastToSiblings(p){try{if(window.parent&&window.parent.frames){for(var i=0;i<window.parent.frames.length;i++){if(window.parent.frames[i]!==window)window.parent.frames[i].postMessage(p,'*');}}}catch(e){}}
-function fmtNum(v,d){if(v===null||v===undefined||isNaN(v))return'-';return Number(v).toFixed(d!==undefined?d:2);}
-function fmtBias(v){if(v===null||v===undefined||isNaN(v))return'-';var n=Number(v),s=(n>0?'+':'')+n.toFixed(2)+'%';return n>0?'<span class="val-up">'+s+'</span>':(n<0?'<span class="val-dn">'+s+'</span>':s);}
-function fmtDiff(v,d){if(v===null||v===undefined||isNaN(v))return'-';var n=Number(v),s=n.toFixed(d!==undefined?d:0);return n>0?'<span class="val-up">+'+s+'</span>':(n<0?'<span class="val-dn">'+s+'</span>':s);}
+COMMON_CSS = """
+html, body { margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: #ffffff; overflow-x: hidden; }
+.frame-root { position: relative; width: 100%; box-sizing: border-box; padding-bottom: 4px; }
+.pane-info-bar {
+    font-size: 12px;
+    font-weight: 500;
+    color: #1e293b;
+    background: #f8fafc;
+    border: 1px solid #e2e8f0;
+    border-radius: 5px;
+    padding: 4px 6px;
+    margin: 2px 0;
+    line-height: 1.4;
+    word-break: break-all;
+}
+.val-up { color: #eb4d4b; font-weight: bold; }
+.val-dn { color: #16a085; font-weight: bold; }
+.val-flat { color: #333333; font-weight: bold; }
+.touch-plot-box { position: relative; width: 100%; touch-action: pan-y; user-select: none; -webkit-user-select: none; overflow: hidden; }
+.v-crosshair { position: absolute; top: 0; bottom: 0; width: 1px; background: rgba(41, 128, 185, 0.85); pointer-events: none; z-index: 40; display: none; }
+.nav-overlay { position: fixed; top: 50%; transform: translateY(-50%); z-index: 9999; background: rgba(15, 23, 42, 0.45); color: #fff; border: none; border-radius: 50%; width: 32px; height: 32px; font-size: 15px; cursor: pointer; display: flex; align-items: center; justify-content: center; }
+.nav-overlay:hover { background: rgba(15, 23, 42, 0.78); }
+.nav-prev { left: 4px; }
+.nav-next { right: 4px; }
 """
 
 
-def get_top_chart_html(fig_top, df: pd.DataFrame, chart_id: str, top_height: int = 270, initial_disp_days: int = 20, initial_end_idx: int = None) -> str:
-    n_pts = len(df)
-    end_idx = n_pts - 1 if initial_end_idx is None else initial_end_idx
-    dates_list = _extract_dates_list(df)
-    vols_list = df['Volume_Sheets'].tolist() if 'Volume_Sheets' in df.columns else (df['Volume'] / 1000.0).tolist()
-    to_col = 'Turnover_Rate' if 'Turnover_Rate' in df.columns else ('TurnoverRate' if 'TurnoverRate' in df.columns else None)
-    turnover_list = df[to_col].fillna(0).tolist() if to_col else [0] * n_pts
-
-    tpl = COMMON_CSS + """
-<div class="frame-root" id="__CID___root">
-  <div id="__CID___info1" class="pane-info-bar" style="margin-bottom:2px;">正在載入...</div>
-  <div id="__CID___top" class="touch-plot-box" style="height:__TOP_H__px;">
-    <div id="__CID___line_x" class="sync-crosshair-line"></div>
-    <div id="__CID___line_y" class="sync-price-line"></div>
-  </div>
-</div>
-<script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>
-<script>(function(){__HELPERS__
-var pTop=__P_TOP__,dates=__DATES__,opens=__OPENS__,highs=__HIGHS__,lows=__LOWS__,closes=__CLOSES__,vols=__VOLS__;
-var ma5s=__MA5S__,ma20s=__MA20S__,ma60s=__MA60S__,turnovers=__TURNOVERS__;
-var totalPoints=dates.length,initEnd=__INIT_END__,targetDays=Number(__DISP_DAYS__)||20;
-var currentR0=Math.max(0,initEnd-targetDays+1)-0.5,currentR1=initEnd+0.5,isUpdating=false;
-var elTop=document.getElementById('__CID___top'),info1=document.getElementById('__CID___info1');
-var lineX=document.getElementById('__CID___line_x'),lineY=document.getElementById('__CID___line_y');
-function calcBounds(r0,r1){var s=Math.max(0,Math.floor(r0)),e=Math.min(totalPoints-1,Math.ceil(r1)),pMin=Infinity,pMax=-Infinity,vMax=0;
-for(var i=s;i<=e;i++){var h=Number(highs[i]),l=Number(lows[i]);
-if(!isNaN(h)&&h>0)pMax=Math.max(pMax,h);if(!isNaN(l)&&l>0)pMin=Math.min(pMin,l);
-[ma5s[i],ma20s[i],ma60s[i]].forEach(function(m){var v=Number(m);if(!isNaN(v)&&v>0){pMax=Math.max(pMax,v);pMin=Math.min(pMin,v);}});
-var vol=Number(vols[i]);if(!isNaN(vol)&&vol>0)vMax=Math.max(vMax,vol);
-}
-if(pMin===Infinity){pMin=0;pMax=100;}
-var pad=(pMax>pMin)?(pMax-pMin)*0.10:2.0;
-return{p:[pMin-pad,pMax+pad],v:[0,vMax>0?vMax*1.25:1000]};
-}
-function renderInfo(idx){if(idx<0||idx>=totalPoints)return;
-var d=dates[idx],c=closes[idx],o=opens[idx],h=highs[idx],l=lows[idx],prev=idx>0?closes[idx-1]:o;
-var diff=c-prev,pct=prev?(diff/prev*100):0,cls=diff>0?'val-up':(diff<0?'val-dn':'');
-info1.innerHTML='<span class="tag-lbl"><b>'+d+'</b></span>開:<span class="'+(o>prev?'val-up':(o<prev?'val-dn':''))+'">'+fmtNum(o)+'</span> 高:<span class="'+(h>prev?'val-up':(h<prev?'val-dn':''))+'">'+fmtNum(h)+'</span> 低:<span class="'+(l>prev?'val-up':(l<prev?'val-dn':''))+'">'+fmtNum(l)+'</span> 收:<span class="'+cls+'">'+fmtNum(c)+' ('+(diff>0?'+':'')+fmtNum(diff)+', '+(pct>0?'+':'')+fmtNum(pct)+'%)</span> 量:'+fmtNum(vols[idx],0)+'張 <span class="tag-lbl"><b>換手:'+fmtNum(turnovers[idx])+'%</b></span> MA5:'+fmtNum(ma5s[idx])+' MA20:'+fmtNum(ma20s[idx])+' MA60:'+fmtNum(ma60s[idx]);
-}
-var b0=calcBounds(currentR0,currentR1);
-pTop.layout.xaxis.range=[currentR0,currentR1];if(pTop.layout.xaxis2)pTop.layout.xaxis2.range=[currentR0,currentR1];
-pTop.layout.yaxis.range=b0.p;if(pTop.layout.yaxis2)pTop.layout.yaxis2.range=b0.v;
-Plotly.newPlot(elTop,pTop.data,pTop.layout,{responsive:true,displayModeBar:false,scrollZoom:false}).then(function(){renderInfo(initEnd);
-elTop.on('plotly_relayout',function(ed){if(isUpdating)return;
-var r0=ed['xaxis.range[0]']??ed['xaxis2.range[0]']??(ed['xaxis.range']?ed['xaxis.range'][0]:null);
-var r1=ed['xaxis.range[1]']??ed['xaxis2.range[1]']??(ed['xaxis.range']?ed['xaxis.range'][1]:null);
-if(r0===null||r1===null||(Math.abs(r0-currentR0)<0.001&&Math.abs(r1-currentR1)<0.001))return;
-isUpdating=true;var span=r1-r0,maxB=(totalPoints-1)+0.5;
-if(r1>maxB){r1=maxB;r0=r1-span;}currentR0=r0;currentR1=r1;
-var vb=calcBounds(r0,r1);broadcastToSiblings({type:'MCHART_SYNC_XRANGE',r0:r0,r1:r1});
-Plotly.relayout(elTop,{'xaxis.range':[r0,r1],'xaxis2.range':[r0,r1],'yaxis.range':vb.p,'yaxis2.range':vb.v}).finally(function(){setTimeout(function(){isUpdating=false;},20);});
-});
-window.addEventListener('message',function(ev){var msg=ev.data||{};
-if(msg.type==='MCHART_SYNC_XRANGE'&&!isUpdating){isUpdating=true;currentR0=msg.r0;currentR1=msg.r1;var vb=calcBounds(currentR0,currentR1);
-Plotly.relayout(elTop,{'xaxis.range':[currentR0,currentR1],'xaxis2.range':[currentR0,currentR1],'yaxis.range':vb.p,'yaxis2.range':vb.v}).finally(function(){setTimeout(function(){isUpdating=false;},20);});
-}else if(msg.type==='MCHART_SYNC_FOCUS'&&msg.idx>=0)renderInfo(msg.idx);
-});
-function onMove(e){var cx=(e.touches&&e.touches.length>0)?e.touches[0].clientX:e.clientX;if(cx===undefined)return;
-var rect=elTop.getBoundingClientRect(),relX=cx-rect.left,xa=elTop._fullLayout?elTop._fullLayout.xaxis:null,ya=elTop._fullLayout?elTop._fullLayout.yaxis:null;
-if(!xa||typeof xa.p2c!=='function')return;
-var pL=xa._offset??80,pLen=xa._length??(rect.width-pL-15);if(relX<pL||relX>pL+pLen)return;
-var idx=Math.round(xa.p2c(relX-pL));
-if(idx>=0&&idx<totalPoints){renderInfo(idx);lineX.style.left=(xa.c2p(idx)+pL)+'px';lineX.style.display='block';
-if(ya&&typeof ya.c2p==='function'&&closes[idx]!=null){lineY.style.top=(ya.c2p(closes[idx])+(ya._offset||0))+'px';lineY.style.display='block';}
-broadcastToSiblings({type:'MCHART_SYNC_FOCUS',idx:idx,showLine:true});
-}
-}
-function onLeave(){lineX.style.display='none';lineY.style.display='none';broadcastToSiblings({type:'MCHART_SYNC_FOCUS',idx:-1,showLine:false});}
-elTop.addEventListener('mousemove',onMove);elTop.addEventListener('touchmove',onMove,{passive:true});
-elTop.addEventListener('touchstart',onMove,{passive:true});elTop.addEventListener('mouseleave',onLeave);
-});
-})();</script>"""
-    return (tpl.replace("__CID__", chart_id).replace("__HELPERS__", SHARED_JS_HELPERS).replace("__TOP_H__", str(top_height))
-            .replace("__P_TOP__", fig_top.to_json()).replace("__DATES__", json.dumps(dates_list))
-            .replace("__OPENS__", json.dumps(df['Open'].tolist())).replace("__HIGHS__", json.dumps(df['High'].tolist()))
-            .replace("__LOWS__", json.dumps(df['Low'].tolist())).replace("__CLOSES__", json.dumps(df['Close'].tolist()))
-            .replace("__VOLS__", json.dumps(vols_list))
-            .replace("__MA5S__", json.dumps(df['MA5'].fillna(0).tolist() if 'MA5' in df.columns else [0] * n_pts))
-            .replace("__MA20S__", json.dumps(df['MA20'].fillna(0).tolist() if 'MA20' in df.columns else [0] * n_pts))
-            .replace("__MA60S__", json.dumps(df['MA60'].fillna(0).tolist() if 'MA60' in df.columns else [0] * n_pts))
-            .replace("__TURNOVERS__", json.dumps(turnover_list))
-            .replace("__DISP_DAYS__", str(initial_disp_days)).replace("__INIT_END__", str(end_idx))
-            )
+def get_legend_html() -> str:
+    return """
+    <div style="font-size:12px; color:#334155; background:#f1f5f9; padding:5px 8px; border-radius:5px; margin-bottom:4px; line-height:1.5;">
+      <b>📌 圖例與互動操作說明：</b>
+      <span style="color:#eb4d4b; font-weight:bold;">■ 紅K/買超/資增</span> ｜
+      <span style="color:#2ecc71; font-weight:bold;">■ 綠K/賣超/資減</span> ｜
+      <span style="color:#f1c40f; font-weight:bold;">— MA5</span> ｜
+      <span style="color:#e67e22; font-weight:bold;">— MA20/券資比</span> ｜
+      <span style="color:#9b59b6; font-weight:bold;">— MA60</span> ｜
+      <span style="color:#27ae60; font-weight:bold;">〔頭〕</span><span style="color:#e74c3c; font-weight:bold;">〔底〕</span> 5MA轉折 ｜
+      <span style="color:#1e3799; font-weight:bold;">▲</span> 周轉≥10% ｜
+      <span style="color:#d4ac0d; font-weight:bold;">▼</span> 周轉≥20%<br/>
+      <span style="color:#475569;">💡 點擊或滑動任一圖表可同步更新數值與跨頁籤關注交易日；左右拖曳平移 K 線、滾輪或雙指縮放日數。</span>
+    </div>
+    """
 
 
-def get_tech_tab_html(fig_btm, df: pd.DataFrame, chart_id: str, tech_height: int = 540, initial_disp_days: int = 20, initial_end_idx: int = None) -> str:
-    n_pts = len(df)
-    end_idx = n_pts - 1 if initial_end_idx is None else initial_end_idx
-    dates_list = _extract_dates_list(df)
-    fig_tech = fig_btm["tech"] if isinstance(fig_btm, dict) and "tech" in fig_btm else getattr(fig_btm, "_fig_tech", fig_btm)
+def _build_base_records_json(df: pd.DataFrame, is_index: bool) -> str:
+    records = []
+    for i in range(len(df)):
+        row = df.iloc[i]
+        d_str = df.index[i].strftime('%Y-%m-%d')
+        o = float(row['Open'])
+        h = float(row['High'])
+        l = float(row['Low'])
+        c = float(row['Close'])
+        prev_c = float(df['Close'].iloc[i - 1]) if i > 0 else o
+        chg = c - prev_c
+        pct = (chg / prev_c * 100.0) if prev_c != 0 else 0.0
+        vol_sh = float(row['Volume_Sheets']) if not pd.isna(row['Volume_Sheets']) else 0.0
+        to_rate = float(row['Turnover_Rate']) if ('Turnover_Rate' in df.columns and not pd.isna(row['Turnover_Rate'])) else 0.0
 
-    tpl = COMMON_CSS + """
-<div class="frame-root" id="__CID___tech_root">
-  <div id="__CID___info_tech" class="pane-info-bar" style="margin-bottom:3px;">正在載入指標...</div>
-  <div id="__CID___tech" class="touch-plot-box" style="height:__TECH_H__px;"><div id="__CID___line_tech" class="sync-crosshair-line"></div></div>
-</div>
-<script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>
-<script>(function(){__HELPERS__
-var pTech=__P_TECH__,dates=__DATES__,ks=__KS__,ds=__DS__,difs=__DIFS__,macds=__MACDS__,oscs=__OSCS__,obvs=__OBVS__,obvMas=__OBVMAS__;
-var bias20s=__BIAS20__,bias120s=__BIAS120__,bias240s=__BIAS240__,bias1200s=__BIAS1200__;
-var totalPoints=dates.length,initEnd=__INIT_END__,targetDays=Number(__DISP_DAYS__)||20;
-var currentR0=Math.max(0,initEnd-targetDays+1)-0.5,currentR1=initEnd+0.5,isUpdating=false;
-var elTech=document.getElementById('__CID___tech'),infoTech=document.getElementById('__CID___info_tech'),lineTech=document.getElementById('__CID___line_tech');
-function renderInfo(idx){if(idx<0||idx>=totalPoints)return;
-var d=dates[idx],oscClass=oscs[idx]>0?'val-up':(oscs[idx]<0?'val-dn':'');
-infoTech.innerHTML='<div><span class="tag-lbl"><b>'+d+'</b></span> <span class="tag-lbl"><b>KD(9)</b></span><span style="color:#e74c3c;">K:'+fmtNum(ks[idx],1)+'</span> <span style="color:#3498db;">D:'+fmtNum(ds[idx],1)+'</span> | <span class="tag-lbl"><b>OBV</b></span><span style="color:#16a085;">OBV:'+fmtNum(obvs[idx],0)+'</span> <span style="color:#8e44ad;">MA20:'+fmtNum(obvMas[idx],0)+'</span></div><div><span class="tag-lbl"><b>MACD('+d+')</b></span><span style="color:#f39c12;">DIF:'+fmtNum(difs[idx])+'</span> <span style="color:#2980b9;">MACD:'+fmtNum(macds[idx])+'</span> OSC:<span class="'+oscClass+'">'+fmtNum(oscs[idx])+'</span> | <span class="tag-lbl"><b>乖離率</b></span><span style="color:#e67e22;">20日:</span>'+fmtBias(bias20s[idx])+' <span style="color:#2980b9;">120日:</span>'+fmtBias(bias120s[idx])+' <span style="color:#8e44ad;">240日:</span>'+fmtBias(bias240s[idx])+' <span style="color:#e74c3c;">1200日:</span>'+fmtBias(bias1200s[idx])+'</div>';
-}
-for(var r=1;r<=4;r++){var kt=r===1?'xaxis':'xaxis'+r;if(pTech.layout&&pTech.layout[kt])pTech.layout[kt].range=[currentR0,currentR1];}
-Plotly.newPlot(elTech,pTech.data,pTech.layout,{responsive:true,displayModeBar:false,scrollZoom:false}).then(function(){renderInfo(initEnd);
-elTech.on('plotly_relayout',function(ed){if(isUpdating)return;var r0=null,r1=null;
-for(var k=1;k<=4;k++){var p=k===1?'xaxis':'xaxis'+k;if(ed[p+'.range[0]']!==undefined)r0=ed[p+'.range[0]'];if(ed[p+'.range[1]']!==undefined)r1=ed[p+'.range[1]'];}
-if(r0===null||r1===null||(Math.abs(r0-currentR0)<0.001&&Math.abs(r1-currentR1)<0.001))return;
-isUpdating=true;var span=r1-r0,maxB=(totalPoints-1)+0.5;
-if(r1>maxB){r1=maxB;r0=r1-span;}currentR0=r0;currentR1=r1;
-var upd={};for(var i=1;i<=4;i++)upd[(i===1?'xaxis':'xaxis'+i)+'.range']=[r0,r1];
-broadcastToSiblings({type:'MCHART_SYNC_XRANGE',r0:r0,r1:r1});
-Plotly.relayout(elTech,upd).finally(function(){setTimeout(function(){isUpdating=false;},20);});
-});
-window.addEventListener('message',function(ev){var msg=ev.data||{};
-if(msg.type==='MCHART_SYNC_XRANGE'&&!isUpdating){isUpdating=true;currentR0=msg.r0;currentR1=msg.r1;
-var upd={};for(var i=1;i<=4;i++)upd[(i===1?'xaxis':'xaxis'+i)+'.range']=[currentR0,currentR1];
-Plotly.relayout(elTech,upd).finally(function(){setTimeout(function(){isUpdating=false;},20);});
-}else if(msg.type==='MCHART_SYNC_FOCUS'){if(msg.showLine&&msg.idx>=0){renderInfo(msg.idx);var xa=elTech._fullLayout?elTech._fullLayout.xaxis:null;if(xa&&typeof xa.c2p==='function'){lineTech.style.left=(xa.c2p(msg.idx)+(xa._offset||80))+'px';lineTech.style.display='block';}}
-else lineTech.style.display='none';
-}
-});
-function onMove(e){var cx=(e.touches&&e.touches.length>0)?e.touches[0].clientX:e.clientX;if(cx===undefined)return;
-var rect=elTech.getBoundingClientRect(),relX=cx-rect.left,xa=elTech._fullLayout?elTech._fullLayout.xaxis:null;
-if(!xa||typeof xa.p2c!=='function')return;var pL=xa._offset??80,pLen=xa._length??(rect.width-pL-15);if(relX<pL||relX>pL+pLen)return;
-var idx=Math.round(xa.p2c(relX-pL));
-if(idx>=0&&idx<totalPoints){renderInfo(idx);lineTech.style.left=(xa.c2p(idx)+pL)+'px';lineTech.style.display='block';broadcastToSiblings({type:'MCHART_SYNC_FOCUS',idx:idx,showLine:true});}
-}
-function onLeave(){lineTech.style.display='none';broadcastToSiblings({type:'MCHART_SYNC_FOCUS',idx:-1,showLine:false});}
-elTech.addEventListener('mousemove',onMove);elTech.addEventListener('touchmove',onMove,{passive:true});
-elTech.addEventListener('touchstart',onMove,{passive:true});elTech.addEventListener('mouseleave',onLeave);
-});
-})();</script>"""
-    return (tpl.replace("__CID__", chart_id).replace("__HELPERS__", SHARED_JS_HELPERS).replace("__TECH_H__", str(tech_height))
-            .replace("__P_TECH__", fig_tech.to_json()).replace("__DATES__", json.dumps(dates_list))
-            .replace("__KS__", json.dumps(df['K'].fillna(0).tolist() if 'K' in df.columns else [0] * n_pts))
-            .replace("__DS__", json.dumps(df['D'].fillna(0).tolist() if 'D' in df.columns else [0] * n_pts))
-            .replace("__DIFS__", json.dumps(df['DIF'].fillna(0).tolist() if 'DIF' in df.columns else [0] * n_pts))
-            .replace("__MACDS__", json.dumps(df['MACD'].fillna(0).tolist() if 'MACD' in df.columns else [0] * n_pts))
-            .replace("__OSCS__", json.dumps(df['OSC'].fillna(0).tolist() if 'OSC' in df.columns else [0] * n_pts))
-            .replace("__OBVS__", json.dumps(df['OBV'].fillna(0).tolist() if 'OBV' in df.columns else [0] * n_pts))
-            .replace("__OBVMAS__", json.dumps(df['OBV_MA20'].fillna(0).tolist() if 'OBV_MA20' in df.columns else [0] * n_pts))
-            .replace("__BIAS20__", _series_to_json_nullable(df, 'BIAS_20', n_pts))
-            .replace("__BIAS120__", _series_to_json_nullable(df, 'BIAS_120', n_pts))
-            .replace("__BIAS240__", _series_to_json_nullable(df, 'BIAS_240', n_pts))
-            .replace("__BIAS1200__", _series_to_json_nullable(df, 'BIAS_1200', n_pts))
-            .replace("__DISP_DAYS__", str(initial_disp_days)).replace("__INIT_END__", str(end_idx))
-            )
+        def safe_f(col, default=None):
+            if col not in df.columns or pd.isna(row[col]):
+                return default
+            return float(row[col])
+
+        records.append({
+            "d": d_str,
+            "o": round(o, 2), "h": round(h, 2), "l": round(l, 2), "c": round(c, 2),
+            "chg": round(chg, 2), "pct": round(pct, 2),
+            "vol": int(round(vol_sh)),
+            "to": round(to_rate, 2),
+            "ma5": round(safe_f('MA5', 0.0), 2),
+            "ma20": round(safe_f('MA20', 0.0), 2),
+            "ma60": round(safe_f('MA60', 0.0), 2),
+            "b20": round(safe_f('BIAS_20'), 2) if safe_f('BIAS_20') is not None else None,
+            "b120": round(safe_f('BIAS_120'), 2) if safe_f('BIAS_120') is not None else None,
+            "b240": round(safe_f('BIAS_240'), 2) if safe_f('BIAS_240') is not None else None,
+            "b1200": round(safe_f('BIAS_1200'), 2) if safe_f('BIAS_1200') is not None else None,
+            "k": round(safe_f('K', 50.0), 1),
+            "d_val": round(safe_f('D', 50.0), 1),
+            "dif": round(safe_f('DIF', 0.0), 2),
+            "macd": round(safe_f('MACD', 0.0), 2),
+            "osc": round(safe_f('OSC', 0.0), 2),
+            "obv": int(round(safe_f('OBV', 0.0))),
+            "obv_ma": int(round(safe_f('OBV_MA20', 0.0))),
+            "fn": int(round(safe_f('Foreign_Net', 0.0))),
+            "tn": int(round(safe_f('Trust_Net', 0.0))),
+            "dn": int(round(safe_f('Dealer_Net', 0.0))),
+            "md": int(round(safe_f('Margin_Diff', 0.0))),
+            "mb": int(round(safe_f('Margin_Bal', 0.0))),
+            "sd": int(round(safe_f('Short_Diff', 0.0))),
+            "sb": int(round(safe_f('Short_Bal', 0.0))),
+            "smr": round(safe_f('Short_Margin_Ratio'), 2) if safe_f('Short_Margin_Ratio') is not None else None,
+            "m1": round(safe_f('Major1_Pct'), 2) if safe_f('Major1_Pct') is not None else None,
+            "m2": round(safe_f('Major2_Pct'), 2) if safe_f('Major2_Pct') is not None else None,
+        })
+    return json.dumps(records, ensure_ascii=False)
 
 
-def get_chip_tab_html(fig_btm, df: pd.DataFrame, chart_id: str, chip_height: int = 780, initial_disp_days: int = 20, initial_end_idx: int = None, m1_thresh: int = 1000, m2_thresh: int = 400) -> str:
-    n_pts = len(df)
-    end_idx = n_pts - 1 if initial_end_idx is None else initial_end_idx
-    dates_list = _extract_dates_list(df)
-    fig_chip = fig_btm["chip"] if isinstance(fig_btm, dict) and "chip" in fig_btm else getattr(fig_btm, "_fig_chip", fig_btm)
+def _shared_sync_js() -> str:
+    return """
+    function broadcastFocus(cid, idx, dispDays, endIdx) {
+        try {
+            var msg = { type: 'MCHART_SYNC_FOCUS', cid: cid, idx: idx, dispDays: dispDays, endIdx: endIdx };
+            if (window.parent && window.parent.frames) {
+                for (var i = 0; i < window.parent.frames.length; i++) {
+                    try { window.parent.frames[i].postMessage(msg, '*'); } catch (e) {}
+                }
+            }
+        } catch (e) {}
+    }
+    function fmtSign(v, dec) {
+        if (v === null || v === undefined || isNaN(v)) return '-';
+        var s = dec > 0 ? Number(v).toFixed(dec) : Math.round(Number(v)).toString();
+        return (v > 0 ? '+' : '') + s;
+    }
+    function clsVal(v) {
+        if (v === null || v === undefined || isNaN(v) || v === 0) return 'val-flat';
+        return v > 0 ? 'val-up' : 'val-dn';
+    }
+    function idxFromClientX(gd, clientX) {
+        if (!gd || !gd._fullLayout || !gd._fullLayout.xaxis) return -1;
+        var xa = gd._fullLayout.xaxis;
+        var rect = gd.getBoundingClientRect();
+        var relX = clientX - rect.left - xa._offset;
+        var dataX = xa.p2d(relX);
+        var idx = Math.round(dataX);
+        return idx;
+    }
+    function placeCrosshair(gd, lineEl, idx) {
+        if (!gd || !lineEl || !gd._fullLayout || !gd._fullLayout.xaxis) return;
+        var xa = gd._fullLayout.xaxis;
+        var px = xa.d2p(idx) + xa._offset;
+        if (px >= xa._offset && px <= xa._offset + xa._length) {
+            lineEl.style.left = px + 'px';
+            lineEl.style.display = 'block';
+        } else {
+            lineEl.style.display = 'none';
+        }
+    }
+    function bindPaneTouch(boxEl, gd, state, onFocusIdx, onRangeChange) {
+        var dragging = false, startX = 0, startRange = null, lastPinchDist = 0;
+        boxEl.addEventListener('touchstart', function(ev) {
+            if (ev.touches.length === 1) {
+                dragging = true;
+                startX = ev.touches[0].clientX;
+                startRange = gd._fullLayout.xaxis.range.slice();
+                var idx = idxFromClientX(gd, ev.touches[0].clientX);
+                if (idx >= 0 && idx < state.total) onFocusIdx(idx, true);
+            } else if (ev.touches.length === 2) {
+                dragging = false;
+                lastPinchDist = Math.abs(ev.touches[0].clientX - ev.touches[1].clientX);
+            }
+        }, { passive: true });
+        boxEl.addEventListener('touchmove', function(ev) {
+            if (ev.touches.length === 1 && dragging && startRange) {
+                var dx = ev.touches[0].clientX - startX;
+                var xa = gd._fullLayout.xaxis;
+                var span = startRange[1] - startRange[0];
+                var shift = -(dx / Math.max(1, xa._length)) * span;
+                var n0 = startRange[0] + shift, n1 = startRange[1] + shift;
+                if (n0 < -0.5) { n1 += (-0.5 - n0); n0 = -0.5; }
+                if (n1 > state.total - 0.5) { n0 -= (n1 - (state.total - 0.5)); n1 = state.total - 0.5; }
+                Plotly.relayout(gd, { 'xaxis.range': [n0, n1] });
+                if (onRangeChange) onRangeChange(n0, n1);
+            } else if (ev.touches.length === 2) {
+                var dist = Math.abs(ev.touches[0].clientX - ev.touches[1].clientX);
+                if (lastPinchDist > 10 && Math.abs(dist - lastPinchDist) > 6) {
+                    var r = gd._fullLayout.xaxis.range;
+                    var mid = (r[0] + r[1]) / 2;
+                    var half = ((r[1] - r[0]) / 2) * (lastPinchDist / Math.max(1, dist));
+                    half = Math.max(5, Math.min(state.total / 2, half));
+                    var z0 = Math.max(-0.5, mid - half), z1 = Math.min(state.total - 0.5, mid + half);
+                    Plotly.relayout(gd, { 'xaxis.range': [z0, z1] });
+                    if (onRangeChange) onRangeChange(z0, z1);
+                    lastPinchDist = dist;
+                }
+            }
+        }, { passive: true });
+        boxEl.addEventListener('touchend', function() { dragging = false; lastPinchDist = 0; }, { passive: true });
+        boxEl.addEventListener('mousemove', function(ev) {
+            var idx = idxFromClientX(gd, ev.clientX);
+            if (idx >= 0 && idx < state.total) onFocusIdx(idx, false);
+        });
+        boxEl.addEventListener('click', function(ev) {
+            var idx = idxFromClientX(gd, ev.clientX);
+            if (idx >= 0 && idx < state.total) onFocusIdx(idx, true);
+        });
+    }
+    """
 
-    tpl = COMMON_CSS + """
-<div class="frame-root" id="__CID___chip_root">
-  <div id="__CID___info_ms" class="pane-info-bar" style="margin-bottom:3px;">正在載入資券...</div>
-  <div id="__CID___info_chip" class="pane-info-bar" style="margin-bottom:3px;">正在載入法人集保...</div>
-  <div id="__CID___chip" class="touch-plot-box" style="height:__CHIP_H__px;"><div id="__CID___line_chip" class="sync-crosshair-line"></div></div>
-</div>
-<script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>
-<script>(function(){__HELPERS__
-var pChip=__P_CHIP__,dates=__DATES__,foreigns=__FOREIGNS__,trusts=__TRUSTS__,dealers=__DEALERS__,mDiffs=__MDIFFS__,sDiffs=__SDIFFS__,rat=__RATIOS__;
-var m1_pcts=__M1PCTS__,m2_pcts=__M2PCTS__,m1_thresh=__M1TH__,m2_thresh=__M2TH__;
-var totalPoints=dates.length,initEnd=__INIT_END__,targetDays=Number(__DISP_DAYS__)||20;
-var currentR0=Math.max(0,initEnd-targetDays+1)-0.5,currentR1=initEnd+0.5,isUpdating=false;
-var elChip=document.getElementById('__CID___chip'),infoMs=document.getElementById('__CID___info_ms'),infoChip=document.getElementById('__CID___info_chip'),lineChip=document.getElementById('__CID___line_chip');
-function renderInfo(idx){if(idx<0||idx>=totalPoints)return;
-var d=dates[idx],mT=mDiffs[idx]!=null?Number(mDiffs[idx])/1000.0:null,sT=sDiffs[idx]!=null?Number(sDiffs[idx])/1000.0:null;
-infoMs.innerHTML='<span class="tag-lbl"><b>資券[千張]('+d+')</b></span>融資:'+fmtDiff(mT,3)+' 融券:'+fmtDiff(sT,3)+' <span class="tag-lbl"><b>券資比:'+fmtNum(rat[idx])+'%</b></span>';
-infoChip.innerHTML='<span class="tag-lbl"><b>法人集保('+d+')</b></span>外資:'+fmtDiff(foreigns[idx],0)+' 投信:'+fmtDiff(trusts[idx],0)+' 自營:'+fmtDiff(dealers[idx],0)+' | ≥'+m1_thresh+'張: '+fmtNum(m1_pcts[idx])+'% ≥'+m2_thresh+'張: '+fmtNum(m2_pcts[idx])+'%';
-}
-for(var c=1;c<=6;c++){var kc=c===1?'xaxis':'xaxis'+c;if(pChip.layout&&pChip.layout[kc])pChip.layout[kc].range=[currentR0,currentR1];}
-Plotly.newPlot(elChip,pChip.data,pChip.layout,{responsive:true,displayModeBar:false,scrollZoom:false}).then(function(){renderInfo(initEnd);
-elChip.on('plotly_relayout',function(ed){if(isUpdating)return;var r0=null,r1=null;
-for(var k=1;k<=6;k++){var p=k===1?'xaxis':'xaxis'+k;if(ed[p+'.range[0]']!==undefined)r0=ed[p+'.range[0]'];if(ed[p+'.range[1]']!==undefined)r1=ed[p+'.range[1]'];}
-if(r0===null||r1===null||(Math.abs(r0-currentR0)<0.001&&Math.abs(r1-currentR1)<0.001))return;
-isUpdating=true;var span=r1-r0,maxB=(totalPoints-1)+0.5;
-if(r1>maxB){r1=maxB;r0=r1-span;}currentR0=r0;currentR1=r1;
-var upd={};for(var i=1;i<=6;i++)upd[(i===1?'xaxis':'xaxis'+i)+'.range']=[r0,r1];
-broadcastToSiblings({type:'MCHART_SYNC_XRANGE',r0:r0,r1:r1});
-Plotly.relayout(elChip,upd).finally(function(){setTimeout(function(){isUpdating=false;},20);});
-});
-window.addEventListener('message',function(ev){var msg=ev.data||{};
-if(msg.type==='MCHART_SYNC_XRANGE'&&!isUpdating){isUpdating=true;currentR0=msg.r0;currentR1=msg.r1;
-var upd={};for(var i=1;i<=6;i++)upd[(i===1?'xaxis':'xaxis'+i)+'.range']=[currentR0,currentR1];
-Plotly.relayout(elChip,upd).finally(function(){setTimeout(function(){isUpdating=false;},20);});
-}else if(msg.type==='MCHART_SYNC_FOCUS'){if(msg.showLine&&msg.idx>=0){renderInfo(msg.idx);var xa=elChip._fullLayout?elChip._fullLayout.xaxis:null;if(xa&&typeof xa.c2p==='function'){lineChip.style.left=(xa.c2p(msg.idx)+(xa._offset||80))+'px';lineChip.style.display='block';}}
-else lineChip.style.display='none';
-}
-});
-function onMove(e){var cx=(e.touches&&e.touches.length>0)?e.touches[0].clientX:e.clientX;if(cx===undefined)return;
-var rect=elChip.getBoundingClientRect(),relX=cx-rect.left,xa=elChip._fullLayout?elChip._fullLayout.xaxis:null;
-if(!xa||typeof xa.p2c!=='function')return;var pL=xa._offset??80,pLen=xa._length??(rect.width-pL-15);if(relX<pL||relX>pL+pLen)return;
-var idx=Math.round(xa.p2c(relX-pL));
-if(idx>=0&&idx<totalPoints){renderInfo(idx);lineChip.style.left=(xa.c2p(idx)+pL)+'px';lineChip.style.display='block';broadcastToSiblings({type:'MCHART_SYNC_FOCUS',idx:idx,showLine:true});}
-}
-function onLeave(){lineChip.style.display='none';broadcastToSiblings({type:'MCHART_SYNC_FOCUS',idx:-1,showLine:false});}
-elChip.addEventListener('mousemove',onMove);elChip.addEventListener('touchmove',onMove,{passive:true});
-elChip.addEventListener('touchstart',onMove,{passive:true});elChip.addEventListener('mouseleave',onLeave);
-});
-})();</script>"""
-    return (tpl.replace("__CID__", chart_id).replace("__HELPERS__", SHARED_JS_HELPERS).replace("__CHIP_H__", str(chip_height))
-            .replace("__P_CHIP__", fig_chip.to_json()).replace("__DATES__", json.dumps(dates_list))
-            .replace("__FOREIGNS__", json.dumps(df['Foreign_Net'].fillna(0).tolist() if 'Foreign_Net' in df.columns else [0] * n_pts))
-            .replace("__TRUSTS__", json.dumps(df['Trust_Net'].fillna(0).tolist() if 'Trust_Net' in df.columns else [0] * n_pts))
-            .replace("__DEALERS__", json.dumps(df['Dealer_Net'].fillna(0).tolist() if 'Dealer_Net' in df.columns else [0] * n_pts))
-            .replace("__MDIFFS__", json.dumps(df['Margin_Diff'].fillna(0).tolist() if 'Margin_Diff' in df.columns else [0] * n_pts))
-            .replace("__SDIFFS__", json.dumps(df['Short_Diff'].fillna(0).tolist() if 'Short_Diff' in df.columns else [0] * n_pts))
-            .replace("__RATIOS__", json.dumps(df['Short_Margin_Ratio'].fillna(0).tolist() if 'Short_Margin_Ratio' in df.columns else [0] * n_pts))
-            .replace("__M1PCTS__", json.dumps(df['Major1_Pct'].fillna(0).tolist() if 'Major1_Pct' in df.columns else [0] * n_pts))
-            .replace("__M2PCTS__", json.dumps(df['Major2_Pct'].fillna(0).tolist() if 'Major2_Pct' in df.columns else [0] * n_pts))
-            .replace("__M1TH__", str(m1_thresh)).replace("__M2TH__", str(m2_thresh))
-            .replace("__DISP_DAYS__", str(initial_disp_days)).replace("__INIT_END__", str(end_idx))
-            )
+
+def get_top_chart_html(fig_top, df: pd.DataFrame, chart_id: str, top_height: int,
+                       initial_disp_days: int, initial_end_idx: int) -> str:
+    is_index = str(df.index.name) == "INDEX" or (df['Turnover_Rate'].max() == 0 and df['Foreign_Net'].abs().max() == 0)
+    rec_json = _build_base_records_json(df, is_index)
+    fig_json = fig_top.to_json()
+
+    tpl = """<!DOCTYPE html><html><head><meta charset="utf-8">
+    <script src="https://cdn.plot.ly/plotly-2.32.0.min.js"></script>
+    <style>__CSS__</style></head><body>
+    <div class="frame-root" id="__CID___root">
+      <div id="__CID___info1" class="pane-info-bar">載入主圖資訊中...</div>
+      <div id="__CID___top" class="touch-plot-box" style="height:__TOP_H__px;">
+        <div id="__CID___vline" class="v-crosshair"></div>
+      </div>
+      <button class="nav-overlay nav-prev" id="__CID___prev" title="往左移動K線">◀</button>
+      <button class="nav-overlay nav-next" id="__CID___next" title="往右移動K線">▶</button>
+    </div>
+    <script>
+    (function(){
+      __SYNC_JS__
+      var RECS = __RECS__;
+      var FIG = __FIG__;
+      var state = { total: RECS.length, focusIdx: __INIT_END__, dispDays: __INIT_DISP__, endIdx: __INIT_END__ };
+      var gd = document.getElementById('__CID___top');
+      var infoEl = document.getElementById('__CID___info1');
+      var vline = document.getElementById('__CID___vline');
+
+      function updateInfo(idx) {
+        if (idx < 0 || idx >= RECS.length) return;
+        state.focusIdx = idx;
+        var r = RECS[idx];
+        var cCls = clsVal(r.chg);
+        var toTxt = r.to > 0 ? (' 換手:<span class="' + (r.to >= 10 ? 'val-up' : 'val-flat') + '">' + r.to.toFixed(2) + '%</span>') : '';
+        infoEl.innerHTML =
+          '<b>' + r.d + '</b> 開:' + r.o.toFixed(2) +
+          ' 高:<span class="val-up">' + r.h.toFixed(2) + '</span>' +
+          ' 低:<span class="val-dn">' + r.l.toFixed(2) + '</span>' +
+          ' 收:<span class="' + cCls + '">' + r.c.toFixed(2) + ' (' + fmtSign(r.chg, 2) + ', ' + fmtSign(r.pct, 2) + '%)</span>' +
+          ' 量:' + r.vol.toLocaleString() + '張' + toTxt +
+          ' <span style="color:#d4ac0d;font-weight:bold;">MA5:' + r.ma5.toFixed(2) + '</span>' +
+          ' <span style="color:#e67e22;font-weight:bold;">MA20:' + r.ma20.toFixed(2) + '</span>' +
+          ' <span style="color:#9b59b6;font-weight:bold;">MA60:' + r.ma60.toFixed(2) + '</span>';
+        placeCrosshair(gd, vline, idx);
+      }
+
+      function onFocus(idx, doBroadcast) {
+        updateInfo(idx);
+        if (doBroadcast) broadcastFocus('__CID__', idx, state.dispDays, state.endIdx);
+      }
+
+      Plotly.newPlot(gd, FIG.data, FIG.layout, { displayModeBar: false, responsive: true }).then(function() {
+        updateInfo(state.focusIdx);
+        bindPaneTouch(gd, gd, state, onFocus, function(n0, n1) {
+          state.dispDays = Math.max(5, Math.round(n1 - n0));
+          state.endIdx = Math.min(state.total - 1, Math.max(0, Math.round(n1 - 0.5)));
+          updateInfo(state.endIdx);
+          broadcastFocus('__CID__', state.endIdx, state.dispDays, state.endIdx);
+        });
+        gd.on('plotly_relayout', function(ed) {
+          if (ed && ed['xaxis.range[0]'] !== undefined && ed['xaxis.range[1]'] !== undefined) {
+            var n0 = ed['xaxis.range[0]'], n1 = ed['xaxis.range[1]'];
+            state.dispDays = Math.max(5, Math.round(n1 - n0));
+            state.endIdx = Math.min(state.total - 1, Math.max(0, Math.round(n1 - 0.5)));
+            updateInfo(state.endIdx);
+            broadcastFocus('__CID__', state.endIdx, state.dispDays, state.endIdx);
+          }
+        });
+      });
+
+      function shiftWindow(step) {
+        var r = gd._fullLayout.xaxis.range;
+        var span = r[1] - r[0];
+        var n0 = Math.max(-0.5, Math.min(state.total - 0.5 - span, r[0] + step));
+        var n1 = n0 + span;
+        Plotly.relayout(gd, { 'xaxis.range': [n0, n1] });
+      }
+      document.getElementById('__CID___prev').addEventListener('click', function(){ shiftWindow(-Math.max(1, Math.round(state.dispDays * 0.4))); });
+      document.getElementById('__CID___next').addEventListener('click', function(){ shiftWindow(Math.max(1, Math.round(state.dispDays * 0.4))); });
+
+      window.addEventListener('message', function(ev) {
+        var msg = ev.data || {};
+        if (msg.type === 'MCHART_SYNC_FOCUS' && msg.idx >= 0 && msg.idx < state.total) {
+          updateInfo(msg.idx);
+        }
+      });
+    })();
+    </script></body></html>"""
+    return (tpl.replace("__CSS__", COMMON_CSS)
+            .replace("__SYNC_JS__", _shared_sync_js())
+            .replace("__CID__", chart_id)
+            .replace("__TOP_H__", str(top_height))
+            .replace("__RECS__", rec_json)
+            .replace("__FIG__", fig_json)
+            .replace("__INIT_DISP__", str(initial_disp_days))
+            .replace("__INIT_END__", str(initial_end_idx)))
 
 
-def get_broker_tab_html(df: pd.DataFrame, chart_id: str, initial_end_idx: int = None, is_index: bool = False, broker_payload: dict = None) -> str:
-    n_pts = len(df)
-    end_idx = n_pts - 1 if initial_end_idx is None else initial_end_idx
-    dates_list = _extract_dates_list(df)
+def get_tech_tab_html(fig_btm: dict, df: pd.DataFrame, chart_id: str, tech_height: int,
+                      initial_disp_days: int, initial_end_idx: int) -> str:
+    rec_json = _build_base_records_json(df, False)
+    fig_json = fig_btm["tech"].to_json()
+
+    tpl = """<!DOCTYPE html><html><head><meta charset="utf-8">
+    <script src="https://cdn.plot.ly/plotly-2.32.0.min.js"></script>
+    <style>__CSS__</style></head><body>
+    <div class="frame-root" id="__CID___tech_root">
+      <div id="__CID___tech_info" class="pane-info-bar">載入技術指標中...</div>
+      <div id="__CID___tech_plot" class="touch-plot-box" style="height:__TECH_H__px;">
+        <div id="__CID___tech_vline" class="v-crosshair"></div>
+      </div>
+    </div>
+    <script>
+    (function(){
+      __SYNC_JS__
+      var RECS = __RECS__;
+      var FIG = __FIG__;
+      var state = { total: RECS.length, focusIdx: __INIT_END__, dispDays: __INIT_DISP__, endIdx: __INIT_END__ };
+      var gd = document.getElementById('__CID___tech_plot');
+      var infoEl = document.getElementById('__CID___tech_info');
+      var vline = document.getElementById('__CID___tech_vline');
+
+      function fmtBias(v) {
+        if (v === null || v === undefined || isNaN(v)) return '-';
+        return '<span class="' + clsVal(v) + '">' + fmtSign(v, 2) + '%</span>';
+      }
+
+      function updateInfo(idx) {
+        if (idx < 0 || idx >= RECS.length) return;
+        state.focusIdx = idx;
+        var r = RECS[idx];
+        infoEl.innerHTML =
+          '<b>' + r.d + '</b> ｜ <b>KD(9)</b> K:<span class="val-up">' + r.k.toFixed(1) + '</span> D:<span class="val-dn">' + r.d_val.toFixed(1) + '</span>' +
+          ' ｜ <b>MACD</b> DIF:' + r.dif.toFixed(2) + ' MACD:' + r.macd.toFixed(2) + ' OSC:<span class="' + clsVal(r.osc) + '">' + fmtSign(r.osc, 2) + '</span>' +
+          ' ｜ <b>OBV</b> ' + r.obv.toLocaleString() + ' (MA20:' + r.obv_ma.toLocaleString() + ')' +
+          ' ｜ <b>乖離</b> 20日:' + fmtBias(r.b20) + ' 120日:' + fmtBias(r.b120) + ' 240日:' + fmtBias(r.b240) + ' 1200日:' + fmtBias(r.b1200);
+        placeCrosshair(gd, vline, idx);
+      }
+
+      function onFocus(idx, doBroadcast) {
+        updateInfo(idx);
+        if (doBroadcast) broadcastFocus('__CID__', idx, state.dispDays, state.endIdx);
+      }
+
+      Plotly.newPlot(gd, FIG.data, FIG.layout, { displayModeBar: false, responsive: true }).then(function() {
+        updateInfo(state.focusIdx);
+        bindPaneTouch(gd, gd, state, onFocus, null);
+      });
+
+      window.addEventListener('message', function(ev) {
+        var msg = ev.data || {};
+        if (msg.type === 'MCHART_SYNC_FOCUS') {
+          if (msg.dispDays && msg.endIdx >= 0) {
+            var s0 = Math.max(-0.5, msg.endIdx - msg.dispDays + 0.5);
+            var s1 = Math.min(state.total - 0.5, msg.endIdx + 0.5);
+            Plotly.relayout(gd, { 'xaxis.range': [s0, s1] });
+          }
+          if (msg.idx >= 0 && msg.idx < state.total) updateInfo(msg.idx);
+        }
+      });
+    })();
+    </script></body></html>"""
+    return (tpl.replace("__CSS__", COMMON_CSS)
+            .replace("__SYNC_JS__", _shared_sync_js())
+            .replace("__CID__", chart_id)
+            .replace("__TECH_H__", str(tech_height))
+            .replace("__RECS__", rec_json)
+            .replace("__FIG__", fig_json)
+            .replace("__INIT_DISP__", str(initial_disp_days))
+            .replace("__INIT_END__", str(initial_end_idx)))
+
+
+def get_chip_tab_html(fig_btm: dict, df: pd.DataFrame, chart_id: str, chip_height: int,
+                      initial_disp_days: int, initial_end_idx: int,
+                      m1_thresh: int = 1000, m2_thresh: int = 400) -> str:
+    rec_json = _build_base_records_json(df, False)
+    fig_json = fig_btm["chip"].to_json()
+
+    tpl = """<!DOCTYPE html><html><head><meta charset="utf-8">
+    <script src="https://cdn.plot.ly/plotly-2.32.0.min.js"></script>
+    <style>__CSS__</style></head><body>
+    <div class="frame-root" id="__CID___chip_root">
+      <div id="__CID___chip_info" class="pane-info-bar">載入籌碼數據中...</div>
+      <div id="__CID___chip_plot" class="touch-plot-box" style="height:__CHIP_H__px;">
+        <div id="__CID___chip_vline" class="v-crosshair"></div>
+      </div>
+    </div>
+    <script>
+    (function(){
+      __SYNC_JS__
+      var RECS = __RECS__;
+      var FIG = __FIG__;
+      var state = { total: RECS.length, focusIdx: __INIT_END__, dispDays: __INIT_DISP__, endIdx: __INIT_END__ };
+      var gd = document.getElementById('__CID___chip_plot');
+      var infoEl = document.getElementById('__CID___chip_info');
+      var vline = document.getElementById('__CID___chip_vline');
+
+      function updateInfo(idx) {
+        if (idx < 0 || idx >= RECS.length) return;
+        state.focusIdx = idx;
+        var r = RECS[idx];
+        var m1Txt = (r.m1 !== null && r.m1 !== undefined) ? (r.m1.toFixed(2) + '%') : '-';
+        var m2Txt = (r.m2 !== null && r.m2 !== undefined) ? (r.m2.toFixed(2) + '%') : '-';
+        var smrTxt = (r.smr !== null && r.smr !== undefined) ? (r.smr.toFixed(2) + '%') : '-';
+        infoEl.innerHTML =
+          '<b>' + r.d + '</b> ｜ 外資:<span class="' + clsVal(r.fn) + '">' + fmtSign(r.fn, 0) + '</span>' +
+          ' 投信:<span class="' + clsVal(r.tn) + '">' + fmtSign(r.tn, 0) + '</span>' +
+          ' 自營:<span class="' + clsVal(r.dn) + '">' + fmtSign(r.dn, 0) + '</span>' +
+          ' ｜ 融資:<span class="' + clsVal(r.md) + '">' + fmtSign(r.md, 0) + '</span>(餘' + r.mb.toLocaleString() + ')' +
+          ' 融券:<span class="' + clsVal(r.sd) + '">' + fmtSign(r.sd, 0) + '</span>(餘' + r.sb.toLocaleString() + ', 券資比' + smrTxt + ')' +
+          ' ｜ ≥__M1__張:<b>' + m1Txt + '</b> ≥__M2__張:<b>' + m2Txt + '</b>';
+        placeCrosshair(gd, vline, idx);
+      }
+
+      function onFocus(idx, doBroadcast) {
+        updateInfo(idx);
+        if (doBroadcast) broadcastFocus('__CID__', idx, state.dispDays, state.endIdx);
+      }
+
+      Plotly.newPlot(gd, FIG.data, FIG.layout, { displayModeBar: false, responsive: true }).then(function() {
+        updateInfo(state.focusIdx);
+        bindPaneTouch(gd, gd, state, onFocus, null);
+      });
+
+      window.addEventListener('message', function(ev) {
+        var msg = ev.data || {};
+        if (msg.type === 'MCHART_SYNC_FOCUS') {
+          if (msg.dispDays && msg.endIdx >= 0) {
+            var s0 = Math.max(-0.5, msg.endIdx - msg.dispDays + 0.5);
+            var s1 = Math.min(state.total - 0.5, msg.endIdx + 0.5);
+            Plotly.relayout(gd, { 'xaxis.range': [s0, s1] });
+          }
+          if (msg.idx >= 0 && msg.idx < state.total) updateInfo(msg.idx);
+        }
+      });
+    })();
+    </script></body></html>"""
+    return (tpl.replace("__CSS__", COMMON_CSS)
+            .replace("__SYNC_JS__", _shared_sync_js())
+            .replace("__CID__", chart_id)
+            .replace("__CHIP_H__", str(chip_height))
+            .replace("__RECS__", rec_json)
+            .replace("__FIG__", fig_json)
+            .replace("__INIT_DISP__", str(initial_disp_days))
+            .replace("__INIT_END__", str(initial_end_idx))
+            .replace("__M1__", str(m1_thresh))
+            .replace("__M2__", str(m2_thresh)))
+
+
+def get_broker_tab_html(df: pd.DataFrame, broker_payload: dict, chart_id: str,
+                        end_idx: int, is_mobile: bool = False) -> str:
+    dates_list = [d.strftime('%Y-%m-%d') for d in df.index]
+    is_index = len(dates_list) == 0 or (df['Turnover_Rate'].max() == 0 and df['Foreign_Net'].abs().max() == 0)
     safe_payload = broker_payload if isinstance(broker_payload, dict) else {"by_date": {}}
 
-    tpl = COMMON_CSS + """<style>
-.b-card{background:#fff;border:1px solid #e2e8f0;border-radius:6px;padding:6px;margin-bottom:8px}
-.b-title{font-size:13px;font-weight:bold;color:#1e293b;background:#f1f5f9;padding:4px 8px;border-radius:4px;margin-bottom:6px;border-left:3px solid #2c3e50}
-.b-grid{display:grid;grid-template-columns:1fr 1fr;gap:6px}@media(max-width:720px){.b-grid{grid-template-columns:1fr}}
-.b-wrap{overflow-x:auto;border:1px solid #e2e8f0;border-radius:4px}
-.b-tbl{width:100%;border-collapse:collapse;font-size:11.5px;text-align:right;white-space:nowrap}
-.b-tbl th{background:#f8fafc;color:#334155;font-weight:700;padding:4px 5px;border-bottom:1px solid #cbd5e1}
-.b-tbl td{padding:3px 5px;border-bottom:1px solid #f1f5f9;color:#1e293b}
-.b-tbl th:nth-child(1),.b-tbl td:nth-child(1),.b-tbl th:nth-child(2),.b-tbl td:nth-child(2){text-align:left}
-.gov-badge{display:inline-block;background:#fef3c7;color:#92400e;font-size:10px;padding:0 3px;border-radius:3px;margin-left:3px;border:1px solid #f59e0b}
-.b-bar{width:100%;height:185px;border:1px solid #e2e8f0;border-radius:4px;margin-bottom:6px;background:#fff}
-</style>
-<div class="frame-root" id="__CID___broker_root">
-  <div id="__CID___b_hdr" class="pane-info-bar" style="margin-bottom:6px;"></div>
-  <div id="__CID___b_tbls"></div>
-  <div class="b-card">
-    <div class="b-title">5. 區間買賣超統計各前 5 名分點 — 各日買賣超柱狀圖</div>
-    <div style="display:flex;align-items:center;gap:8px;margin-bottom:4px;flex-wrap:wrap;">
-      <label for="__CID___b_sel" style="font-size:12.5px;font-weight:bold;color:#334155;">統計區間天數：</label>
-      <select id="__CID___b_sel" style="padding:4px 8px;font-size:13px;border-radius:4px;border:1px solid #94a3b8;font-weight:bold;">
-        <option value="10" selected>近 10 日（含關注交易日）</option>
-        <option value="20">近 20 日（含關注交易日）</option>
-        <option value="60">近 60 日（含關注交易日）</option>
-      </select>
+    tpl = """<!DOCTYPE html><html><head><meta charset="utf-8">
+    <script src="https://cdn.plot.ly/plotly-2.32.0.min.js"></script>
+    <style>
+      __CSS__
+      .b-wrap { padding: 2px 2px 10px 2px; }
+      .b-hdr { font-size: 12.5px; color: #1e293b; background: #f8fafc; border: 1px solid #cbd5e1; border-radius: 5px; padding: 5px 8px; margin-bottom: 6px; }
+      .b-sec-title { font-size: 13px; font-weight: 700; color: #0f172a; margin: 10px 0 4px 0; padding-left: 6px; border-left: 3px solid #2563eb; }
+      .b-grid { display: flex; flex-wrap: wrap; gap: 8px; }
+      .b-col { flex: 1 1 320px; min-width: 280px; border: 1px solid #e2e8f0; border-radius: 6px; overflow: hidden; background: #fff; }
+      .b-col-head { font-size: 12px; font-weight: 700; padding: 5px 8px; background: #f1f5f9; border-bottom: 1px solid #e2e8f0; }
+      table.b-tbl { width: 100%; border-collapse: collapse; font-size: 11.5px; }
+      table.b-tbl th { background: #f8fafc; color: #475569; font-weight: 600; padding: 4px 5px; border-bottom: 1px solid #e2e8f0; text-align: right; }
+      table.b-tbl th:nth-child(1), table.b-tbl td:nth-child(1) { text-align: center; width: 24px; }
+      table.b-tbl th:nth-child(2), table.b-tbl td:nth-child(2) { text-align: left; }
+      table.b-tbl td { padding: 4px 5px; border-bottom: 1px solid #f1f5f9; text-align: right; color: #1e293b; }
+      .gov-tag { display: inline-block; font-size: 10px; background: #fef3c7; color: #92400e; border: 1px solid #f59e0b; border-radius: 3px; padding: 0 3px; margin-left: 3px; }
+      .b-ctrl { display: flex; align-items: center; gap: 8px; background: #f1f5f9; padding: 6px 8px; border-radius: 5px; margin: 10px 0 6px 0; font-size: 12.5px; }
+      .b-bar { width: 100%; height: 155px; border: 1px solid #e2e8f0; border-radius: 5px; margin-bottom: 6px; }
+    </style></head><body>
+    <div class="b-wrap" id="__CID___broker_root">
+      <div class="b-hdr" id="__CID___b_hdr">載入分點統計中...</div>
+      <div id="__CID___b_tbls"></div>
+      <div class="b-ctrl">
+        <b>5. 前五大分點每日買賣超柱狀圖區間：</b>
+        <select id="__CID___win_sel" style="padding:3px 6px;border-radius:4px;border:1px solid #94a3b8;font-size:12px;">
+          <option value="10" selected>前 10 日至關注交易日</option>
+          <option value="20">前 20 日至關注交易日</option>
+          <option value="60">前 60 日至關注交易日（按需載入）</option>
+        </select>
+      </div>
+      <div id="__CID___b_warn" style="display:none;font-size:12px;color:#b45309;background:#fffbeb;border:1px solid #fcd34d;padding:5px 8px;border-radius:4px;margin-bottom:6px;"></div>
+      <div id="__CID___b_bars"></div>
     </div>
-    <div id="__CID___b_warn" style="font-size:12px;color:#d97706;background:#fffbeb;padding:4px 8px;border-radius:4px;border:1px solid #fde68a;margin-bottom:8px;display:none;"></div>
-    <div id="__CID___b_bars"></div>
-  </div>
-</div>
-<script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>
-<script>(function(){var dates=__DATES__,isIndex=__IS_IDX__,payload=__BROKER_JSON__,curIdx=__INIT_END__;
-var cfg={responsive:true,displayModeBar:false,scrollZoom:false};
-var rootEl=document.getElementById('__CID___broker_root'),hdrEl=document.getElementById('__CID___b_hdr');
-var tblsEl=document.getElementById('__CID___b_tbls'),selEl=document.getElementById('__CID___b_sel'),warnEl=document.getElementById('__CID___b_warn'),barsEl=document.getElementById('__CID___b_bars');
-var MSG_60D_ON_DEMAND='尚未載入近 60 日統計（預設僅載入至 20 日；請點擊上方「📥 載入近 60 日分點統計與明細」按鈕按需抓取）';
-function pushH(){if(!rootEl)return;var h=Math.ceil(rootEl.scrollHeight)+16;if(window.parent&&window.parent!==window)window.parent.postMessage({isStreamlitMessage:true,type:"streamlit:setFrameHeight",height:h},"*");}
-if(typeof ResizeObserver!=='undefined'&&rootEl)new ResizeObserver(pushH).observe(rootEl);
-function makeTbl(title,buyList,sellList,emptyMsg){function side(lbl,rows,isBuy){var h='<div><div style="font-size:12px;font-weight:bold;color:'+(isBuy?'#eb4d4b':'#16a085')+';margin-bottom:3px;">'+lbl+'</div>';
-if(!rows||!rows.length)return h+'<div style="font-size:11.5px;color:#64748b;padding:6px;border:1px solid #e2e8f0;border-radius:4px;">'+(emptyMsg||'無資料')+'</div></div>';
-h+='<div class="b-wrap"><table class="b-tbl"><thead><tr><th>#</th><th>分點名稱</th><th>買進</th><th>賣出</th><th>買賣超</th><th>佔比</th></tr></thead><tbody>';
-for(var i=0;i<Math.min(10,rows.length);i++){var r=rows[i],net=Number(r.net||0),cls=net>0?'val-up':(net<0?'val-dn':'');
-h+='<tr><td>'+(i+1)+'</td><td>'+(r.name||'')+(r.sys==='八大官股'?'<span class="gov-badge">官股</span>':'')+'</td><td>'+Number(r.buy||0).toLocaleString()+'</td><td>'+Number(r.sell||0).toLocaleString()+'</td><td class="'+cls+'">'+(net>0?'+':'')+net.toLocaleString()+'</td><td>'+(r.ratio||'-')+'</td></tr>';
-}
-return h+'</tbody></table></div></div>';
-}
-return'<div class="b-card"><div class="b-title">'+title+'</div><div class="b-grid">'+side('🔴 買超前 10 名 (張)',buyList,true)+side('🟢 賣超前 10 名 (張)',sellList,false)+'</div></div>';
-}
-function render(idx){if(idx<0||idx>=dates.length)return;curIdx=idx;var d=dates[idx];
-if(isIndex){hdrEl.innerHTML='<b>'+d+'</b> ｜ 指數標人不適用券商分點統計';tblsEl.innerHTML='';barsEl.innerHTML='';if(warnEl)warnEl.style.display='none';pushH();return;}
-var byD=(payload&&payload.by_date)?payload.by_date:{},dayData=byD[d];
-if(!dayData){var ks=Object.keys(byD).sort(),fb=ks.length?ks[ks.length-1]:null;
-if(fb){dayData=byD[fb];hdrEl.innerHTML='<b>關注交易日：'+d+'</b>（目前顯示已收錄基準日 <b>'+fb+'</b> 之分點統計；若需指定歷史日請於側邊欄設定基準日）';}
-else{hdrEl.innerHTML='<b>關注交易日：'+d+'</b> ｜ 尚無分點明細資料';tblsEl.innerHTML='';barsEl.innerHTML='';if(warnEl)warnEl.style.display='none';pushH();return;}
-}else hdrEl.innerHTML='<b>關注交易日：'+d+'</b> ｜ 券商分點買賣超統計與雲端累積逐日明細（單位：張）';
-var r1=dayData.w1||{},r10=dayData.w10||{},r20=dayData.w20||{},r60=dayData.w60||{};
-var has60=(r60.buy&&r60.buy.length)||(r60.sell&&r60.sell.length);
-tblsEl.innerHTML=makeTbl('1. 當日分點統計買賣超各前十名（'+(r1.range_label||d)+'）',r1.buy,r1.sell)
-+makeTbl('2. 前 10 日至關注交易日分點統計買賣超各前十名（'+(r10.range_label||'')+'）',r10.buy,r10.sell)
-+makeTbl('3. 前 20 日至關注交易日分點統計買賣超各前十名（'+(r20.range_label||'')+'）',r20.buy,r20.sell)
-+makeTbl('4. 前 60 日至關注交易日分點統計買賣超各前十名（'+(r60.range_label||'按需載入')+'）',r60.buy,r60.sell,has60?'無資料':MSG_60D_ON_DEMAND);
-var winDays=selEl?selEl.value:'10';
-if(winDays==='60'&&!has60){if(warnEl){warnEl.innerHTML='⚠️ <b>' + MSG_60D_ON_DEMAND + '</b>';warnEl.style.display='block';}barsEl.innerHTML='<div style="font-size:12px;color:#d97706;padding:6px;">尚未載入近 60 日明細資料。</div>';pushH();return;}
-else{if(warnEl)warnEl.style.display='none';}
-var winObj=dayData['w'+winDays]||{};
-var t5b=winObj.top5_buy_series||[],t5s=winObj.top5_sell_series||[];
-if(!t5b.length&&!t5s.length){barsEl.innerHTML='<div style="font-size:12px;color:#64748b;padding:6px;">此區間尚無前五大分點逐日柱狀圖資料。</div>';pushH();return;}
-var bHtml='<div style="font-size:12.5px;font-weight:bold;color:#eb4d4b;margin:4px 0;">🔴 區間累計買超前 5 名分點 — 每日買賣超柱狀圖</div>';
-for(var bi=0;bi<t5b.length;bi++)bHtml+='<div id="__CID___bb_'+bi+'" class="b-bar"></div>';
-bHtml+='<div style="font-size:12.5px;font-weight:bold;color:#16a085;margin:6px 0 4px 0;">🟢 區間累計賣超前 5 名分點 — 每日買賣超柱狀圖</div>';
-for(var si=0;si<t5s.length;si++)bHtml+='<div id="__CID___bs_'+si+'" class="b-bar"></div>';
-barsEl.innerHTML=bHtml;
-function drawBar(elId,item,idxRank,isBuySide){var el=document.getElementById(elId);if(!el)return;
-var xDates=item.dates||[],yNets=item.nets||[],tot=Number(item.total_net||0);
-if(!xDates.length){el.innerHTML='<div style="padding:10px;font-size:12px;color:#64748b;">'+(item.name||'')+'：暫無逐日明細</div>';return;}
-var cols=yNets.map(function(v){return v>=0?'#eb4d4b':'#2ecc71';});
-var tickVals=[],tickText=[],prevYm='';
-for(var k=0;k<xDates.length;k++){var ym=String(xDates[k]).slice(0,7);if(ym!==prevYm){prevYm=ym;tickVals.push(xDates[k]);tickText.push(String(Number(ym.slice(5,7)))+'月');}}
-var sideTag=isBuySide?'買超':'賣超';
-var titleTxt=(idxRank+1)+'. '+item.name+'（近'+winDays+'日累計'+sideTag+'：'+(tot>0?'+':'')+tot.toLocaleString()+' 張）';
-Plotly.newPlot(el,[{type:'bar',x:xDates,y:yNets,marker:{color:cols},hovertemplate:'%{x}<br>買賣超: %{y:,} 張<extra></extra>'}],{title:{text:titleTxt,font:{size:12,color:'#1e293b'},x:0.02,xanchor:'left'},margin:{l:48,r:12,t:30,b:24},template:'plotly_white',xaxis:{type:'category',tickmode:'array',tickvals:tickVals,ticktext:tickText,tickangle:0,tickfont:{size:10.5}},yaxis:{title:{text:'張',font:{size:10}},tickfont:{size:10},zeroline:true,zerolinecolor:'#94a3b8'},showlegend:false},cfg);
-}
-for(var bi2=0;bi2<t5b.length;bi2++)drawBar('__CID___bb_'+bi2,t5b[bi2],bi2,true);
-for(var si2=0;si2<t5s.length;si2++)drawBar('__CID___bs_'+si2,t5s[si2],si2,false);
-setTimeout(pushH,80);
-}
-if(selEl)selEl.addEventListener('change',function(){render(curIdx);});
-window.addEventListener('message',function(ev){var msg=ev.data||{};if(msg.type==='MCHART_SYNC_FOCUS'&&msg.idx>=0)render(msg.idx);});
-render(curIdx);
-})();</script>"""
-    return (tpl.replace("__CID__", chart_id)
+    <script>
+    (function(){
+      var DATES = __DATES__;
+      var IS_IDX = __IS_IDX__;
+      var PAYLOAD = __BROKER_JSON__;
+      var curIdx = __INIT_END__;
+      var hdrEl = document.getElementById('__CID___b_hdr');
+      var tblsEl = document.getElementById('__CID___b_tbls');
+      var selEl = document.getElementById('__CID___win_sel');
+      var warnEl = document.getElementById('__CID___b_warn');
+      var barsEl = document.getElementById('__CID___b_bars');
+      var cfg = { displayModeBar: false, responsive: true };
+      var MSG_60D_ON_DEMAND = '近 60 日分點統計採按需載入，請點擊上方「📥 載入近 60 日分點統計與明細」按鈕擷取。';
+
+      function pushH() {
+        try {
+          var h = document.getElementById('__CID___broker_root').scrollHeight + 16;
+          window.parent.postMessage({ isStreamlitMessage: true, type: 'streamlit:setFrameHeight', height: Math.max(420, h) }, '*');
+        } catch (e) {}
+      }
+
+      // 【修訂說明 2026-11-17】【修改目的與防呆防錯原因】：
+      // 買超前10名強制顯示紅字與正號(+)，賣超前10名強制顯示綠字與負號(-)，並即時矯正既有雲端快取正負值。
+      function makeTbl(title, buyList, sellList, emptyHint) {
+        function side(subTitle, rows, isBuySide) {
+          var h = '<div class="b-col"><div class="b-col-head" style="color:' + (isBuySide ? '#eb4d4b' : '#16a085') + ';">' + subTitle + '</div>';
+          if (!rows || !rows.length) {
+            return h + '<div style="padding:10px;font-size:12px;color:#64748b;">' + (emptyHint || '無資料') + '</div></div>';
+          }
+          h += '<table class="b-tbl"><thead><tr><th>#</th><th>分點名稱</th><th>買進</th><th>賣出</th><th>買賣超</th><th>佔比</th></tr></thead><tbody>';
+          for (var i = 0; i < rows.length; i++) {
+            var r = rows[i];
+            var rawNet = Math.abs(Number(r.net || 0));
+            var net = isBuySide ? rawNet : -rawNet;
+            var cls = isBuySide ? 'val-up' : 'val-dn';
+            var netStr = (isBuySide ? '+' : '-') + rawNet.toLocaleString();
+            var gov = (r.sys === '八大官股') ? '<span class="gov-tag">官股</span>' : '';
+            h += '<tr><td>' + (i + 1) + '</td><td>' + (r.name || '') + gov + '</td>' +
+                 '<td>' + Number(r.buy || 0).toLocaleString() + '</td>' +
+                 '<td>' + Number(r.sell || 0).toLocaleString() + '</td>' +
+                 '<td class="' + cls + '">' + netStr + '</td>' +
+                 '<td>' + (r.ratio || '-') + '</td></tr>';
+          }
+          h += '</tbody></table></div>';
+          return h;
+        }
+        return '<div class="b-sec-title">' + title + '</div><div class="b-grid">' +
+               side('🔴 買超前 10 名 (張)', buyList, true) +
+               side('🟢 賣超前 10 名 (張)', sellList, false) + '</div>';
+      }
+
+      function render(idx) {
+        if (IS_IDX || !DATES.length) {
+          hdrEl.innerHTML = '大盤指數無個別券商分點進出明細。';
+          tblsEl.innerHTML = '';
+          barsEl.innerHTML = '';
+          pushH();
+          return;
+        }
+        curIdx = Math.max(0, Math.min(DATES.length - 1, idx));
+        var d = DATES[curIdx];
+        hdrEl.innerHTML = '<b>關注交易日：' + d + '</b> ｜ 券商分點買賣超統計與雲端累積逐日明細（單位：張）';
+        var byDate = (PAYLOAD && PAYLOAD.by_date) ? PAYLOAD.by_date : {};
+        var dayData = byDate[d];
+        if (!dayData) {
+          var keys = Object.keys(byDate).sort();
+          if (keys.length) dayData = byDate[keys[keys.length - 1]];
+        }
+        if (!dayData) {
+          tblsEl.innerHTML = '<div style="padding:12px;font-size:12.5px;color:#64748b;">尚無此交易日之分點排行快取（請確認是否為非交易日或開啟強制更新重抓）。</div>';
+          barsEl.innerHTML = '';
+          pushH();
+          return;
+        }
+        var r1 = dayData.w1 || {}, r10 = dayData.w10 || {}, r20 = dayData.w20 || {}, r60 = dayData.w60 || {};
+        var has60 = (r60.buy && r60.buy.length) || (r60.sell && r60.sell.length);
+        tblsEl.innerHTML =
+          makeTbl('1. 當日分點統計買賣超各前十名（' + (r1.range_label || d) + '）', r1.buy, r1.sell) +
+          makeTbl('2. 前 10 日至關注交易日分點統計買賣超各前十名（' + (r10.range_label || '') + '）', r10.buy, r10.sell) +
+          makeTbl('3. 前 20 日至關注交易日分點統計買賣超各前十名（' + (r20.range_label || '') + '）', r20.buy, r20.sell) +
+          makeTbl('4. 前 60 日至關注交易日分點統計買賣超各前十名（' + (r60.range_label || '按需載入') + '）', r60.buy, r60.sell, has60 ? '無資料' : MSG_60D_ON_DEMAND);
+
+        var winDays = selEl ? selEl.value : '10';
+        if (winDays === '60' && !has60) {
+          if (warnEl) {
+            warnEl.innerHTML = '⚠️ <b>' + MSG_60D_ON_DEMAND + '</b>';
+            warnEl.style.display = 'block';
+          }
+          barsEl.innerHTML = '<div style="font-size:12px;color:#d97706;padding:6px;">尚未載入近 60 日明細資料。</div>';
+          pushH();
+          return;
+        } else {
+          if (warnEl) warnEl.style.display = 'none';
+        }
+
+        var winObj = dayData['w' + winDays] || {};
+        var t5b = winObj.top5_buy_series || [], t5s = winObj.top5_sell_series || [];
+        if (!t5b.length && !t5s.length) {
+          barsEl.innerHTML = '<div style="font-size:12px;color:#64748b;padding:6px;">此區間尚無前五大分點逐日柱狀圖資料。</div>';
+          pushH();
+          return;
+        }
+        var bHtml = '<div style="font-size:12.5px;font-weight:bold;color:#eb4d4b;margin:4px 0;">🔴 區間累計買超前 5 名分點 — 每日買賣超柱狀圖</div>';
+        for (var bi = 0; bi < t5b.length; bi++) bHtml += '<div id="__CID___bb_' + bi + '" class="b-bar"></div>';
+        bHtml += '<div style="font-size:12.5px;font-weight:bold;color:#16a085;margin:6px 0 4px 0;">🟢 區間累計賣超前 5 名分點 — 每日買賣超柱狀圖</div>';
+        for (var si = 0; si < t5s.length; si++) bHtml += '<div id="__CID___bs_' + si + '" class="b-bar"></div>';
+        barsEl.innerHTML = bHtml;
+
+        function drawBar(elId, item, idxRank, isBuySide) {
+          var el = document.getElementById(elId);
+          if (!el) return;
+          var xDates = item.dates || [], yNets = item.nets || [];
+          var absTot = Math.abs(Number(item.total_net || 0));
+          if (!xDates.length) {
+            el.innerHTML = '<div style="padding:10px;font-size:12px;color:#64748b;">' + (item.name || '') + '：暫無逐日明細</div>';
+            return;
+          }
+          var cols = yNets.map(function(v) { return Number(v) >= 0 ? '#eb4d4b' : '#2ecc71'; });
+          var tickVals = [], tickText = [], prevYm = '';
+          for (var k = 0; k < xDates.length; k++) {
+            var ym = String(xDates[k]).slice(0, 7);
+            if (ym !== prevYm) {
+              prevYm = ym;
+              tickVals.push(xDates[k]);
+              tickText.push(String(Number(ym.slice(5, 7))) + '月');
+            }
+          }
+          var sideTag = isBuySide ? '買超' : '賣超';
+          var sideColor = isBuySide ? '#eb4d4b' : '#16a085';
+          var signedTotStr = (isBuySide ? '+' : '-') + absTot.toLocaleString();
+          var titleTxt = (idxRank + 1) + '. ' + item.name + '（近' + winDays + '日累計' + sideTag + '：<span style="color:' + sideColor + ';font-weight:bold;">' + signedTotStr + ' 張</span>）';
+          Plotly.newPlot(el, [{
+            type: 'bar',
+            x: xDates,
+            y: yNets,
+            marker: { color: cols },
+            hovertemplate: '%{x}<br>買賣超: %{y:+,} 張<extra></extra>'
+          }], {
+            title: { text: titleTxt, font: { size: 12, color: '#1e293b' }, x: 0.02, xanchor: 'left' },
+            margin: { l: 48, r: 12, t: 30, b: 24 },
+            template: 'plotly_white',
+            xaxis: { type: 'category', tickmode: 'array', tickvals: tickVals, ticktext: tickText, tickangle: 0, tickfont: { size: 10.5 } },
+            yaxis: { title: { text: '張', font: { size: 10 } }, tickfont: { size: 10 }, zeroline: true, zerolinecolor: '#94a3b8' },
+            showlegend: false
+          }, cfg);
+        }
+        for (var bi2 = 0; bi2 < t5b.length; bi2++) drawBar('__CID___bb_' + bi2, t5b[bi2], bi2, true);
+        for (var si2 = 0; si2 < t5s.length; si2++) drawBar('__CID___bs_' + si2, t5s[si2], si2, false);
+        setTimeout(pushH, 80);
+      }
+
+      if (selEl) selEl.addEventListener('change', function() { render(curIdx); });
+      window.addEventListener('message', function(ev) {
+        var msg = ev.data || {};
+        if (msg.type === 'MCHART_SYNC_FOCUS' && msg.idx >= 0) render(msg.idx);
+      });
+      render(curIdx);
+    })();
+    </script></body></html>"""
+    return (tpl.replace("__CSS__", COMMON_CSS)
+            .replace("__CID__", chart_id)
             .replace("__DATES__", json.dumps(dates_list))
             .replace("__IS_IDX__", "true" if is_index else "false")
             .replace("__BROKER_JSON__", json.dumps(safe_payload, ensure_ascii=False))
-            .replace("__INIT_END__", str(end_idx))
-            )
+            .replace("__INIT_END__", str(end_idx)))
 # EOF frontend.py
