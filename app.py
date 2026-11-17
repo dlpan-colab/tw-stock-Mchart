@@ -1,6 +1,6 @@
 """
 app.py - 主應用程式介面與生命週期控制 (支援含英文後綴台股ETF + 上下檔瀏覽不亂序 + 雲端分點預設20日與60日按需載入版)
-版本: 202611172138
+版本: 202611172157
 """
 import os
 import time
@@ -10,7 +10,7 @@ import streamlit.components.v1 as components
 import cloud_sync
 
 MODULE_NAME = "app"
-MODULE_VERSION = "202611172138"
+MODULE_VERSION = "202611172157"
 
 
 # 【防呆防錯備註 2026-11-07】：版本控制權由 app.py 作為唯一權威源，動態掃描所有模組最大版本號，杜絕多頭覆寫與重工
@@ -718,11 +718,11 @@ if fig_top is not None and df_res is not None:
                 if st.button(f"📥 載入近 60 日分點統計與明細（基準日 {target_end_date_str}）", key=f"btn_load_60d_{req_60d_key}"):
                     st.session_state.broker_60d_requests.add(req_60d_key)
                     st.rerun()
-
         broker_html = get_broker_tab_html(
             df=df_res,
             chart_id=cid,
             initial_end_idx=end_idx,
+            disp_days=disp_days,    # <-- 補上這一行
             is_index=is_idx_flag,
             broker_payload=broker_payload
         )
