@@ -718,13 +718,14 @@ if fig_top is not None and df_res is not None:
                 if st.button(f"📥 載入近 60 日分點統計與明細（基準日 {target_end_date_str}）", key=f"btn_load_60d_{req_60d_key}"):
                     st.session_state.broker_60d_requests.add(req_60d_key)
                     st.rerun()
+
         broker_html = get_broker_tab_html(
             df=df_res,
+            broker_payload=broker_payload,
             chart_id=cid,
-            initial_end_idx=end_idx,
-            disp_days=disp_days,    # <-- 補上這一行
-            is_index=is_idx_flag,
-            broker_payload=broker_payload
+            end_idx=end_idx,
+            disp_days=disp_days,
+            is_mobile=is_mobile
         )
         components.html(broker_html, height=1680, scrolling=True)
 else:
