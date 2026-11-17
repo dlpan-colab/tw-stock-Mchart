@@ -1,7 +1,7 @@
 """
 app.py - 主應用程式介面與生命週期控制
-(支援含英文後綴台股ETF + 上下檔瀏覽不亂序 + 雲端分點預設20日與60日按需載入 + 盤中基準日防呆 + 雲端失敗即時通報版)
-版本: 202611172014
+(支援含英文後綴台股ETF + 上下檔瀏覽不亂序且不改動輸入框 + 雲端分點預設20日與60日按需載入 + 盤中基準日防呆 + 雲端失敗即時通報版)
+版本: 202611172028
 """
 import os
 import time
@@ -12,7 +12,7 @@ import streamlit.components.v1 as components
 import cloud_sync
 
 MODULE_NAME = "app"
-MODULE_VERSION = "202611172014"
+MODULE_VERSION = "202611172028"
 
 
 # 【防呆防錯備註 2026-11-07】：版本控制權由 app.py 作為唯一權威源，動態掃描所有模組最大版本號，杜絕多頭覆寫與重工
@@ -327,6 +327,8 @@ if "promote_to_top" not in st.session_state:
     st.session_state.promote_to_top = False
 if "broker_60d_requests" not in st.session_state:
     st.session_state.broker_60d_requests = set()
+if "pending_input_sync" not in st.session_state:
+    st.session_state.pending_input_sync = None
 
 
 def on_stock_input_change():
@@ -352,7 +354,7 @@ def on_history_select_change():
     """
     【修訂說明 2026-11-17】【修改目的與防呆防錯原因】：
     選取歷史紀錄下拉選單標的時，同步更新 stock_input_box 與 stock_id 並置頂查詢，
-    避免手機觸控未先收合下拉框即按查詢時事件被吞掉。
+    避免手機觸控未先收合下拉框即按查詢時事件被吞掉（於 callback 階段賦值安全合法）。
     """
     cur_key = f"history_selectbox_{st.session_state.ms_counter}"
     sel = st.session_state.get(cur_key, "選擇歷史紀錄...")
@@ -410,7 +412,7 @@ with st.sidebar:
                     if str(st.session_state.stock_id).strip().upper() == target_code:
                         next_code = remained[0]["code"] if remained else "2330"
                         st.session_state.stock_id = next_code
-                        st.session_state.stock_input_box = next_code
+                        st.session_state.pending_input_sync = next_code
                         st.session_state.promote_to_top = False
                     st.session_state.confirm_clear_all = False
                     st.session_state.ms_counter += 1
@@ -428,7 +430,7 @@ with st.sidebar:
                 if st.button("確認全刪", key="btn_confirm_delete_all", use_container_width=True):
                     clear_stock_history()
                     st.session_state.stock_id = "2330"
-                    st.session_state.stock_input_box = "2330"
+                    st.session_state.pending_input_sync = "2330"
                     st.session_state.promote_to_top = False
                     st.session_state.confirm_clear_all = False
                     st.session_state.ms_counter += 1
@@ -438,7 +440,11 @@ with st.sidebar:
                     st.session_state.confirm_clear_all = False
                     st.rerun()
 
-    if "stock_input_box" not in st.session_state:
+    # 【防呆防錯備註 2026-11-17】：僅在 st.text_input 實例化前處理清除紀錄之同步賦值，避免 StreamlitWidgetAlreadyInstantiatedError
+    if st.session_state.pending_input_sync is not None:
+        st.session_state.stock_input_box = st.session_state.pending_input_sync
+        st.session_state.pending_input_sync = None
+    elif "stock_input_box" not in st.session_state:
         st.session_state.stock_input_box = st.session_state.stock_id
     st.text_input("股票代號 (直接鍵入)", key="stock_input_box", on_change=on_stock_input_change)
 
@@ -641,22 +647,24 @@ sync_err_msg = cloud_sync.get_last_sync_error()
 if sync_err_msg:
     st.warning(f"⚠️ 雲端資料庫同步提示：{sync_err_msg}")
 
+# ==============================================================================
+# 【設計紀律與防呆備註 2026-11-17 — 嚴禁誤刪或改動引發重工】：
+# 1. 點擊「◀ 上一檔 / 下一檔 ▶」屬於依序瀏覽，絕對不可更改查詢歷史紀錄順序（promote_to_top 必須維持 False）。
+# 2. 點擊「◀ 上一檔 / 下一檔 ▶」絕對不可修改側邊欄「股票代號 (直接鍵入)」輸入框（stock_input_box），
+#    不僅符合操作直覺，亦可避免在 st.text_input 實例化後賦值觸發 StreamlitWidgetAlreadyInstantiatedError 崩潰。
+# ==============================================================================
 col_prev, col_next = st.columns([1, 1])
 with col_prev:
     if st.button("◀ 上一檔", disabled=not has_prev, use_container_width=True, key="btn_prev_stk"):
         prev_code = nav_codes[curr_idx - 1]
         st.session_state.stock_id = prev_code
-        st.session_state.stock_input_box = prev_code
         st.session_state.promote_to_top = False
-        st.session_state.ms_counter += 1
         st.rerun()
 with col_next:
     if st.button("下一檔 ▶", disabled=not has_next, use_container_width=True, key="btn_next_stk"):
         next_code = nav_codes[curr_idx + 1]
         st.session_state.stock_id = next_code
-        st.session_state.stock_input_box = next_code
         st.session_state.promote_to_top = False
-        st.session_state.ms_counter += 1
         st.rerun()
 
 # 3. 讀取圖表與渲染三頁籤介面
