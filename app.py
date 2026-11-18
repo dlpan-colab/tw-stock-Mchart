@@ -1,6 +1,6 @@
 """
-app.py - 主應用程式介面與生命週期控制 (支援含英文後綴台股ETF + 上下檔瀏覽不亂序 + 雲端分點預設20日與60日按需載入版)
-版本: 202611180702
+app.py - 主應用程式介面與生命週期控制 (支援含英文後綴台股ETF + 上下檔瀏覽不亂序 + 雲端分點預設20日與60日按需載入＋批次清除分點版)
+版本: 202611180828
 """
 import os
 import time
@@ -10,7 +10,7 @@ import streamlit.components.v1 as components
 import cloud_sync
 
 MODULE_NAME = "app"
-MODULE_VERSION = "202611180702"
+MODULE_VERSION = "202611180828"
 
 
 # 【防呆防錯備註 2026-11-07】：版本控制權由 app.py 作為唯一權威源，動態掃描所有模組最大版本號，杜絕多頭覆寫與重工
@@ -37,6 +37,9 @@ def get_system_version() -> str:
 
 SYSTEM_VERSION = get_system_version()
 
+# 【修訂說明 2026-11-18】【修改目的與防呆防錯原因】：
+# 修改目的：自 storage 匯入 clear_all_broker_data，供側邊欄「[上市/上櫃]批次作業」一鍵清除所有個股分點資料使用。
+# 防呆防錯原因：集中由 storage.py 執行本地與雲端 Google Drive 同步清理，確保不誤刪日線、法人、資券與集保大戶資料。
 from storage import (
     StockChipStorage,
     load_stock_history,
@@ -47,6 +50,7 @@ from storage import (
     get_stock_chinese_name,
     clear_recent_margin_data,
     clear_recent_institutional_data,
+    clear_all_broker_data,
     is_tw_stock_or_etf
 )
 from chart_builder import build_split_figures
@@ -346,6 +350,8 @@ if "disp_days" not in st.session_state:
     st.session_state.disp_days = 20
 if "confirm_clear_all" not in st.session_state:
     st.session_state.confirm_clear_all = False
+if "confirm_clear_brokers" not in st.session_state:
+    st.session_state.confirm_clear_brokers = False
 if "index_select_box" not in st.session_state:
     st.session_state.index_select_box = "選擇主要市場指數..."
 if "ms_counter" not in st.session_state:
@@ -646,6 +652,31 @@ with st.sidebar:
                     st.sidebar.warning(batch_res.get("msg", "批次更新未取得新資料。"))
             except Exception as e:
                 st.sidebar.error(f"批次作業異常: {e}")
+
+    # 【修訂說明 2026-11-18】【修改目的與防呆防錯原因】：
+    # 修改目的：在「[上市/上櫃]批次作業」新增「🗑️ 清除分點」按鈕（附二次確認防誤觸），一次清空所有本地與雲端個股資料庫之分點資料並清除快取。
+    # 防呆防錯原因：採用 confirm_clear_brokers 兩段式確認，防止單擊誤刪全部分點明細；執行時僅清空分點資料表，完整保留日線、法人、資券與集保大戶資料。
+    if st.button("🗑️ 清除分點", key="btn_clear_all_brokers", use_container_width=True):
+        st.session_state.confirm_clear_brokers = True
+        st.rerun()
+
+    if st.session_state.confirm_clear_brokers:
+        st.warning("⚠️ 確定要清除所有已收集個股的分點統計與逐日明細嗎？（日線、法人、資券與集保大戶將完整保留）")
+        cb1, cb2 = st.columns(2)
+        with cb1:
+            if st.button("確認清除分點", key="btn_confirm_clear_brokers", use_container_width=True):
+                with st.spinner("正在清除本地與雲端所有個股分點資料..."):
+                    msg_res = clear_all_broker_data()
+                    st.session_state.confirm_clear_brokers = False
+                    st.session_state.broker_60d_requests = set()
+                    get_cached_broker_payload.clear()
+                    st.sidebar.success(msg_res)
+                    time.sleep(0.6)
+                    st.rerun()
+        with cb2:
+            if st.button("取消", key="btn_cancel_clear_brokers", use_container_width=True):
+                st.session_state.confirm_clear_brokers = False
+                st.rerun()
 
 # ==============================================================================
 # 主畫面執行流程
