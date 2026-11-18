@@ -996,13 +996,23 @@ else:
         if c_name and c_name != current_stock:
             update_stock_name_only(current_stock, c_name)
 
+        ## 【修訂說明 2026-11-18】【修改目的與防呆防錯原因】：
+        ## 修改目的：確保未開啟復盤基準日時 end_idx 精準鎖定最新交易日 (len(df)-1)，且將 chart_id 動態綁定標的與索引。
+        ## 防呆防錯原因：徹底杜絕跨主頁籤切換標的（如自參數設定選取 2382 跳回個股頁籤）時，iframe 重用舊容器或初始焦點落回索引 0（最舊日）之異常。
+        #safe_end_idx = int(end_idx) if end_idx is not None else (len(df) - 1)
+        #if not st.session_state.use_target_date and len(df) > 1 and safe_end_idx <= 0:
+        #    safe_end_idx = len(df) - 1
+        # safe_end_idx = min(max(0, safe_end_idx), len(df) - 1)
+
         # 【修訂說明 2026-11-18】【修改目的與防呆防錯原因】：
-        # 修改目的：確保未開啟復盤基準日時 end_idx 精準鎖定最新交易日 (len(df)-1)，且將 chart_id 動態綁定標的與索引。
-        # 防呆防錯原因：徹底杜絕跨主頁籤切換標的（如自參數設定選取 2382 跳回個股頁籤）時，iframe 重用舊容器或初始焦點落回索引 0（最舊日）之異常。
-        safe_end_idx = int(end_idx) if end_idx is not None else (len(df) - 1)
-        if not st.session_state.use_target_date and len(df) > 1 and safe_end_idx <= 0:
+        # 修改目的：確保未開啟復盤基準日時 safe_end_idx 無條件精準鎖定最新交易日 (len(df) - 1)。
+        # 防呆防錯原因：原先僅判斷 safe_end_idx <= 0 才重設，若快取回傳殘留之中間索引（如 19），會導致初始視窗誤停於歷史舊日。
+        if not st.session_state.use_target_date:
             safe_end_idx = len(df) - 1
+        else:
+            safe_end_idx = int(end_idx) if end_idx is not None else (len(df) - 1)
         safe_end_idx = min(max(0, safe_end_idx), len(df) - 1)
+        
         cid_suffix = re.sub(r"[^A-Za-z0-9_]", "_", f"{current_stock}_{safe_end_idx}_{disp_n}")
 
         top_h = 270 if st.session_state.is_mobile_mode else 310
