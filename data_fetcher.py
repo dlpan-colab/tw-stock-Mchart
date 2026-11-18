@@ -1,7 +1,7 @@
 """
 data_fetcher.py - 整合技術與籌碼資料擷取模組
-(支援含英文後綴台股ETF + TWSE/TPEx官方日K即時補齊 + 雲端增量累積分點引擎 + 集保單檔FinMind與批次分離 + 賣超負值正規化 + 操作儀錶板盤中報價版 + 批次增補近N日分點統計與明細多格式日期相容版)
-版本: 202611190720
+(支援含英文後綴台股ETF + TWSE/TPEx官方日K即時補齊 + 雲端增量累積分點引擎 + 集保單檔FinMind與批次分離 + 賣超負值正規化 + 操作儀錶板盤中報價版 + 批次增補近N日分點統計與明細穩定版)
+版本: 202611190730
 """
 import os
 import re
@@ -17,7 +17,7 @@ from datetime import datetime, timedelta
 from urllib.parse import urljoin, urlparse, parse_qs, urlencode, urlunparse
 
 MODULE_NAME = "data_fetcher"
-MODULE_VERSION = "202611190720"
+MODULE_VERSION = "202611190730"
 
 from storage import (
     StockChipStorage,
@@ -775,30 +775,24 @@ def _parse_broker_side_table(table_soup, base_url: str, is_sell_side: bool = Fal
     return pd.DataFrame(rows_out)
 
 
-def _format_mdj_date_candidates(iso_date_str: str) -> list:
+def fetch_stock_broker_range_ranking(pure_code: str, start_date: str, end_date: str):
     """
     【修訂說明 2026-11-19】【修改目的與防呆防錯原因】：
-    富邦 eBroker zco.djhtm 對日期參數格式敏感，產生多組相容格式（YYYY-M-D、YYYY-MM-DD、YYYY/M/D），
-    確保不同歷史區間或伺服器參數解析皆能命中有效買賣超表格。
+    100% 還原原本已驗證成功之富邦 eBroker 網址規則：
+    - 當 start_date == end_date（最新當日）使用 zco_{code}.djhtm。
+    - 區間查詢使用標準 YYYY-MM-DD 格式之 zco.djhtm?a={code}&e={s_str}&f={e_str}，不試其他錯誤日期格式。
     """
-    s = str(iso_date_str or "").strip()[:10]
-    m = re.match(r"^(\d{4})-(\d{1,2})-(\d{1,2})$", s)
-    if not m:
-        return [s]
-    y, mo, d = int(m.group(1)), int(m.group(2)), int(m.group(3))
-    cands = [
-        f"{y}-{mo}-{d}",
-        f"{y:04d}-{mo:02d}-{d:02d}",
-        f"{y}/{mo}/{d}",
-    ]
-    out = []
-    for item in cands:
-        if item not in out:
-            out.append(item)
-    return out
+    code = str(pure_code or "").strip().upper()
+    if not code or code.startswith("^") or not is_tw_stock_or_etf(code):
+        return pd.DataFrame(), pd.DataFrame()
 
+    s_str = str(start_date).strip()[:10]
+    e_str = str(end_date).strip()[:10]
+    if s_str == e_str:
+        target_url = f"{MDJ_BASE_DOMAIN}/z/zc/zco/zco_{code}.djhtm"
+    else:
+        target_url = f"{MDJ_BASE_DOMAIN}/z/zc/zco/zco.djhtm?a={code}&e={s_str}&f={e_str}"
 
-def _fetch_and_parse_mdj_rank_url(target_url: str):
     try:
         res = requests.get(target_url, headers=MDJ_HEADERS, timeout=5)
         if res.status_code != 200:
@@ -838,46 +832,6 @@ def _fetch_and_parse_mdj_rank_url(target_url: str):
         return df_buy, df_sell
     except Exception:
         return pd.DataFrame(), pd.DataFrame()
-
-
-def fetch_stock_broker_range_ranking(pure_code: str, start_date: str, end_date: str):
-    """
-    【修訂說明 2026-11-19】【修改目的與防呆防錯原因】：
-    1. 同時相容富邦 eBroker zco.djhtm 多種日期格式（YYYY-M-D / YYYY-MM-DD / YYYY/M/D），
-       並於單日查詢回傳空表時自動比對最新預設頁 zco_{code}.djhtm 之資料日期，命中即回傳。
-    2. 防呆防錯：一旦任一格式成功取得有效買賣超表格立即回傳，絕不浪費多餘網路請求。
-    """
-    code = str(pure_code or "").strip().upper()
-    if not code or code.startswith("^") or not is_tw_stock_or_etf(code):
-        return pd.DataFrame(), pd.DataFrame()
-
-    s_str = str(start_date).strip()[:10]
-    e_str = str(end_date).strip()[:10]
-
-    s_cands = _format_mdj_date_candidates(s_str)
-    e_cands = _format_mdj_date_candidates(e_str)
-    for sc, ec in zip(s_cands, e_cands):
-        url_q = f"{MDJ_BASE_DOMAIN}/z/zc/zco/zco.djhtm?a={code}&e={sc}&f={ec}"
-        df_b, df_s = _fetch_and_parse_mdj_rank_url(url_q)
-        if (df_b is not None and not df_b.empty) or (df_s is not None and not df_s.empty):
-            return df_b, df_s
-
-    if s_str == e_str:
-        default_url = f"{MDJ_BASE_DOMAIN}/z/zc/zco/zco_{code}.djhtm"
-        try:
-            res = requests.get(default_url, headers=MDJ_HEADERS, timeout=5)
-            if res.status_code == 200:
-                html_text = res.content.decode("cp950", errors="replace")
-                m_dt = re.search(r"資料日期[：:]\s*(\d{2,4}[-/]\d{1,2}[-/]\d{1,2})", html_text)
-                page_iso = _parse_roc_or_iso_date(m_dt.group(1)) if m_dt else ""
-                if not page_iso or page_iso == e_str:
-                    df_b, df_s = _fetch_and_parse_mdj_rank_url(default_url)
-                    if (df_b is not None and not df_b.empty) or (df_s is not None and not df_s.empty):
-                        return df_b, df_s
-        except Exception:
-            pass
-
-    return pd.DataFrame(), pd.DataFrame()
 
 
 def fetch_single_broker_daily_series(detail_url: str, start_date: str, end_date: str) -> pd.DataFrame:
@@ -1104,12 +1058,11 @@ def _get_stock_trade_dates_for_backfill(pure_code: str) -> list:
 def batch_backfill_broker_range_ranks(recent_days: int = 5, progress_callback=None) -> dict:
     """
     【修訂說明 2026-11-19】【修改目的與防呆防錯原因】：
-    1. 修改目的：針對所有已建立資料庫之個股，自最新交易日起往前推近 N 日（recent_days），
-       逐日作為基準日，向富邦 eBroker 補齊當日(1日)、近10日、近20日、近60日買賣超前10名統計（broker_range_rank），
-       同時保留各分點之明細網址（url）供後續「增補近N日分點明細」直接讀取，無需重爬排行榜。
-    2. 防呆防錯原因：
-       - 若該基準日於資料庫已具備 1/10/20/60 四區間有效買賣超紀錄則直接跳過。
-       - 單檔個股只要有任何新寫入即同步上傳 Google 雲端硬碟（_do_sync_db_push），並於進度列回報實際抓到筆數。
+    1. 修改目的：僅使用已驗證成功之富邦標準 YYYY-MM-DD 網址邏輯：
+       - 最新交易日（target_idx == total_len - 1）抓取 1、10、20、60 日四區間統計；
+       - 往前推之歷史交易日（target_idx < total_len - 1）抓取 10、20、60 日區間統計（富邦不支援歷史單日參數）；
+       - 同時保留各分點明細網址（url）供後續「增補近N日分點明細」直接讀取。
+    2. 防呆防錯原因：拿掉所有錯誤日期格式猜測與無效重試，單檔有新寫入即同步上傳 Google 雲端硬碟。
     """
     from storage import _do_sync_db_push
     n_days = max(1, min(60, int(recent_days or 5)))
@@ -1159,28 +1112,28 @@ def batch_backfill_broker_range_ranks(recent_days: int = 5, progress_callback=No
 
         storage = StockChipStorage(code)
         total_len = len(trade_dates)
+        latest_idx = total_len - 1
         start_pos = max(0, total_len - n_days)
         stock_changed = False
         stock_added_days = 0
 
         for target_idx in range(start_pos, total_len):
             end_date_str = trade_dates[target_idx]
+            req_windows = (1, 10, 20, 60) if target_idx == latest_idx else (10, 20, 60)
+
             existing_bundle = storage.load_broker_range_rank(end_date_str)
-            if existing_bundle is not None and all(_has_valid_win(existing_bundle, w) for w in (1, 10, 20, 60)):
+            if existing_bundle is not None and all(_has_valid_win(existing_bundle, w) for w in req_windows):
                 skipped_days += 1
                 continue
 
             day_bundle = dict(existing_bundle) if isinstance(existing_bundle, dict) else {}
-            missing_wins = [w for w in (1, 10, 20, 60) if not _has_valid_win(day_bundle, w)]
+            missing_wins = [w for w in req_windows if not _has_valid_win(day_bundle, w)]
             has_new_valid = False
 
             for idx_w, w in enumerate(missing_wins):
                 s_i = max(0, target_idx - w + 1)
                 s_str = trade_dates[s_i]
                 df_b, df_s = fetch_stock_broker_range_ranking(code, s_str, end_date_str)
-                if (df_b is None or df_b.empty) and (df_s is None or df_s.empty):
-                    time.sleep(0.25)
-                    df_b, df_s = fetch_stock_broker_range_ranking(code, s_str, end_date_str)
 
                 b_recs = _df_to_rank_recs(df_b)
                 s_recs = _df_to_rank_recs(df_s)
@@ -1210,13 +1163,13 @@ def batch_backfill_broker_range_ranks(recent_days: int = 5, progress_callback=No
             if progress_callback:
                 progress_callback(
                     idx_c, total_codes,
-                    f"[{idx_c}/{total_codes}] ✅ {code} {c_name} 抓到 {stock_added_days} 日統計並已同步雲端（累計 {updated_stocks} 檔）"
+                    f"[{idx_c}/{total_codes}] ✅ {code} {c_name} 新增 {stock_added_days} 日統計並已同步雲端（累計 {updated_stocks} 檔）"
                 )
         else:
             if progress_callback:
                 progress_callback(
                     idx_c, total_codes,
-                    f"[{idx_c}/{total_codes}] ⏭️ {code} {c_name} 富邦回傳 0 筆或已有完整資料"
+                    f"[{idx_c}/{total_codes}] ⏭️ {code} {c_name} 已有完整資料或無新資料"
                 )
 
     return {
@@ -1226,7 +1179,7 @@ def batch_backfill_broker_range_ranks(recent_days: int = 5, progress_callback=No
         "skipped_days": skipped_days,
         "msg": (
             f"分點統計增補完成（近 {n_days} 日）：共掃描 {total_codes} 檔個股，"
-            f"新寫入並同步雲端 {updated_stocks} 檔（{updated_days} 個交易日之 1/10/20/60 日統計），"
+            f"新寫入並同步雲端 {updated_stocks} 檔（{updated_days} 個交易日統計），"
             f"略過已有完整資料 {skipped_days} 日。"
         )
     }
@@ -1292,9 +1245,6 @@ def batch_backfill_broker_daily_series(recent_days: int = 5, progress_callback=N
                     s_i = max(0, target_idx - w + 1)
                     s_str = trade_dates[s_i]
                     df_b, df_s = fetch_stock_broker_range_ranking(code, s_str, end_date_str)
-                    if (df_b is None or df_b.empty) and (df_s is None or df_s.empty):
-                        time.sleep(0.25)
-                        df_b, df_s = fetch_stock_broker_range_ranking(code, s_str, end_date_str)
 
                     for df_side in (df_b, df_s):
                         if df_side is not None and not df_side.empty:
