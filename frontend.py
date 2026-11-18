@@ -1,18 +1,18 @@
 """
-frontend.py - 前端 HTML/CSS 渲染模組 (以 v202611162200 右邊界鎖定與雙向同步為基底 + 分點買賣超紅綠對齊＋柱狀圖鎖死不可縮放版)
-版本: 202611180901
+frontend.py - 前端 HTML/CSS 渲染模組 (以 v202611162200 右邊界鎖定與雙向同步為基底 + 分點買賣超紅綠對齊＋柱狀圖 staticPlot 徹底鎖死不可平移縮放版)
+版本: 202611180910
 """
 import json
 import pandas as pd
 
 MODULE_NAME = "frontend"
-MODULE_VERSION = "202611180901"
+MODULE_VERSION = "202611180910"
 
 
 # 【修訂說明 2026-11-18】【修改目的與防呆防錯原因】：
 # 修改目的：保留主圖上方圖例與互動操作說明列，並兼容未傳入 version_tag 之呼叫方式。
 # 防呆防錯原因：app.py 以 get_legend_html() 無參數呼叫，設定預設參數確保不觸發 TypeError。
-def get_legend_html(version_tag: str = "202611180901") -> str:
+def get_legend_html(version_tag: str = "202611180910") -> str:
     return """
     <div style="font-size:12px; color:#334155; background:#f1f5f9; padding:5px 8px; border-radius:5px; margin-bottom:4px; line-height:1.5;">
         <b>📌 圖例與互動操作說明：</b>
@@ -287,8 +287,8 @@ elChip.addEventListener('touchstart',onMove,{passive:true});elChip.addEventListe
 #    (a) 兼容現行 app.py 傳入之參數 (df, broker_payload, chart_id, end_idx, disp_days, is_mobile) 與舊版簽名，無需更動 app.py。
 #    (b) 買超前 10 名強制顯示紅字與正號(+)、賣超前 10 名強制顯示綠字與負號(-)，提高 CSS 權重避免遭預設黑字覆蓋。
 #    (c) 第 5 項柱狀圖以關注交易日往前推算之完整區間交易日陣列 (dates.slice(...)) 作為統一 X 軸，無進出交易日自動補 0，徹底防止明細少於 3 筆時柱子拉寬成整片方塊；X 軸維持僅於每月首日標示月份。
-#    (d) 柱狀圖全面鎖死不可放大縮小與拖曳（layout.dragmode=false、xaxis.fixedrange=true、yaxis.fixedrange=true、config.doubleClick=false），並設定 touch-action: pan-y 避免手機上下捲動誤觸縮放。
-# 2. 防呆防錯原因：以 end_idx if end_idx is not None else initial_end_idx 雙重接軌索引，確保切換個股與基準日時關注交易日完全對齊。
+#    (d) 分點柱狀圖 config 設為 staticPlot: true 且 .b-bar 設 pointer-events: none; touch-action: pan-y，徹底禁止任何手指／滑鼠上下左右平移或雙指放大縮小。
+# 2. 防呆防錯原因：Plotly 在 staticPlot: false 時即使設定 fixedrange: true，手機雙指捏合仍會繞過改寫座標軸範圍；改用 staticPlot: true 從底層完全關閉互動事件，確保比例永遠鎖定且網頁捲動順暢。
 def get_broker_tab_html(
     df: pd.DataFrame,
     broker_payload: dict = None,
@@ -318,7 +318,7 @@ def get_broker_tab_html(
 .b-tbl td.val-dn{color:#16a085!important;font-weight:bold!important}
 .b-tbl th:nth-child(1),.b-tbl td:nth-child(1),.b-tbl th:nth-child(2),.b-tbl td:nth-child(2){text-align:left}
 .gov-badge{display:inline-block;background:#fef3c7;color:#92400e;font-size:10px;padding:0 3px;border-radius:3px;margin-left:3px;border:1px solid #f59e0b}
-.b-bar{width:100%;height:185px;border:1px solid #e2e8f0;border-radius:4px;margin-bottom:6px;background:#fff;touch-action:pan-y!important}
+.b-bar{width:100%;height:185px;border:1px solid #e2e8f0;border-radius:4px;margin-bottom:6px;background:#fff;pointer-events:none!important;touch-action:pan-y!important;user-select:none!important;-webkit-user-select:none!important}
 </style>
 <div class="frame-root" id="__CID___broker_root">
   <div id="__CID___b_hdr" class="pane-info-bar" style="margin-bottom:6px;"></div>
@@ -339,7 +339,7 @@ def get_broker_tab_html(
 </div>
 <script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>
 <script>(function(){var dates=__DATES__,isIndex=__IS_IDX__,payload=__BROKER_JSON__,curIdx=__INIT_END__;
-var cfg={responsive:true,displayModeBar:false,scrollZoom:false,doubleClick:false};
+var cfg={responsive:true,staticPlot:true,displayModeBar:false,scrollZoom:false,doubleClick:false};
 var rootEl=document.getElementById('__CID___broker_root'),hdrEl=document.getElementById('__CID___b_hdr');
 var tblsEl=document.getElementById('__CID___b_tbls'),selEl=document.getElementById('__CID___b_sel'),warnEl=document.getElementById('__CID___b_warn'),barsEl=document.getElementById('__CID___b_bars');
 var MSG_60D_ON_DEMAND='尚未載入近 60 日統計（預設僅載入至 20 日；請點擊上方「📥 載入近 60 日分點統計與明細」按鈕按需抓取）';
@@ -395,7 +395,7 @@ var sideTag=isBuySide?'買超':'賣超';
 var signPrefix=isBuySide?'+':'-';
 var titleColor=isBuySide?'#eb4d4b':'#16a085';
 var titleTxt=(idxRank+1)+'. '+item.name+'（近'+winDays+'日累計'+sideTag+'：'+signPrefix+rawTot.toLocaleString()+' 張）';
-Plotly.newPlot(el,[{type:'bar',x:xDates,y:yNets,marker:{color:cols},hovertemplate:'%{x}<br>買賣超: %{y:+,} 張<extra></extra>'}],{title:{text:titleTxt,font:{size:12,color:titleColor},x:0.02,xanchor:'left'},margin:{l:48,r:12,t:30,b:24},template:'plotly_white',dragmode:false,xaxis:{type:'category',fixedrange:true,tickmode:'array',tickvals:tickVals,ticktext:tickText,tickangle:0,tickfont:{size:10.5}},yaxis:{fixedrange:true,title:{text:'張',font:{size:10}},tickfont:{size:10},zeroline:true,zerolinecolor:'#94a3b8'},showlegend:false},cfg);
+Plotly.newPlot(el,[{type:'bar',x:xDates,y:yNets,marker:{color:cols}}],{title:{text:titleTxt,font:{size:12,color:titleColor},x:0.02,xanchor:'left'},margin:{l:48,r:12,t:30,b:24},template:'plotly_white',dragmode:false,xaxis:{type:'category',fixedrange:true,tickmode:'array',tickvals:tickVals,ticktext:tickText,tickangle:0,tickfont:{size:10.5}},yaxis:{fixedrange:true,title:{text:'張',font:{size:10}},tickfont:{size:10},zeroline:true,zerolinecolor:'#94a3b8'},showlegend:false},cfg);
 }
 for(var bi2=0;bi2<t5b.length;bi2++)drawBar('__CID___bb_'+bi2,t5b[bi2],bi2,true);
 for(var si2=0;si2<t5s.length;si2++)drawBar('__CID___bs_'+si2,t5s[si2],si2,false);
