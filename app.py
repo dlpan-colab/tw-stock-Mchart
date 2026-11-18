@@ -562,66 +562,98 @@ if selected_main_tab == "📊 操作儀錶板":
 
     if not dash_rows:
         st.info("目前自選／查詢歷史清單尚無台股個股或 ETF，請於上方輸入股票代號並點擊「新增」。")
+ ################################################################################################
     else:
         latest_d_str = next((r["trade_date"] for r in dash_rows if r["trade_date"] != "-"), "-")
         st.caption(
-            f"資料基準日：{latest_d_str} ｜ 均線燈號規則：成交價 > 5日/20日均線顯示紅色 ▲；成交價 <= 5日/20日均線顯示綠色 ▼（點擊下方標的按鈕可切換至「個股」主頁籤，維持清單原順序不置頂）"
+            f"資料基準日：{latest_d_str} ｜ 均線燈號規則：成交價 > 5日/20日均線顯示紅色 ▲；成交價 <= 5日/20日均線顯示綠色 ▼（直接點擊表單內「股票名稱」即可進入個股圖表，維持清單原順序不置頂）"
         )
+        # 【修訂說明 2026-11-18】【修改目的與防呆防錯原因】：
+        # 修改目的：將操作儀錶板表格內的「股票名稱」改為原生可點擊按鈕，點擊後直接跳轉「📈 個股」主頁籤並保留清單原順序，同時移除下方重複按鈕列。
+        # 防呆防錯原因：加入 dash-grid-row 專用橫向不換行與文字按鈕樣式，防止手機窄螢幕將 7 欄自動折疊成垂直卡片，確保表格閱讀體驗一致。
+        st.markdown("""
+        <style>
+        div[data-testid="stVerticalBlock"]:has(.dash-grid-anchor) [data-testid="stHorizontalBlock"] {
+            display: flex !important;
+            flex-direction: row !important;
+            flex-wrap: nowrap !important;
+            align-items: center !important;
+            gap: 2px !important;
+            border-bottom: 1px solid #e2e8f0 !important;
+            padding: 3px 0 !important;
+            margin: 0 !important;
+        }
+        div[data-testid="stVerticalBlock"]:has(.dash-grid-anchor) [data-testid="stHorizontalBlock"] > div {
+            flex: 1 1 0 !important;
+            width: auto !important;
+            min-width: 0 !important;
+            max-width: none !important;
+            text-align: center !important;
+        }
+        div[data-testid="stVerticalBlock"]:has(.dash-grid-anchor) [data-testid="stHorizontalBlock"] > div:nth-child(1) {
+            flex: 1.55 1 0 !important;
+        }
+        div[data-testid="stVerticalBlock"]:has(.dash-grid-anchor) [data-testid="stHorizontalBlock"] > div:nth-child(5) {
+            flex: 1.25 1 0 !important;
+        }
+        div[data-testid="stVerticalBlock"]:has(.dash-grid-anchor) [data-testid="stHorizontalBlock"] button {
+            background: transparent !important;
+            border: 1px solid transparent !important;
+            color: #1d4ed8 !important;
+            font-weight: 800 !important;
+            font-size: 13px !important;
+            padding: 2px 4px !important;
+            min-height: 28px !important;
+            text-decoration: underline !important;
+            box-shadow: none !important;
+        }
+        div[data-testid="stVerticalBlock"]:has(.dash-grid-anchor) [data-testid="stHorizontalBlock"] button:hover {
+            background: #eff6ff !important;
+            border-color: #93c5fd !important;
+        }
+        .dash-hdr-cell {background:#f1f5f9; color:#1e293b; font-weight:700; font-size:12.5px; padding:6px 2px; text-align:center;}
+        .dash-cell {font-size:12.5px; color:#0f172a; text-align:center; padding:4px 2px; white-space:nowrap;}
+        </style>
+        <div class="dash-grid-anchor"></div>
+        """, unsafe_allow_html=True)
 
-        html_lines = [
-            "<div class='dash-tbl-wrap'><table class='dash-tbl'>",
-            "<thead><tr>",
-            "<th>股票名稱</th><th>代號</th><th>市/櫃</th><th>成交價</th><th>成交量(張)</th><th>5日均線</th><th>20日均線</th>",
-            "</tr></thead><tbody>"
-        ]
+        col_ratios = [1.55, 1.0, 0.85, 1.05, 1.25, 0.9, 0.9]
+        hdr_cols = st.columns(col_ratios)
+        headers_txt = ["股票名稱", "代號", "市/櫃", "成交價", "成交量(張)", "5日均線", "20日均線"]
+        for c_obj, h_txt in zip(hdr_cols, headers_txt):
+            c_obj.markdown(f"<div class='dash-hdr-cell'>{h_txt}</div>", unsafe_allow_html=True)
+
         for r in dash_rows:
             p_val = r["price"]
             v_val = r["vol_sheets"]
             ma5_v = r["ma5"]
             ma20_v = r["ma20"]
-
             p_str = f"{p_val:.2f}" if p_val is not None else "-"
             v_str = f"{int(round(v_val)):,}" if v_val is not None else "-"
-
             if p_val is not None and ma5_v is not None:
                 ma5_html = "<span class='dash-up'>▲</span>" if p_val > ma5_v else "<span class='dash-dn'>▼</span>"
             else:
                 ma5_html = "-"
-
             if p_val is not None and ma20_v is not None:
                 ma20_html = "<span class='dash-up'>▲</span>" if p_val > ma20_v else "<span class='dash-dn'>▼</span>"
             else:
                 ma20_html = "-"
 
-            html_lines.append(
-                f"<tr>"
-                f"<td><b>{r['name']}</b></td>"
-                f"<td>{r['code']}</td>"
-                f"<td>{r['market']}</td>"
-                f"<td><b>{p_str}</b></td>"
-                f"<td>{v_str}</td>"
-                f"<td>{ma5_html}</td>"
-                f"<td>{ma20_html}</td>"
-                f"</tr>"
-            )
-        html_lines.append("</tbody></table></div>")
-        st.markdown("".join(html_lines), unsafe_allow_html=True)
-
-        st.markdown("<div style='font-size:12.5px; font-weight:700; color:#334155; margin-bottom:4px;'>⚡ 點擊進入「個股」深度圖表（維持清單原順序不置頂）：</div>", unsafe_allow_html=True)
-        cols_per_row = 3
-        for start_i in range(0, len(dash_rows), cols_per_row):
-            chunk = dash_rows[start_i:start_i + cols_per_row]
-            btn_cols = st.columns(len(chunk))
-            for idx_c, item_r in enumerate(chunk):
-                with btn_cols[idx_c]:
-                    lbl = f"{item_r['code']} {item_r['name']}"
-                    if st.button(lbl, key=f"btn_jump_stock_{item_r['code']}", use_container_width=True):
-                        st.session_state.stock_id = item_r["code"]
-                        st.session_state.pending_stock_input = item_r["code"]
-                        st.session_state.promote_to_top = False
-                        st.session_state.pending_main_tab = "📈 個股"
-                        st.rerun()
-
+            row_cols = st.columns(col_ratios)
+            with row_cols[0]:
+                if st.button(r["name"], key=f"dash_name_jump_{r['code']}", use_container_width=True):
+                    st.session_state.stock_id = r["code"]
+                    st.session_state.pending_stock_input = r["code"]
+                    st.session_state.promote_to_top = False
+                    st.session_state.pending_main_tab = "📈 個股"
+                    st.rerun()
+            row_cols[1].markdown(f"<div class='dash-cell'>{r['code']}</div>", unsafe_allow_html=True)
+            row_cols[2].markdown(f"<div class='dash-cell'>{r['market']}</div>", unsafe_allow_html=True)
+            row_cols[3].markdown(f"<div class='dash-cell'><b>{p_str}</b></div>", unsafe_allow_html=True)
+            row_cols[4].markdown(f"<div class='dash-cell'>{v_str}</div>", unsafe_allow_html=True)
+            row_cols[5].markdown(f"<div class='dash-cell'>{ma5_html}</div>", unsafe_allow_html=True)
+            row_cols[6].markdown(f"<div class='dash-cell'>{ma20_html}</div>", unsafe_allow_html=True)
+############################################################################
 
 # =====================================================================
 # 主頁籤 3：⚙️ 參數設定（原左側邊欄所有參數與籌碼維護完整收納）
