@@ -1024,7 +1024,7 @@ else:
             df=df,
             chart_id=f"mchart_top_{cid_suffix}",
             top_height=top_h,
-            initial_disp_days=disp_n,
+            initial_disp_days=int(st.session_state.disp_days),
             initial_end_idx=safe_end_idx
         )
         components.html(top_html, height=top_h + 62, scrolling=False)
@@ -1037,7 +1037,7 @@ else:
                 df=df,
                 chart_id=f"mchart_tech_{cid_suffix}",
                 tech_height=tech_h,
-                initial_disp_days=disp_n,
+                initial_disp_days=int(st.session_state.disp_days),
                 initial_end_idx=safe_end_idx
             )
             components.html(tech_html, height=tech_h + 75, scrolling=False)
@@ -1048,7 +1048,7 @@ else:
                 df=df,
                 chart_id=f"mchart_chip_{cid_suffix}",
                 chip_height=chip_h,
-                initial_disp_days=disp_n,
+                initial_disp_days=int(st.session_state.disp_days),
                 initial_end_idx=safe_end_idx,
                 m1_thresh=st.session_state.m1_thresh,
                 m2_thresh=st.session_state.m2_thresh
