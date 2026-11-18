@@ -1,19 +1,19 @@
 """
 frontend.py - 前端 HTML/CSS 渲染模組
-(以 v202611162200 右邊界鎖定與雙向同步為基底 + 分點買賣超紅綠對齊＋柱狀圖 staticPlot 徹底鎖死不可平移縮放 + 強制關閉 Plotly autorange 鎖死倒數20筆至最新日版)
-版本: 202611182136
+(恢復 16 日正常版純淨 20 日初始可視視窗 + 分點買賣超紅綠對齊＋柱狀圖 staticPlot 徹底鎖死不可平移縮放版)
+版本: 202611182200
 """
 import json
 import pandas as pd
 
 MODULE_NAME = "frontend"
-MODULE_VERSION = "202611182136"
+MODULE_VERSION = "202611182200"
 
 
 # 【修訂說明 2026-11-18】【修改目的與防呆防錯原因】：
 # 修改目的：保留主圖上方圖例與互動操作說明列，並兼容未傳入 version_tag 之呼叫方式。
 # 防呆防錯原因：app.py 以 get_legend_html() 無參數呼叫，設定預設參數確保不觸發 TypeError。
-def get_legend_html(version_tag: str = "202611182136") -> str:
+def get_legend_html(version_tag: str = "202611182200") -> str:
     return """
     <div style="font-size:12px; color:#334155; background:#f1f5f9; padding:5px 8px; border-radius:5px; margin-bottom:4px; line-height:1.5;">
         <b>📌 圖例與互動操作說明：</b>
@@ -61,9 +61,8 @@ function fmtDiff(v,d){if(v===null||v===undefined||isNaN(v))return'-';var n=Numbe
 
 
 # 【修訂說明 2026-11-18】【修改目的與防呆防錯原因】：
-# 修改目的：在 Plotly.newPlot 前強制將所有 X 軸設定 autorange=false 並指派 [currentR0, currentR1]，
-#           且於 Plotly.relayout 明確傳入 range[0]、range[1] 與 autorange: false，鎖死視窗於資料庫倒數第 20 筆至最後 1 筆。
-# 防呆防錯原因：Plotly Python make_subplots 轉出 JSON 時預設帶有 autorange: true，會覆蓋 range 陣列並把視窗重設為前 20 筆 [0, 19.5]。
+# 修改目的：恢復 16 日正常版（5131d5f）之初始 20 日 X 軸視窗設定，移除先前測試加入之額外 relayout 鎖定物件。
+# 防呆防錯原因：在已修復 app.py safe_end_idx 為 len(df)-1 後，直接以 pTop.layout.xaxis.range=[currentR0,currentR1] 初始化即可穩定顯示最近 20 日，避免第二次 relayout 將視窗拉成全年全覽。
 def get_top_chart_html(fig_top, df: pd.DataFrame, chart_id: str, top_height: int = 270, initial_disp_days: int = 20, initial_end_idx: int = None) -> str:
     n_pts = len(df)
     end_idx = n_pts - 1 if initial_end_idx is None else initial_end_idx
@@ -85,7 +84,7 @@ def get_top_chart_html(fig_top, df: pd.DataFrame, chart_id: str, top_height: int
 var pTop=__P_TOP__,dates=__DATES__,opens=__OPENS__,highs=__HIGHS__,lows=__LOWS__,closes=__CLOSES__,vols=__VOLS__;
 var ma5s=__MA5S__,ma20s=__MA20S__,ma60s=__MA60S__,turnovers=__TURNOVERS__;
 var totalPoints=dates.length,initEnd=__INIT_END__,targetDays=Number(__DISP_DAYS__)||20;
-var currentR0=Math.max(0,initEnd-targetDays+1)-0.5,currentR1=initEnd+0.5,isUpdating=true;
+var currentR0=Math.max(0,initEnd-targetDays+1)-0.5,currentR1=initEnd+0.5,isUpdating=false;
 var elTop=document.getElementById('__CID___top'),info1=document.getElementById('__CID___info1');
 var lineX=document.getElementById('__CID___line_x'),lineY=document.getElementById('__CID___line_y');
 
@@ -107,23 +106,9 @@ function renderInfo(idx){if(idx<0||idx>=totalPoints)return;
 }
 
 var b0=calcBounds(currentR0,currentR1);
-if(pTop.layout.xaxis){pTop.layout.xaxis.autorange=false;pTop.layout.xaxis.range=[currentR0,currentR1];}
-if(pTop.layout.xaxis2){pTop.layout.xaxis2.autorange=false;pTop.layout.xaxis2.range=[currentR0,currentR1];}
-if(pTop.layout.yaxis){pTop.layout.yaxis.autorange=false;pTop.layout.yaxis.range=b0.p;}
-if(pTop.layout.yaxis2){pTop.layout.yaxis2.autorange=false;pTop.layout.yaxis2.range=b0.v;}
-
-var lockTopObj={
-    'xaxis.autorange':false,'xaxis.range[0]':currentR0,'xaxis.range[1]':currentR1,
-    'xaxis2.autorange':false,'xaxis2.range[0]':currentR0,'xaxis2.range[1]':currentR1,
-    'yaxis.autorange':false,'yaxis.range[0]':b0.p[0],'yaxis.range[1]':b0.p[1],
-    'yaxis2.autorange':false,'yaxis2.range[0]':b0.v[0],'yaxis2.range[1]':b0.v[1]
-};
-
-Plotly.newPlot(elTop,pTop.data,pTop.layout,{responsive:true,displayModeBar:false,scrollZoom:false}).then(function(){
-    renderInfo(initEnd);
-    Plotly.relayout(elTop,lockTopObj).finally(function(){
-        setTimeout(function(){isUpdating=false;},150);
-    });
+pTop.layout.xaxis.range=[currentR0,currentR1];if(pTop.layout.xaxis2)pTop.layout.xaxis2.range=[currentR0,currentR1];
+pTop.layout.yaxis.range=b0.p;if(pTop.layout.yaxis2)pTop.layout.yaxis2.range=b0.v;
+Plotly.newPlot(elTop,pTop.data,pTop.layout,{responsive:true,displayModeBar:false,scrollZoom:false}).then(function(){renderInfo(initEnd);
     elTop.on('plotly_relayout',function(ed){if(isUpdating)return;
         var r0=ed['xaxis.range[0]']??ed['xaxis2.range[0]']??(ed['xaxis.range']?ed['xaxis.range'][0]:null);
         var r1=ed['xaxis.range[1]']??ed['xaxis2.range[1]']??(ed['xaxis.range']?ed['xaxis.range'][1]:null);
@@ -131,11 +116,11 @@ Plotly.newPlot(elTop,pTop.data,pTop.layout,{responsive:true,displayModeBar:false
         isUpdating=true;var span=r1-r0,maxB=(totalPoints-1)+0.5;
         if(r1>maxB){r1=maxB;r0=r1-span;}currentR0=r0;currentR1=r1;
         var vb=calcBounds(r0,r1);broadcastToSiblings({type:'MCHART_SYNC_XRANGE',r0:r0,r1:r1});
-        Plotly.relayout(elTop,{'xaxis.autorange':false,'xaxis.range[0]':r0,'xaxis.range[1]':r1,'xaxis2.autorange':false,'xaxis2.range[0]':r0,'xaxis2.range[1]':r1,'yaxis.range':vb.p,'yaxis2.range':vb.v}).finally(function(){setTimeout(function(){isUpdating=false;},20);});
+        Plotly.relayout(elTop,{'xaxis.range':[r0,r1],'xaxis2.range':[r0,r1],'yaxis.range':vb.p,'yaxis2.range':vb.v}).finally(function(){setTimeout(function(){isUpdating=false;},20);});
     });
     window.addEventListener('message',function(ev){var msg=ev.data||{};
         if(msg.type==='MCHART_SYNC_XRANGE'&&!isUpdating){isUpdating=true;currentR0=msg.r0;currentR1=msg.r1;var vb=calcBounds(currentR0,currentR1);
-            Plotly.relayout(elTop,{'xaxis.autorange':false,'xaxis.range[0]':currentR0,'xaxis.range[1]':currentR1,'xaxis2.autorange':false,'xaxis2.range[0]':currentR0,'xaxis2.range[1]':currentR1,'yaxis.range':vb.p,'yaxis2.range':vb.v}).finally(function(){setTimeout(function(){isUpdating=false;},20);});
+            Plotly.relayout(elTop,{'xaxis.range':[currentR0,currentR1],'xaxis2.range':[currentR0,currentR1],'yaxis.range':vb.p,'yaxis2.range':vb.v}).finally(function(){setTimeout(function(){isUpdating=false;},20);});
         }else if(msg.type==='MCHART_SYNC_FOCUS'&&msg.idx>=0)renderInfo(msg.idx);
     });
     function onMove(e){var cx=(e.touches&&e.touches.length>0)?e.touches[0].clientX:e.clientX;if(cx===undefined)return;
@@ -182,7 +167,7 @@ def get_tech_tab_html(fig_btm, df: pd.DataFrame, chart_id: str, tech_height: int
 var pTech=__P_TECH__,dates=__DATES__,ks=__KS__,ds=__DS__,difs=__DIFS__,macds=__MACDS__,oscs=__OSCS__,obvs=__OBVS__,obvMas=__OBVMAS__;
 var bias20s=__BIAS20__,bias120s=__BIAS120__,bias240s=__BIAS240__,bias1200s=__BIAS1200__;
 var totalPoints=dates.length,initEnd=__INIT_END__,targetDays=Number(__DISP_DAYS__)||20;
-var currentR0=Math.max(0,initEnd-targetDays+1)-0.5,currentR1=initEnd+0.5,isUpdating=true;
+var currentR0=Math.max(0,initEnd-targetDays+1)-0.5,currentR1=initEnd+0.5,isUpdating=false;
 var elTech=document.getElementById('__CID___tech'),infoTech=document.getElementById('__CID___info_tech'),lineTech=document.getElementById('__CID___line_tech');
 
 function renderInfo(idx){if(idx<0||idx>=totalPoints)return;
@@ -190,29 +175,20 @@ function renderInfo(idx){if(idx<0||idx>=totalPoints)return;
     infoTech.innerHTML='<div><span class="tag-lbl"><b>'+d+'</b></span> <span class="tag-lbl"><b>KD(9)</b></span><span style="color:#e74c3c;">K:'+fmtNum(ks[idx],1)+'</span> <span style="color:#3498db;">D:'+fmtNum(ds[idx],1)+'</span> | <span class="tag-lbl"><b>OBV</b></span><span style="color:#16a085;">OBV:'+fmtNum(obvs[idx],0)+'</span> <span style="color:#8e44ad;">MA20:'+fmtNum(obvMas[idx],0)+'</span></div><div><span class="tag-lbl"><b>MACD('+d+')</b></span><span style="color:#f39c12;">DIF:'+fmtNum(difs[idx])+'</span> <span style="color:#2980b9;">MACD:'+fmtNum(macds[idx])+'</span> OSC:<span class="'+oscClass+'">'+fmtNum(oscs[idx])+'</span> | <span class="tag-lbl"><b>乖離率</b></span><span style="color:#e67e22;">20日:</span>'+fmtBias(bias20s[idx])+' <span style="color:#2980b9;">120日:</span>'+fmtBias(bias120s[idx])+' <span style="color:#8e44ad;">240日:</span>'+fmtBias(bias240s[idx])+' <span style="color:#e74c3c;">1200日:</span>'+fmtBias(bias1200s[idx])+'</div>';
 }
 
-var initUpd={};
-for(var r=1;r<=4;r++){
-    var kt=r===1?'xaxis':'xaxis'+r;
-    if(pTech.layout&&pTech.layout[kt]){pTech.layout[kt].autorange=false;pTech.layout[kt].range=[currentR0,currentR1];}
-    initUpd[kt+'.autorange']=false;initUpd[kt+'.range[0]']=currentR0;initUpd[kt+'.range[1]']=currentR1;
-}
-Plotly.newPlot(elTech,pTech.data,pTech.layout,{responsive:true,displayModeBar:false,scrollZoom:false}).then(function(){
-    renderInfo(initEnd);
-    Plotly.relayout(elTech,initUpd).finally(function(){
-        setTimeout(function(){isUpdating=false;},150);
-    });
+for(var r=1;r<=4;r++){var kt=r===1?'xaxis':'xaxis'+r;if(pTech.layout&&pTech.layout[kt])pTech.layout[kt].range=[currentR0,currentR1];}
+Plotly.newPlot(elTech,pTech.data,pTech.layout,{responsive:true,displayModeBar:false,scrollZoom:false}).then(function(){renderInfo(initEnd);
     elTech.on('plotly_relayout',function(ed){if(isUpdating)return;var r0=null,r1=null;
         for(var k=1;k<=4;k++){var p=k===1?'xaxis':'xaxis'+k;if(ed[p+'.range[0]']!==undefined)r0=ed[p+'.range[0]'];if(ed[p+'.range[1]']!==undefined)r1=ed[p+'.range[1]'];}
         if(r0===null||r1===null||(Math.abs(r0-currentR0)<0.001&&Math.abs(r1-currentR1)<0.001))return;
         isUpdating=true;var span=r1-r0,maxB=(totalPoints-1)+0.5;
         if(r1>maxB){r1=maxB;r0=r1-span;}currentR0=r0;currentR1=r1;
-        var upd={};for(var i=1;i<=4;i++){var px=i===1?'xaxis':'xaxis'+i;upd[px+'.autorange']=false;upd[px+'.range[0]']=r0;upd[px+'.range[1]']=r1;}
+        var upd={};for(var i=1;i<=4;i++)upd[(i===1?'xaxis':'xaxis'+i)+'.range']=[r0,r1];
         broadcastToSiblings({type:'MCHART_SYNC_XRANGE',r0:r0,r1:r1});
         Plotly.relayout(elTech,upd).finally(function(){setTimeout(function(){isUpdating=false;},20);});
     });
     window.addEventListener('message',function(ev){var msg=ev.data||{};
         if(msg.type==='MCHART_SYNC_XRANGE'&&!isUpdating){isUpdating=true;currentR0=msg.r0;currentR1=msg.r1;
-            var upd={};for(var i=1;i<=4;i++){var px=i===1?'xaxis':'xaxis'+i;upd[px+'.autorange']=false;upd[px+'.range[0]']=currentR0;upd[px+'.range[1]']=currentR1;}
+            var upd={};for(var i=1;i<=4;i++)upd[(i===1?'xaxis':'xaxis'+i)+'.range']=[currentR0,currentR1];
             Plotly.relayout(elTech,upd).finally(function(){setTimeout(function(){isUpdating=false;},20);});
         }else if(msg.type==='MCHART_SYNC_FOCUS'){if(msg.showLine&&msg.idx>=0){renderInfo(msg.idx);var xa=elTech._fullLayout?elTech._fullLayout.xaxis:null;if(xa&&typeof xa.c2p==='function'){lineTech.style.left=(xa.c2p(msg.idx)+(xa._offset||80))+'px';lineTech.style.display='block';}}
             else lineTech.style.display='none';
@@ -263,7 +239,7 @@ def get_chip_tab_html(fig_btm, df: pd.DataFrame, chart_id: str, chip_height: int
 var pChip=__P_CHIP__,dates=__DATES__,foreigns=__FOREIGNS__,trusts=__TRUSTS__,dealers=__DEALERS__,mDiffs=__MDIFFS__,sDiffs=__SDIFFS__,rat=__RATIOS__;
 var m1_pcts=__M1PCTS__,m2_pcts=__M2PCTS__,m1_thresh=__M1TH__,m2_thresh=__M2TH__;
 var totalPoints=dates.length,initEnd=__INIT_END__,targetDays=Number(__DISP_DAYS__)||20;
-var currentR0=Math.max(0,initEnd-targetDays+1)-0.5,currentR1=initEnd+0.5,isUpdating=true;
+var currentR0=Math.max(0,initEnd-targetDays+1)-0.5,currentR1=initEnd+0.5,isUpdating=false;
 var elChip=document.getElementById('__CID___chip'),infoMs=document.getElementById('__CID___info_ms'),infoChip=document.getElementById('__CID___info_chip'),lineChip=document.getElementById('__CID___line_chip');
 
 function renderInfo(idx){if(idx<0||idx>=totalPoints)return;
@@ -272,29 +248,20 @@ function renderInfo(idx){if(idx<0||idx>=totalPoints)return;
     infoChip.innerHTML='<span class="tag-lbl"><b>法人集保('+d+')</b></span>外資:'+fmtDiff(foreigns[idx],0)+' 投信:'+fmtDiff(trusts[idx],0)+' 自營:'+fmtDiff(dealers[idx],0)+' | ≥'+m1_thresh+'張: '+fmtNum(m1_pcts[idx])+'% ≥'+m2_thresh+'張: '+fmtNum(m2_pcts[idx])+'%';
 }
 
-var initUpd={};
-for(var c=1;c<=6;c++){
-    var kc=c===1?'xaxis':'xaxis'+c;
-    if(pChip.layout&&pChip.layout[kc]){pChip.layout[kc].autorange=false;pChip.layout[kc].range=[currentR0,currentR1];}
-    initUpd[kc+'.autorange']=false;initUpd[kc+'.range[0]']=currentR0;initUpd[kc+'.range[1]']=currentR1;
-}
-Plotly.newPlot(elChip,pChip.data,pChip.layout,{responsive:true,displayModeBar:false,scrollZoom:false}).then(function(){
-    renderInfo(initEnd);
-    Plotly.relayout(elChip,initUpd).finally(function(){
-        setTimeout(function(){isUpdating=false;},150);
-    });
+for(var c=1;c<=6;c++){var kc=c===1?'xaxis':'xaxis'+c;if(pChip.layout&&pChip.layout[kc])pChip.layout[kc].range=[currentR0,currentR1];}
+Plotly.newPlot(elChip,pChip.data,pChip.layout,{responsive:true,displayModeBar:false,scrollZoom:false}).then(function(){renderInfo(initEnd);
     elChip.on('plotly_relayout',function(ed){if(isUpdating)return;var r0=null,r1=null;
         for(var k=1;k<=6;k++){var p=k===1?'xaxis':'xaxis'+k;if(ed[p+'.range[0]']!==undefined)r0=ed[p+'.range[0]'];if(ed[p+'.range[1]']!==undefined)r1=ed[p+'.range[1]'];}
         if(r0===null||r1===null||(Math.abs(r0-currentR0)<0.001&&Math.abs(r1-currentR1)<0.001))return;
         isUpdating=true;var span=r1-r0,maxB=(totalPoints-1)+0.5;
         if(r1>maxB){r1=maxB;r0=r1-span;}currentR0=r0;currentR1=r1;
-        var upd={};for(var i=1;i<=6;i++){var px=i===1?'xaxis':'xaxis'+i;upd[px+'.autorange']=false;upd[px+'.range[0]']=r0;upd[px+'.range[1]']=r1;}
+        var upd={};for(var i=1;i<=6;i++)upd[(i===1?'xaxis':'xaxis'+i)+'.range']=[r0,r1];
         broadcastToSiblings({type:'MCHART_SYNC_XRANGE',r0:r0,r1:r1});
         Plotly.relayout(elChip,upd).finally(function(){setTimeout(function(){isUpdating=false;},20);});
     });
     window.addEventListener('message',function(ev){var msg=ev.data||{};
         if(msg.type==='MCHART_SYNC_XRANGE'&&!isUpdating){isUpdating=true;currentR0=msg.r0;currentR1=msg.r1;
-            var upd={};for(var i=1;i<=6;i++){var px=i===1?'xaxis':'xaxis'+i;upd[px+'.autorange']=false;upd[px+'.range[0]']=currentR0;upd[px+'.range[1]']=currentR1;}
+            var upd={};for(var i=1;i<=6;i++)upd[(i===1?'xaxis':'xaxis'+i)+'.range']=[currentR0,currentR1];
             Plotly.relayout(elChip,upd).finally(function(){setTimeout(function(){isUpdating=false;},20);});
         }else if(msg.type==='MCHART_SYNC_FOCUS'){if(msg.showLine&&msg.idx>=0){renderInfo(msg.idx);var xa=elChip._fullLayout?elChip._fullLayout.xaxis:null;if(xa&&typeof xa.c2p==='function'){lineChip.style.left=(xa.c2p(msg.idx)+(xa._offset||80))+'px';lineChip.style.display='block';}}
             else lineChip.style.display='none';
