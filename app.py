@@ -1,6 +1,6 @@
 """
-app.py - 主應用程式介面與生命週期控制 (支援含英文後綴台股ETF + 上下檔瀏覽不亂序 + 雲端分點預設20日與60日按需載入＋批次清除分點版)
-版本: 202611180828
+app.py - 主應用程式介面與生命週期控制 (支援含英文後綴台股ETF + 上下檔瀏覽不亂序 + 雲端分點預設20日與60日按需載入＋批次清除分點＋手機版標題完整顯示版)
+版本: 202611180904
 """
 import os
 import time
@@ -10,7 +10,7 @@ import streamlit.components.v1 as components
 import cloud_sync
 
 MODULE_NAME = "app"
-MODULE_VERSION = "202611180828"
+MODULE_VERSION = "202611180904"
 
 
 # 【防呆防錯備註 2026-11-07】：版本控制權由 app.py 作為唯一權威源，動態掃描所有模組最大版本號，杜絕多頭覆寫與重工
@@ -701,11 +701,16 @@ else:
 auth_code = cloud_sync.get_auth_status()
 status_icon = "🟡" if auth_code == 2 else ("🔵" if auth_code == 1 else "⚪")
 
+# 【修訂說明 2026-11-18】【修改目的與防呆防錯原因】：
+# 修改目的：將主標題「台股技術與籌碼分析」與系統版本號「vYYYYMMDDHHMM + 雲端燈號」改為上下兩行顯示。
+# 防呆防錯原因：手機直向螢幕扣除右側兩顆 65px 導覽按鈕後寬度有限，單行 white-space:nowrap 會導致版本號右側遭按鈕遮蓋，分兩行可確保完整呈現。
 nav_c1, nav_c2, nav_c3 = st.columns([4, 1, 1])
 with nav_c1:
     st.markdown(
-        f"<div style='font-size:15px; font-weight:700; color:#1e293b; white-space:nowrap;'>"
-        f"台股技術與籌碼分析 <span style='font-size:12px; color:#64748b;'>v{SYSTEM_VERSION}</span> {status_icon}</div>",
+        f"<div style='line-height:1.25;'>"
+        f"<div style='font-size:14.5px; font-weight:700; color:#1e293b;'>台股技術與籌碼分析</div>"
+        f"<div style='font-size:12px; color:#475569; font-weight:600;'>v{SYSTEM_VERSION} {status_icon}</div>"
+        f"</div>",
         unsafe_allow_html=True
     )
 with nav_c2:
