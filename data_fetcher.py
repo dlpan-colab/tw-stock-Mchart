@@ -1,7 +1,7 @@
 """
 data_fetcher.py - 整合技術與籌碼資料擷取模組
-(支援含英文後綴台股ETF + TWSE/TPEx官方日K即時補齊 + 雲端增量累積分點引擎 + 集保單檔FinMind與批次分離 + 賣超負值正規化 + 操作儀錶板盤中報價版)
-版本: 202611182050
+(支援含英文後綴台股ETF + TWSE/TPEx官方日K即時補齊 + 雲端增量累積分點引擎 + 集保單檔FinMind與批次分離 + 賣超負值正規化 + 操作儀錶板盤中報價版 + 批次增補近N日分點統計與明細)
+版本: 202611190700
 """
 import os
 import re
@@ -17,7 +17,7 @@ from datetime import datetime, timedelta
 from urllib.parse import urljoin, urlparse, parse_qs, urlencode, urlunparse
 
 MODULE_NAME = "data_fetcher"
-MODULE_VERSION = "202611182050"
+MODULE_VERSION = "202611190700"
 
 from storage import (
     StockChipStorage,
@@ -990,3 +990,257 @@ def fetch_dashboard_watchlist_rows(history_records: list) -> list:
         })
 
     return rows
+
+
+# =====================================================================
+# 【上市/上櫃】批次作業：增補近 N 日分點統計與分點逐日明細
+# =====================================================================
+
+def _collect_all_stock_db_codes() -> list:
+    """
+    【修訂說明 2026-11-19】
+    掃描本地目錄與 Google Drive 雲端資料夾內所有已建立之台股個股/ETF資料庫（data_*.db），
+    自動排除 ^ 開頭大盤指數。
+    """
+    codes_set = set()
+    for p in glob.glob(os.path.join(".", "data_*.db")):
+        cu = os.path.basename(p).replace("data_", "").replace(".db", "").strip().upper()
+        if cu and not cu.startswith("^") and is_tw_stock_or_etf(cu):
+            codes_set.add(cu)
+
+    try:
+        from cloud_sync import GoogleDriveSync
+        sync_client = GoogleDriveSync()
+        if sync_client.service and sync_client.folder_id:
+            q = f"'{sync_client.folder_id}' in parents and name contains 'data_' and name contains '.db' and trashed = false"
+            res = sync_client.service.files().list(
+                q=q, fields="files(id, name)", pageSize=250
+            ).execute()
+            for f in res.get("files", []):
+                fname = f.get("name", "")
+                cu = fname.replace("data_", "").replace(".db", "").strip().upper()
+                if cu and not cu.startswith("^") and is_tw_stock_or_etf(cu):
+                    codes_set.add(cu)
+    except Exception:
+        pass
+
+    return sorted(codes_set)
+
+
+def _get_stock_trade_dates_for_backfill(pure_code: str) -> list:
+    """
+    【修訂說明 2026-11-19】
+    優先自本地/雲端 SQLite 的 daily_k 取得已排序交易日清單；若不足 65 筆或為空，
+    透過 fetch_stock_daily_k 補齊 1y 日K線以確保能精準計算 10/20/60 日區間起訖日。
+    """
+    storage = StockChipStorage(pure_code)
+    df_k = storage.load_daily_k_df()
+    if df_k is None or len(df_k) < 65:
+        k_res = fetch_stock_daily_k(pure_code, period="1y", force_refresh=False)
+        if k_res and k_res[0] is not None and not k_res[0].empty:
+            df_k = k_res[0]
+    if df_k is None or df_k.empty:
+        return []
+    return [d.strftime("%Y-%m-%d") for d in df_k.index]
+
+
+def batch_backfill_broker_range_ranks(recent_days: int = 5) -> dict:
+    """
+    【修訂說明 2026-11-19】【修改目的與防呆防錯原因】：
+    1. 修改目的：針對所有已建立資料庫之個股，自最新交易日起往前推近 N 日（recent_days），
+       逐日作為基準日，向富邦 eBroker 補齊當日(1日)、近10日、近20日、近60日買賣超前10名統計（broker_range_rank）。
+    2. 防呆防錯原因：
+       - 若該基準日於資料庫已具備 1/10/20/60 四區間有效買賣超紀錄則直接跳過，避免重複爬蟲。
+       - 富邦 eBroker 偶發逾時回傳空表時自動重試 1 次；若仍無任何有效買賣超，絕不寫入空紀錄覆蓋資料庫。
+       - 單一基準日四區間補齊後寫入本地 SQLite，單檔個股全部基準日完成後再執行一次 sync_cloud=True，降低雲端 API 負擔。
+    """
+    n_days = max(1, min(60, int(recent_days or 5)))
+    codes = _collect_all_stock_db_codes()
+    if not codes:
+        return {"ok": False, "msg": "目前本地與雲端無任何已建立之台股個股資料庫。"}
+
+    def _has_valid_win(bundle_obj: dict, w_num: int) -> bool:
+        if not isinstance(bundle_obj, dict):
+            return False
+        w_item = bundle_obj.get(f"w{w_num}")
+        if not isinstance(w_item, dict):
+            return False
+        return bool(w_item.get("buy") or w_item.get("sell"))
+
+    def _df_to_rank_recs(df_rank) -> list:
+        if df_rank is None or df_rank.empty:
+            return []
+        recs = []
+        for _, r in df_rank.head(10).iterrows():
+            recs.append({
+                "name": str(r.get("分點名稱", "")),
+                "sys": str(r.get("體系", "")),
+                "buy": int(r.get("買進(張)", 0)),
+                "sell": int(r.get("賣出(張)", 0)),
+                "net": int(r.get("買賣超(張)", 0)),
+                "ratio": str(r.get("佔比", "-")),
+            })
+        return recs
+
+    updated_stocks = 0
+    updated_days = 0
+    skipped_days = 0
+
+    for code in codes:
+        trade_dates = _get_stock_trade_dates_for_backfill(code)
+        if not trade_dates:
+            continue
+
+        storage = StockChipStorage(code)
+        total_len = len(trade_dates)
+        start_pos = max(0, total_len - n_days)
+        stock_changed = False
+
+        for target_idx in range(start_pos, total_len):
+            end_date_str = trade_dates[target_idx]
+            existing_bundle = storage.load_broker_range_rank(end_date_str)
+            if existing_bundle is not None and all(_has_valid_win(existing_bundle, w) for w in (1, 10, 20, 60)):
+                skipped_days += 1
+                continue
+
+            day_bundle = dict(existing_bundle) if isinstance(existing_bundle, dict) else {}
+            missing_wins = [w for w in (1, 10, 20, 60) if not _has_valid_win(day_bundle, w)]
+            has_new_valid = False
+
+            for idx_w, w in enumerate(missing_wins):
+                s_i = max(0, target_idx - w + 1)
+                s_str = trade_dates[s_i]
+                df_b, df_s = fetch_stock_broker_range_ranking(code, s_str, end_date_str)
+                if (df_b is None or df_b.empty) and (df_s is None or df_s.empty):
+                    time.sleep(0.35)
+                    df_b, df_s = fetch_stock_broker_range_ranking(code, s_str, end_date_str)
+
+                b_recs = _df_to_rank_recs(df_b)
+                s_recs = _df_to_rank_recs(df_s)
+                if b_recs or s_recs:
+                    has_new_valid = True
+                    label = end_date_str if w == 1 else f"{s_str} ~ {end_date_str}"
+                    day_bundle[f"w{w}"] = {
+                        "range_label": label,
+                        "buy": b_recs,
+                        "sell": s_recs,
+                    }
+
+                if idx_w < len(missing_wins) - 1:
+                    time.sleep(0.15)
+
+            if has_new_valid and day_bundle:
+                storage.save_broker_range_rank(end_date_str, day_bundle, sync_cloud=False)
+                updated_days += 1
+                stock_changed = True
+
+            time.sleep(0.10)
+
+        if stock_changed:
+            # 觸發單檔資料庫一次性雲端同步
+            latest_saved = storage.load_broker_range_rank(trade_dates[-1])
+            if isinstance(latest_saved, dict):
+                storage.save_broker_range_rank(trade_dates[-1], latest_saved, sync_cloud=True)
+            else:
+                from storage import _do_sync_db_push
+                _do_sync_db_push(code)
+            updated_stocks += 1
+
+    return {
+        "ok": True,
+        "stocks_count": updated_stocks,
+        "updated_days": updated_days,
+        "skipped_days": skipped_days,
+        "msg": (
+            f"分點統計增補完成（近 {n_days} 日）：共掃描 {len(codes)} 檔個股，"
+            f"新寫入 {updated_stocks} 檔（{updated_days} 個交易日之 1/10/20/60 日統計），"
+            f"略過已有完整資料 {skipped_days} 日。"
+        )
+    }
+
+
+def batch_backfill_broker_daily_series(recent_days: int = 5) -> dict:
+    """
+    【修訂說明 2026-11-19】【修改目的與防呆防錯原因】：
+    1. 修改目的：針對所有已建立資料庫之個股，自最新交易日起往前推近 N 日（recent_days），
+       擷取各基準日近10日、近20日、近60日買超前5名與賣超前5名分點之 60 日逐日買賣超明細（broker_daily_trades），
+       供分點頁籤第 5 項柱狀圖直接繪製使用。
+    2. 防呆防錯原因：
+       - 若該分點於 [60日起始日 ~ 基準日] 區間內資料庫已有逐日明細紀錄，則自動跳過不重複請求。
+       - 透過 10/20/60 日排行榜頁面解析分點 `明細網址`，並依該基準日之 60 日區間一次抓取該分點逐日明細寫入。
+    """
+    n_days = max(1, min(60, int(recent_days or 5)))
+    codes = _collect_all_stock_db_codes()
+    if not codes:
+        return {"ok": False, "msg": "目前本地與雲端無任何已建立之台股個股資料庫。"}
+
+    updated_stocks = 0
+    saved_series_count = 0
+    skipped_series_count = 0
+
+    for code in codes:
+        trade_dates = _get_stock_trade_dates_for_backfill(code)
+        if not trade_dates:
+            continue
+
+        storage = StockChipStorage(code)
+        total_len = len(trade_dates)
+        start_pos = max(0, total_len - n_days)
+        stock_changed = False
+
+        for target_idx in range(start_pos, total_len):
+            end_date_str = trade_dates[target_idx]
+            s_60_idx = max(0, target_idx - 60 + 1)
+            earliest_start = trade_dates[s_60_idx]
+
+            broker_url_map = {}
+            for idx_w, w in enumerate((10, 20, 60)):
+                s_i = max(0, target_idx - w + 1)
+                s_str = trade_dates[s_i]
+                df_b, df_s = fetch_stock_broker_range_ranking(code, s_str, end_date_str)
+                if (df_b is None or df_b.empty) and (df_s is None or df_s.empty):
+                    time.sleep(0.30)
+                    df_b, df_s = fetch_stock_broker_range_ranking(code, s_str, end_date_str)
+
+                for df_side in (df_b, df_s):
+                    if df_side is not None and not df_side.empty:
+                        for _, row in df_side.head(5).iterrows():
+                            b_name = str(row.get("分點名稱", "")).strip()
+                            d_url = str(row.get("明細網址", "")).strip()
+                            if b_name and d_url and b_name not in broker_url_map:
+                                broker_url_map[b_name] = d_url
+
+                if idx_w < 2:
+                    time.sleep(0.12)
+
+            for b_name, d_url in broker_url_map.items():
+                existing_df = storage.load_broker_daily_series(b_name, earliest_start, end_date_str)
+                if existing_df is not None and not existing_df.empty:
+                    max_exist_d = str(existing_df["日期"].max())
+                    if max_exist_d >= end_date_str:
+                        skipped_series_count += 1
+                        continue
+
+                df_fresh = fetch_single_broker_daily_series(d_url, earliest_start, end_date_str)
+                if df_fresh is not None and not df_fresh.empty:
+                    storage.save_broker_daily_trades(b_name, df_fresh, sync_cloud=False)
+                    saved_series_count += 1
+                    stock_changed = True
+                time.sleep(0.08)
+
+        if stock_changed:
+            from storage import _do_sync_db_push
+            _do_sync_db_push(code)
+            updated_stocks += 1
+
+    return {
+        "ok": True,
+        "stocks_count": updated_stocks,
+        "saved_series": saved_series_count,
+        "skipped_series": skipped_series_count,
+        "msg": (
+            f"分點逐日明細增補完成（近 {n_days} 日）：共掃描 {len(codes)} 檔個股，"
+            f"更新 {updated_stocks} 檔（新增 {saved_series_count} 筆分點 60 日逐日明細，"
+            f"略過已有明細 {skipped_series_count} 筆）。"
+        )
+    }
