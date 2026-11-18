@@ -1,6 +1,6 @@
 """
-app.py - 主應用程式介面與生命週期控制 (支援含英文後綴台股ETF + 上下檔瀏覽不亂序 + 雲端分點預設20日與60日按需載入＋批次清除分點＋手機版標題完整顯示版)
-版本: 202611180904
+app.py - 主應用程式介面與生命週期控制 (支援含英文後綴台股ETF + 上下檔瀏覽不亂序 + 雲端分點預設20日與60日按需載入＋批次清除分點＋手機版標題與底部資訊條完整顯示版)
+版本: 202611180930
 """
 import os
 import time
@@ -10,7 +10,7 @@ import streamlit.components.v1 as components
 import cloud_sync
 
 MODULE_NAME = "app"
-MODULE_VERSION = "202611180904"
+MODULE_VERSION = "202611180930"
 
 
 # 【防呆防錯備註 2026-11-07】：版本控制權由 app.py 作為唯一權威源，動態掃描所有模組最大版本號，杜絕多頭覆寫與重工
@@ -209,7 +209,6 @@ def get_cached_broker_payload(
             })
         return recs
 
-    # 決定本次實際需向遠端抓取的視窗清單（若快取已有完整 1/10/20 日且僅按需載入 60 日，只抓 w60）
     if cached_rank is not None and not force_refresh:
         fetch_windows = [w for w in target_windows if not _has_valid_win(cached_rank, w)]
         if not fetch_windows:
@@ -381,13 +380,18 @@ def on_index_select_change():
         st.session_state.index_select_box = "選擇主要市場指數..."
 
 
+# 【修訂說明 2026-11-18】【修改目的與防呆防錯原因】：
+# 修改目的：歷史選單切換標的時同步更新 stock_id 與 pending_stock_input，避免直接覆寫已實體化之 stock_input_box。
+# 防呆防錯原因：遵守 Streamlit 元件生命週期規範，所有外部切換（歷史選單、上一檔、下一檔）統一透過 pending_stock_input 於元件實體化前同步。
 def on_history_select_change():
     cur_key = f"history_selectbox_{st.session_state.ms_counter}"
     sel = st.session_state.get(cur_key, "選擇歷史紀錄...")
     if sel and sel != "選擇歷史紀錄...":
         target_code = sel.split()[0].strip().upper()
         if target_code:
-            st.session_state.stock_input_box = target_code
+            st.session_state.stock_id = target_code
+            st.session_state.pending_stock_input = target_code
+            st.session_state.promote_to_top = False
             st.session_state.confirm_clear_all = False
 
 
@@ -440,7 +444,7 @@ with st.sidebar:
                     if str(st.session_state.stock_id).strip().upper() == target_code:
                         next_code = remained[0]["code"] if remained else "2330"
                         st.session_state.stock_id = next_code
-                        st.session_state.stock_input_box = next_code
+                        st.session_state.pending_stock_input = next_code
                         st.session_state.promote_to_top = False
                     st.session_state.confirm_clear_all = False
                     st.session_state.ms_counter += 1
@@ -458,7 +462,7 @@ with st.sidebar:
             if st.button("確認全刪", key="btn_confirm_delete_all", use_container_width=True):
                 clear_stock_history()
                 st.session_state.stock_id = "2330"
-                st.session_state.stock_input_box = "2330"
+                st.session_state.pending_stock_input = "2330"
                 st.session_state.promote_to_top = False
                 st.session_state.confirm_clear_all = False
                 st.session_state.ms_counter += 1
@@ -468,7 +472,12 @@ with st.sidebar:
                 st.session_state.confirm_clear_all = False
                 st.rerun()
 
-    if "stock_input_box" not in st.session_state:
+    # 【修訂說明 2026-11-18】【修改目的與防呆防錯原因】：
+    # 修改目的：於 st.text_input(key="stock_input_box") 實體化前，讀取並清除 pending_stock_input 緩衝變數同步至輸入框。
+    # 防呆防錯原因：徹底杜絕 StreamlitWidgetAlreadyInstantiatedError，避免上下檔或清除紀錄時在元件建立後修改 session_state.stock_input_box。
+    if "pending_stock_input" in st.session_state:
+        st.session_state.stock_input_box = st.session_state.pop("pending_stock_input")
+    elif "stock_input_box" not in st.session_state:
         st.session_state.stock_input_box = st.session_state.stock_id
 
     st.text_input("股票代號 (直接鍵入)", key="stock_input_box", on_change=on_stock_input_change)
@@ -702,8 +711,8 @@ auth_code = cloud_sync.get_auth_status()
 status_icon = "🟡" if auth_code == 2 else ("🔵" if auth_code == 1 else "⚪")
 
 # 【修訂說明 2026-11-18】【修改目的與防呆防錯原因】：
-# 修改目的：將主標題「台股技術與籌碼分析」與系統版本號「vYYYYMMDDHHMM + 雲端燈號」改為上下兩行顯示。
-# 防呆防錯原因：手機直向螢幕扣除右側兩顆 65px 導覽按鈕後寬度有限，單行 white-space:nowrap 會導致版本號右側遭按鈕遮蓋，分兩行可確保完整呈現。
+# 修改目的：將主標題「台股技術與籌碼分析」與系統版本號「vYYYYMMDDHHMM + 雲端燈號」改為上下兩行顯示；頂部上一檔／下一檔按鈕改用 pending_stock_input 同步輸入框。
+# 防呆防錯原因：避免手機版版本號被右側按鈕遮蓋，並防止在 stock_input_box 已實體化後直接賦值引發 StreamlitWidgetAlreadyInstantiatedError。
 nav_c1, nav_c2, nav_c3 = st.columns([4, 1, 1])
 with nav_c1:
     st.markdown(
@@ -716,13 +725,13 @@ with nav_c1:
 with nav_c2:
     if st.button("◀ 上一檔", key="btn_prev_top", use_container_width=True):
         st.session_state.stock_id = prev_stock_code
-        st.session_state.stock_input_box = prev_stock_code
+        st.session_state.pending_stock_input = prev_stock_code
         st.session_state.promote_to_top = False
         st.rerun()
 with nav_c3:
     if st.button("下一檔 ▶", key="btn_next_top", use_container_width=True):
         st.session_state.stock_id = next_stock_code
-        st.session_state.stock_input_box = next_stock_code
+        st.session_state.pending_stock_input = next_stock_code
         st.session_state.promote_to_top = False
         st.rerun()
 
@@ -820,9 +829,6 @@ if current_stock:
                         st.rerun()
 
             cid = "mchart_broker"
-            # 【修訂說明 2026-11-18】【修改目的與防呆防錯原因】：
-            # 修改目的：修正呼叫 get_broker_tab_html 時傳入 st.session_state.disp_days，與前文側邊欄變數一致。
-            # 防呆防錯原因：全域作用域並未宣告 disp_days 變數，避免觸發 NameError: name 'disp_days' is not defined。
             broker_html = get_broker_tab_html(
                 df=df_res,
                 broker_payload=broker_payload,
@@ -834,20 +840,38 @@ if current_stock:
             components.html(broker_html, height=1680, scrolling=True)
 
         # 【修訂說明 2026-11-18】【修改目的與防呆防錯原因】：
-        # 修改目的：補回頁籤列最下方的「◀ 上一檔 / 下一檔 ▶」導覽按鈕列，維持上下對稱瀏覽操作。
-        # 防呆防錯原因：使用獨立 key="btn_prev_btm" / "btn_next_btm" 避免與頂部按鈕產生 DuplicateWidgetID 衝突，且設定 promote_to_top=False 維持歷史清單原序。
-        st.markdown("<div style='margin-top: 8px;'></div>", unsafe_allow_html=True)
+        # 修改目的：補回頁籤最下方之「目前股票名稱 (代號) (上市/上櫃/指數)」資訊條，並於其下方配置「◀ 上一檔 / 下一檔 ▶」導覽按鈕列（採用 pending_stock_input 同步）。
+        # 防呆防錯原因：從 fig_top.layout.title.text 優先擷取已判定之完整市場別標籤（含上市/上櫃/指數），並使用獨立按鈕 key 避免 DuplicateWidgetID 與 StreamlitWidgetAlreadyInstantiatedError。
+        display_title_str = ""
+        try:
+            if hasattr(fig_top, "layout") and getattr(fig_top.layout, "title", None) and fig_top.layout.title.text:
+                display_title_str = re.sub(r'<[^>]+>', '', str(fig_top.layout.title.text)).strip()
+        except Exception:
+            display_title_str = ""
+        if not display_title_str:
+            clean_c_name = str(c_name or "").strip()
+            if clean_c_name and clean_c_name != cur_upper:
+                display_title_str = f"{clean_c_name} ({cur_upper})"
+            else:
+                display_title_str = cur_upper
+
+        st.markdown(
+            f"<div style='margin-top:8px; margin-bottom:4px; padding:5px 10px; background:#f8fafc; "
+            f"border:1px solid #cbd5e1; border-radius:6px; text-align:center; font-size:13.5px; "
+            f"font-weight:700; color:#1e293b;'>📌 目前標的：{display_title_str}</div>",
+            unsafe_allow_html=True
+        )
         btm_c1, btm_c2 = st.columns(2)
         with btm_c1:
             if st.button("◀ 上一檔", key="btn_prev_btm", use_container_width=True):
                 st.session_state.stock_id = prev_stock_code
-                st.session_state.stock_input_box = prev_stock_code
+                st.session_state.pending_stock_input = prev_stock_code
                 st.session_state.promote_to_top = False
                 st.rerun()
         with btm_c2:
             if st.button("下一檔 ▶", key="btn_next_btm", use_container_width=True):
                 st.session_state.stock_id = next_stock_code
-                st.session_state.stock_input_box = next_stock_code
+                st.session_state.pending_stock_input = next_stock_code
                 st.session_state.promote_to_top = False
                 st.rerun()
 # EOF app.py
