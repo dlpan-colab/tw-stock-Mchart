@@ -359,8 +359,8 @@ if(typeof ResizeObserver!=='undefined'&&rootEl){new ResizeObserver(function(){pu
 function fmtI(v){var n=Number(v)||0;return n.toLocaleString('en-US');}
 function fmtNet(v,isBuySide){var n=Number(v)||0;if(isBuySide){var a=Math.abs(n);return a>0?'+'+a.toLocaleString('en-US'):'0';}else{var b=Math.abs(n);return b>0?'-'+b.toLocaleString('en-US'):'0';}}
 function buildSideTable(title,rows,isBuySide){var h='<div style="border:1px solid #cbd5e1;border-radius:5px;padding:4px;background:#fff;"><div style="font-size:12px;font-weight:bold;margin-bottom:4px;color:'+(isBuySide?'#eb4d4b':'#16a085')+';">'+title+'</div><div class="b-wrap"><table class="b-tbl"><thead><tr><th>名次</th><th>分點名稱</th><th>買進</th><th>賣出</th><th>買賣超</th><th>佔比</th></tr></thead><tbody>';
-    if(!rows||rows.length===0){h+='<tr><td colspan="6" style="text-align:center;color:#94a3b8;padding:10px;">查無分點明細資料</td></tr>';}
-    else{for(var i=0;i<rows.length;i++){var r=rows[i],badge=(r.sys==='八大官股')?'<span class="gov-badge">八大官股</span>':''
+    if(!rows||rows.length===0){h+='<tr><td colspan="6" style="text-align:center;color:#94a3b8;padding:10px;">查無分點明細資料</td></tr>';}   
+    else{for(var i=0;i<rows.length;i++){var r=rows[i],badge=(r.sys==='八大官股')?'<span class="gov-badge">八大官股</span>':'',cls=isBuySide?'val-up':'val-dn';
         h+='<tr><td>'+(i+1)+'</td><td><b>'+r.name+'</b>'+badge+'</td><td>'+fmtI(r.buy)+'</td><td>'+fmtI(r.sell)+'</td><td class="'+cls+'">'+fmtNet(r.net,isBuySide)+'</td><td>'+(r.ratio||'-')+'</td></tr>';}}
     return h+'</tbody></table></div></div>';
 }
