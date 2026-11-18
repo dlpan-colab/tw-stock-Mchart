@@ -1,7 +1,7 @@
 """
 data_fetcher.py - 整合技術與籌碼資料擷取模組
-(支援含英文後綴台股ETF + TWSE/TPEx官方日K即時補齊 + 雲端增量累積分點引擎 + 集保單檔FinMind與批次分離 + 賣超負值正規化 + 操作儀錶板盤中報價版 + 批次增補近N日分點統計與明細)
-版本: 202611190700
+(支援含英文後綴台股ETF + TWSE/TPEx官方日K即時補齊 + 雲端增量累積分點引擎 + 集保單檔FinMind與批次分離 + 賣超負值正規化 + 操作儀錶板盤中報價版 + 批次增補近N日分點統計與明細即時進度版)
+版本: 202611190710
 """
 import os
 import re
@@ -17,7 +17,7 @@ from datetime import datetime, timedelta
 from urllib.parse import urljoin, urlparse, parse_qs, urlencode, urlunparse
 
 MODULE_NAME = "data_fetcher"
-MODULE_VERSION = "202611190700"
+MODULE_VERSION = "202611190710"
 
 from storage import (
     StockChipStorage,
@@ -776,19 +776,21 @@ def _parse_broker_side_table(table_soup, base_url: str, is_sell_side: bool = Fal
 
 
 def fetch_stock_broker_range_ranking(pure_code: str, start_date: str, end_date: str):
+    """
+    【修訂說明 2026-11-19】【修改目的與防呆防錯原因】：
+    統一使用 ?a={code}&e={s_str}&f={e_str} 查詢區間與指定歷史單日（當 s_str == e_str 時亦能抓到該歷史交易日之單日分點排名，
+    不再因固定呼叫 zco_{code}.djhtm 而永遠只抓到最新交易日）。
+    """
     code = str(pure_code or "").strip().upper()
     if not code or code.startswith("^") or not is_tw_stock_or_etf(code):
         return pd.DataFrame(), pd.DataFrame()
 
     s_str = str(start_date).strip()[:10]
     e_str = str(end_date).strip()[:10]
-    if s_str == e_str:
-        target_url = f"{MDJ_BASE_DOMAIN}/z/zc/zco/zco_{code}.djhtm"
-    else:
-        target_url = f"{MDJ_BASE_DOMAIN}/z/zc/zco/zco.djhtm?a={code}&e={s_str}&f={e_str}"
+    target_url = f"{MDJ_BASE_DOMAIN}/z/zc/zco/zco.djhtm?a={code}&e={s_str}&f={e_str}"
 
     try:
-        res = requests.get(target_url, headers=MDJ_HEADERS, timeout=6)
+        res = requests.get(target_url, headers=MDJ_HEADERS, timeout=5)
         if res.status_code != 200:
             return pd.DataFrame(), pd.DataFrame()
         try:
@@ -844,7 +846,7 @@ def fetch_single_broker_daily_series(detail_url: str, start_date: str, end_date:
     query_url = urlunparse((parsed.scheme, parsed.netloc, parsed.path, parsed.params, urlencode(flat_qs), ""))
 
     try:
-        res = requests.get(query_url, headers=MDJ_HEADERS, timeout=6)
+        res = requests.get(query_url, headers=MDJ_HEADERS, timeout=5)
         if res.status_code != 200:
             return pd.DataFrame()
         try:
@@ -1000,7 +1002,7 @@ def _collect_all_stock_db_codes() -> list:
     """
     【修訂說明 2026-11-19】
     掃描本地目錄與 Google Drive 雲端資料夾內所有已建立之台股個股/ETF資料庫（data_*.db），
-    自動排除 ^ 開頭大盤指數。
+    自動排除 ^ 開頭大盤指數，並將一般個股（4碼）排在前面優先處理。
     """
     codes_set = set()
     for p in glob.glob(os.path.join(".", "data_*.db")):
@@ -1024,19 +1026,24 @@ def _collect_all_stock_db_codes() -> list:
     except Exception:
         pass
 
-    return sorted(codes_set)
+    return sorted(codes_set, key=lambda c: (0 if len(c) == 4 and c.isdigit() else 1, c))
 
 
 def _get_stock_trade_dates_for_backfill(pure_code: str) -> list:
     """
-    【修訂說明 2026-11-19】
-    優先自本地/雲端 SQLite 的 daily_k 取得已排序交易日清單；若不足 65 筆或為空，
-    透過 fetch_stock_daily_k 補齊 1y 日K線以確保能精準計算 10/20/60 日區間起訖日。
+    【修訂說明 2026-11-19】【修改目的與防呆防錯原因】：
+    1. 修改目的：優先直接從 Google Drive 同步拉取該股既有資料庫取得交易日清單，避免每檔重複向 Yahoo 抓 1 年日線造成卡頓。
+    2. 防呆防錯原因：僅在本地與雲端皆無日線資料時才抓 6mo 日線；若仍無交易日則快速略過不卡死整批作業。
     """
+    from storage import _do_sync_db_pull
+    db_path = os.path.join(".", f"data_{pure_code}.db")
+    if not os.path.exists(db_path) or os.path.getsize(db_path) == 0:
+        _do_sync_db_pull(pure_code)
+
     storage = StockChipStorage(pure_code)
     df_k = storage.load_daily_k_df()
-    if df_k is None or len(df_k) < 65:
-        k_res = fetch_stock_daily_k(pure_code, period="1y", force_refresh=False)
+    if df_k is None or df_k.empty:
+        k_res = fetch_stock_daily_k(pure_code, period="6mo", force_refresh=False)
         if k_res and k_res[0] is not None and not k_res[0].empty:
             df_k = k_res[0]
     if df_k is None or df_k.empty:
@@ -1044,19 +1051,22 @@ def _get_stock_trade_dates_for_backfill(pure_code: str) -> list:
     return [d.strftime("%Y-%m-%d") for d in df_k.index]
 
 
-def batch_backfill_broker_range_ranks(recent_days: int = 5) -> dict:
+def batch_backfill_broker_range_ranks(recent_days: int = 5, progress_callback=None) -> dict:
     """
     【修訂說明 2026-11-19】【修改目的與防呆防錯原因】：
     1. 修改目的：針對所有已建立資料庫之個股，自最新交易日起往前推近 N 日（recent_days），
-       逐日作為基準日，向富邦 eBroker 補齊當日(1日)、近10日、近20日、近60日買賣超前10名統計（broker_range_rank）。
+       逐日作為基準日，向富邦 eBroker 補齊當日(1日)、近10日、近20日、近60日買賣超前10名統計（broker_range_rank），
+       並透過 progress_callback 即時回報逐檔處理狀態與雲端上傳結果。
     2. 防呆防錯原因：
-       - 若該基準日於資料庫已具備 1/10/20/60 四區間有效買賣超紀錄則直接跳過，避免重複爬蟲。
-       - 富邦 eBroker 偶發逾時回傳空表時自動重試 1 次；若仍無任何有效買賣超，絕不寫入空紀錄覆蓋資料庫。
-       - 單一基準日四區間補齊後寫入本地 SQLite，單檔個股全部基準日完成後再執行一次 sync_cloud=True，降低雲端 API 負擔。
+       - 若該基準日於資料庫已具備 1/10/20/60 四區間有效買賣超紀錄則直接跳過。
+       - 富邦 eBroker 回傳空資料時僅重試 1 次，若該檔完全無分點資料（例如部分無分點揭露之標的）立即略過該檔後續日期，避免浪費時間。
+       - 單檔個股只要有任何新寫入即同步上傳 Google 雲端硬碟（_do_sync_db_push）。
     """
+    from storage import _do_sync_db_push
     n_days = max(1, min(60, int(recent_days or 5)))
     codes = _collect_all_stock_db_codes()
-    if not codes:
+    total_codes = len(codes)
+    if total_codes == 0:
         return {"ok": False, "msg": "目前本地與雲端無任何已建立之台股個股資料庫。"}
 
     def _has_valid_win(bundle_obj: dict, w_num: int) -> bool:
@@ -1086,15 +1096,22 @@ def batch_backfill_broker_range_ranks(recent_days: int = 5) -> dict:
     updated_days = 0
     skipped_days = 0
 
-    for code in codes:
+    for idx_c, code in enumerate(codes, start=1):
+        c_name = get_stock_chinese_name(code)
+        if progress_callback:
+            progress_callback(idx_c - 1, total_codes, f"[{idx_c}/{total_codes}] 正在檢查 {code} {c_name}...")
+
         trade_dates = _get_stock_trade_dates_for_backfill(code)
         if not trade_dates:
+            if progress_callback:
+                progress_callback(idx_c, total_codes, f"[{idx_c}/{total_codes}] {code} {c_name} 無交易日資料，已略過")
             continue
 
         storage = StockChipStorage(code)
         total_len = len(trade_dates)
         start_pos = max(0, total_len - n_days)
         stock_changed = False
+        consecutive_empty_days = 0
 
         for target_idx in range(start_pos, total_len):
             end_date_str = trade_dates[target_idx]
@@ -1112,7 +1129,7 @@ def batch_backfill_broker_range_ranks(recent_days: int = 5) -> dict:
                 s_str = trade_dates[s_i]
                 df_b, df_s = fetch_stock_broker_range_ranking(code, s_str, end_date_str)
                 if (df_b is None or df_b.empty) and (df_s is None or df_s.empty):
-                    time.sleep(0.35)
+                    time.sleep(0.25)
                     df_b, df_s = fetch_stock_broker_range_ranking(code, s_str, end_date_str)
 
                 b_recs = _df_to_rank_recs(df_b)
@@ -1127,24 +1144,28 @@ def batch_backfill_broker_range_ranks(recent_days: int = 5) -> dict:
                     }
 
                 if idx_w < len(missing_wins) - 1:
-                    time.sleep(0.15)
+                    time.sleep(0.05)
 
             if has_new_valid and day_bundle:
                 storage.save_broker_range_rank(end_date_str, day_bundle, sync_cloud=False)
                 updated_days += 1
                 stock_changed = True
+                consecutive_empty_days = 0
+            else:
+                consecutive_empty_days += 1
+                if consecutive_empty_days >= 2 and not stock_changed:
+                    break
 
-            time.sleep(0.10)
+            time.sleep(0.03)
 
         if stock_changed:
-            # 觸發單檔資料庫一次性雲端同步
-            latest_saved = storage.load_broker_range_rank(trade_dates[-1])
-            if isinstance(latest_saved, dict):
-                storage.save_broker_range_rank(trade_dates[-1], latest_saved, sync_cloud=True)
-            else:
-                from storage import _do_sync_db_push
-                _do_sync_db_push(code)
+            _do_sync_db_push(code)
             updated_stocks += 1
+            if progress_callback:
+                progress_callback(idx_c, total_codes, f"[{idx_c}/{total_codes}] ✅ {code} {c_name} 已寫入並同步雲端（累計 {updated_stocks} 檔）")
+        else:
+            if progress_callback:
+                progress_callback(idx_c, total_codes, f"[{idx_c}/{total_codes}] ⏭️ {code} {c_name} 無需更新或無分點資料")
 
     return {
         "ok": True,
@@ -1152,35 +1173,43 @@ def batch_backfill_broker_range_ranks(recent_days: int = 5) -> dict:
         "updated_days": updated_days,
         "skipped_days": skipped_days,
         "msg": (
-            f"分點統計增補完成（近 {n_days} 日）：共掃描 {len(codes)} 檔個股，"
-            f"新寫入 {updated_stocks} 檔（{updated_days} 個交易日之 1/10/20/60 日統計），"
+            f"分點統計增補完成（近 {n_days} 日）：共掃描 {total_codes} 檔個股，"
+            f"新寫入並同步雲端 {updated_stocks} 檔（{updated_days} 個交易日之 1/10/20/60 日統計），"
             f"略過已有完整資料 {skipped_days} 日。"
         )
     }
 
 
-def batch_backfill_broker_daily_series(recent_days: int = 5) -> dict:
+def batch_backfill_broker_daily_series(recent_days: int = 5, progress_callback=None) -> dict:
     """
     【修訂說明 2026-11-19】【修改目的與防呆防錯原因】：
     1. 修改目的：針對所有已建立資料庫之個股，自最新交易日起往前推近 N 日（recent_days），
        擷取各基準日近10日、近20日、近60日買超前5名與賣超前5名分點之 60 日逐日買賣超明細（broker_daily_trades），
-       供分點頁籤第 5 項柱狀圖直接繪製使用。
+       並透過 progress_callback 即時回報逐檔處理進度與雲端上傳結果。
     2. 防呆防錯原因：
        - 若該分點於 [60日起始日 ~ 基準日] 區間內資料庫已有逐日明細紀錄，則自動跳過不重複請求。
-       - 透過 10/20/60 日排行榜頁面解析分點 `明細網址`，並依該基準日之 60 日區間一次抓取該分點逐日明細寫入。
+       - 單檔個股只要有任何新明細寫入即同步上傳 Google 雲端硬碟（_do_sync_db_push）。
     """
+    from storage import _do_sync_db_push
     n_days = max(1, min(60, int(recent_days or 5)))
     codes = _collect_all_stock_db_codes()
-    if not codes:
+    total_codes = len(codes)
+    if total_codes == 0:
         return {"ok": False, "msg": "目前本地與雲端無任何已建立之台股個股資料庫。"}
 
     updated_stocks = 0
     saved_series_count = 0
     skipped_series_count = 0
 
-    for code in codes:
+    for idx_c, code in enumerate(codes, start=1):
+        c_name = get_stock_chinese_name(code)
+        if progress_callback:
+            progress_callback(idx_c - 1, total_codes, f"[{idx_c}/{total_codes}] 正在檢查 {code} {c_name} 分點明細...")
+
         trade_dates = _get_stock_trade_dates_for_backfill(code)
         if not trade_dates:
+            if progress_callback:
+                progress_callback(idx_c, total_codes, f"[{idx_c}/{total_codes}] {code} {c_name} 無交易日資料，已略過")
             continue
 
         storage = StockChipStorage(code)
@@ -1199,7 +1228,7 @@ def batch_backfill_broker_daily_series(recent_days: int = 5) -> dict:
                 s_str = trade_dates[s_i]
                 df_b, df_s = fetch_stock_broker_range_ranking(code, s_str, end_date_str)
                 if (df_b is None or df_b.empty) and (df_s is None or df_s.empty):
-                    time.sleep(0.30)
+                    time.sleep(0.25)
                     df_b, df_s = fetch_stock_broker_range_ranking(code, s_str, end_date_str)
 
                 for df_side in (df_b, df_s):
@@ -1211,7 +1240,10 @@ def batch_backfill_broker_daily_series(recent_days: int = 5) -> dict:
                                 broker_url_map[b_name] = d_url
 
                 if idx_w < 2:
-                    time.sleep(0.12)
+                    time.sleep(0.05)
+
+            if not broker_url_map and not stock_changed:
+                break
 
             for b_name, d_url in broker_url_map.items():
                 existing_df = storage.load_broker_daily_series(b_name, earliest_start, end_date_str)
@@ -1226,12 +1258,16 @@ def batch_backfill_broker_daily_series(recent_days: int = 5) -> dict:
                     storage.save_broker_daily_trades(b_name, df_fresh, sync_cloud=False)
                     saved_series_count += 1
                     stock_changed = True
-                time.sleep(0.08)
+                time.sleep(0.03)
 
         if stock_changed:
-            from storage import _do_sync_db_push
             _do_sync_db_push(code)
             updated_stocks += 1
+            if progress_callback:
+                progress_callback(idx_c, total_codes, f"[{idx_c}/{total_codes}] ✅ {code} {c_name} 已寫入明細並同步雲端（累計 {updated_stocks} 檔）")
+        else:
+            if progress_callback:
+                progress_callback(idx_c, total_codes, f"[{idx_c}/{total_codes}] ⏭️ {code} {c_name} 明細無需更新")
 
     return {
         "ok": True,
@@ -1239,8 +1275,8 @@ def batch_backfill_broker_daily_series(recent_days: int = 5) -> dict:
         "saved_series": saved_series_count,
         "skipped_series": skipped_series_count,
         "msg": (
-            f"分點逐日明細增補完成（近 {n_days} 日）：共掃描 {len(codes)} 檔個股，"
-            f"更新 {updated_stocks} 檔（新增 {saved_series_count} 筆分點 60 日逐日明細，"
+            f"分點逐日明細增補完成（近 {n_days} 日）：共掃描 {total_codes} 檔個股，"
+            f"更新並同步雲端 {updated_stocks} 檔（新增 {saved_series_count} 筆分點 60 日逐日明細，"
             f"略過已有明細 {skipped_series_count} 筆）。"
         )
     }
