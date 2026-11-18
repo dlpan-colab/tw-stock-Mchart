@@ -1,7 +1,7 @@
 """
 app.py - 主應用程式介面與生命週期控制
-(三主頁籤架構：操作儀錶板 / 個股 / 參數設定 + 自選與查詢歷史同步 + 盤中均線多空燈號 + 雲端分點與上下檔不亂序版)
-版本: 202611182050
+(三主頁籤架構：操作儀錶板 / 個股 / 參數設定 + 自選與查詢歷史同步 + 盤中均線多空燈號 + 動態chart_id杜絕跨頁籤殘留版)
+版本: 202611182105
 """
 import os
 import time
@@ -11,7 +11,7 @@ import streamlit.components.v1 as components
 import cloud_sync
 
 MODULE_NAME = "app"
-MODULE_VERSION = "202611182050"
+MODULE_VERSION = "202611182105"
 
 
 # 【防呆防錯備註 2026-11-07】：版本控制權由 app.py 作為唯一權威源，動態掃描所有模組最大版本號，杜絕多頭覆寫與重工
@@ -509,7 +509,6 @@ if selected_main_tab == "📊 操作儀錶板":
         unsafe_allow_html=True
     )
 
-    # 股票代號新增 / 刪除 / 刷新操作列
     c_in, c_add, c_del, c_ref = st.columns([3.2, 1.3, 1.3, 1.4])
     with c_in:
         dash_code_input = st.text_input(
@@ -569,7 +568,6 @@ if selected_main_tab == "📊 操作儀錶板":
             f"資料基準日：{latest_d_str} ｜ 均線燈號規則：成交價 > 5日/20日均線顯示紅色 ▲；成交價 <= 5日/20日均線顯示綠色 ▼（點擊下方標的按鈕可切換至「個股」主頁籤，維持清單原順序不置頂）"
         )
 
-        # 建立盤中一覽總表 HTML
         html_lines = [
             "<div class='dash-tbl-wrap'><table class='dash-tbl'>",
             "<thead><tr>",
@@ -609,7 +607,6 @@ if selected_main_tab == "📊 操作儀錶板":
         html_lines.append("</tbody></table></div>")
         st.markdown("".join(html_lines), unsafe_allow_html=True)
 
-        # 快速跳轉至「個股」主頁籤按鈕列（維持清單原順序不置頂）
         st.markdown("<div style='font-size:12.5px; font-weight:700; color:#334155; margin-bottom:4px;'>⚡ 點擊進入「個股」深度圖表（維持清單原順序不置頂）：</div>", unsafe_allow_html=True)
         cols_per_row = 3
         for start_i in range(0, len(dash_rows), cols_per_row):
@@ -999,6 +996,15 @@ else:
         if c_name and c_name != current_stock:
             update_stock_name_only(current_stock, c_name)
 
+        # 【修訂說明 2026-11-18】【修改目的與防呆防錯原因】：
+        # 修改目的：確保未開啟復盤基準日時 end_idx 精準鎖定最新交易日 (len(df)-1)，且將 chart_id 動態綁定標的與索引。
+        # 防呆防錯原因：徹底杜絕跨主頁籤切換標的（如自參數設定選取 2382 跳回個股頁籤）時，iframe 重用舊容器或初始焦點落回索引 0（最舊日）之異常。
+        safe_end_idx = int(end_idx) if end_idx is not None else (len(df) - 1)
+        if not st.session_state.use_target_date and len(df) > 1 and safe_end_idx <= 0:
+            safe_end_idx = len(df) - 1
+        safe_end_idx = min(max(0, safe_end_idx), len(df) - 1)
+        cid_suffix = re.sub(r"[^A-Za-z0-9_]", "_", f"{current_stock}_{safe_end_idx}_{disp_n}")
+
         top_h = 270 if st.session_state.is_mobile_mode else 310
         tech_h = 540 if st.session_state.is_mobile_mode else 580
         chip_h = 760 if st.session_state.is_mobile_mode else 800
@@ -1006,10 +1012,10 @@ else:
         top_html = get_top_chart_html(
             fig_top=fig_top,
             df=df,
-            chart_id="mchart_top",
+            chart_id=f"mchart_top_{cid_suffix}",
             top_height=top_h,
             initial_disp_days=disp_n,
-            initial_end_idx=end_idx
+            initial_end_idx=safe_end_idx
         )
         components.html(top_html, height=top_h + 62, scrolling=False)
 
@@ -1019,10 +1025,10 @@ else:
             tech_html = get_tech_tab_html(
                 fig_btm=fig_btm,
                 df=df,
-                chart_id="mchart_tech",
+                chart_id=f"mchart_tech_{cid_suffix}",
                 tech_height=tech_h,
                 initial_disp_days=disp_n,
-                initial_end_idx=end_idx
+                initial_end_idx=safe_end_idx
             )
             components.html(tech_html, height=tech_h + 75, scrolling=False)
 
@@ -1030,10 +1036,10 @@ else:
             chip_html = get_chip_tab_html(
                 fig_btm=fig_btm,
                 df=df,
-                chart_id="mchart_chip",
+                chart_id=f"mchart_chip_{cid_suffix}",
                 chip_height=chip_h,
                 initial_disp_days=disp_n,
-                initial_end_idx=end_idx,
+                initial_end_idx=safe_end_idx,
                 m1_thresh=st.session_state.m1_thresh,
                 m2_thresh=st.session_state.m2_thresh
             )
@@ -1041,7 +1047,6 @@ else:
 
         with tab_broker:
             trade_dates_tuple = tuple(d.strftime('%Y-%m-%d') for d in df.index)
-            safe_end_idx = min(max(0, int(end_idx)), len(trade_dates_tuple) - 1) if trade_dates_tuple else 0
             focus_date_str = trade_dates_tuple[safe_end_idx] if trade_dates_tuple else ""
             req_60_key = f"{current_stock}_{focus_date_str}"
             need_60d = req_60_key in st.session_state.broker_60d_requests
@@ -1064,15 +1069,15 @@ else:
                 broker_payload = get_cached_broker_payload(
                     stock_id=current_stock,
                     trade_dates_tuple=trade_dates_tuple,
-                    target_end_idx=end_idx,
+                    target_end_idx=safe_end_idx,
                     force_refresh=st.session_state.force_refresh,
                     include_60d=need_60d
                 )
             broker_html = get_broker_tab_html(
                 df=df,
                 broker_payload=broker_payload,
-                chart_id="mchart_broker",
-                end_idx=end_idx,
+                chart_id=f"mchart_broker_{cid_suffix}",
+                end_idx=safe_end_idx,
                 disp_days=disp_n,
                 is_mobile=st.session_state.is_mobile_mode
             )
