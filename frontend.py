@@ -1,19 +1,19 @@
 """
 frontend.py - 前端 HTML/CSS 渲染模組
-(以 v202611162200 右邊界鎖定與雙向同步為基底 + 分點買賣超紅綠對齊＋柱狀圖 staticPlot 徹底鎖死不可平移縮放 + 啟動保護期防止Plotly自發relayout覆寫右邊界版)
-版本: 202611182120
+(以 v202611162200 右邊界鎖定與雙向同步為基底 + 分點買賣超紅綠對齊＋柱狀圖 staticPlot 徹底鎖死不可平移縮放 + 強制關閉 Plotly autorange 鎖死倒數20筆至最新日版)
+版本: 202611182136
 """
 import json
 import pandas as pd
 
 MODULE_NAME = "frontend"
-MODULE_VERSION = "202611182120"
+MODULE_VERSION = "202611182136"
 
 
 # 【修訂說明 2026-11-18】【修改目的與防呆防錯原因】：
 # 修改目的：保留主圖上方圖例與互動操作說明列，並兼容未傳入 version_tag 之呼叫方式。
 # 防呆防錯原因：app.py 以 get_legend_html() 無參數呼叫，設定預設參數確保不觸發 TypeError。
-def get_legend_html(version_tag: str = "202611182120") -> str:
+def get_legend_html(version_tag: str = "202611182136") -> str:
     return """
     <div style="font-size:12px; color:#334155; background:#f1f5f9; padding:5px 8px; border-radius:5px; margin-bottom:4px; line-height:1.5;">
         <b>📌 圖例與互動操作說明：</b>
@@ -61,10 +61,9 @@ function fmtDiff(v,d){if(v===null||v===undefined||isNaN(v))return'-';var n=Numbe
 
 
 # 【修訂說明 2026-11-18】【修改目的與防呆防錯原因】：
-# 修改目的：在 get_top_chart_html、get_tech_tab_html、get_chip_tab_html 初始化時先設 isUpdating=true，
-#           並於 Plotly.newPlot(...).then(...) 強制鎖定 [currentR0, currentR1] 後延遲 150ms 才開放事件監聽。
-# 防呆防錯原因：徹底忽略 Plotly.newPlot 初次渲染雙子圖時自發觸發的 xaxis2.range=[0, 19.5] 假 relayout 事件，
-#               杜絕載入後焦點與 X 軸 range 被拉回前 20 根舊日期（如 2025-12-03）。
+# 修改目的：在 Plotly.newPlot 前強制將所有 X 軸設定 autorange=false 並指派 [currentR0, currentR1]，
+#           且於 Plotly.relayout 明確傳入 range[0]、range[1] 與 autorange: false，鎖死視窗於資料庫倒數第 20 筆至最後 1 筆。
+# 防呆防錯原因：Plotly Python make_subplots 轉出 JSON 時預設帶有 autorange: true，會覆蓋 range 陣列並把視窗重設為前 20 筆 [0, 19.5]。
 def get_top_chart_html(fig_top, df: pd.DataFrame, chart_id: str, top_height: int = 270, initial_disp_days: int = 20, initial_end_idx: int = None) -> str:
     n_pts = len(df)
     end_idx = n_pts - 1 if initial_end_idx is None else initial_end_idx
@@ -108,12 +107,21 @@ function renderInfo(idx){if(idx<0||idx>=totalPoints)return;
 }
 
 var b0=calcBounds(currentR0,currentR1);
-pTop.layout.xaxis.range=[currentR0,currentR1];if(pTop.layout.xaxis2)pTop.layout.xaxis2.range=[currentR0,currentR1];
-pTop.layout.yaxis.range=b0.p;if(pTop.layout.yaxis2)pTop.layout.yaxis2.range=b0.v;
+if(pTop.layout.xaxis){pTop.layout.xaxis.autorange=false;pTop.layout.xaxis.range=[currentR0,currentR1];}
+if(pTop.layout.xaxis2){pTop.layout.xaxis2.autorange=false;pTop.layout.xaxis2.range=[currentR0,currentR1];}
+if(pTop.layout.yaxis){pTop.layout.yaxis.autorange=false;pTop.layout.yaxis.range=b0.p;}
+if(pTop.layout.yaxis2){pTop.layout.yaxis2.autorange=false;pTop.layout.yaxis2.range=b0.v;}
+
+var lockTopObj={
+    'xaxis.autorange':false,'xaxis.range[0]':currentR0,'xaxis.range[1]':currentR1,
+    'xaxis2.autorange':false,'xaxis2.range[0]':currentR0,'xaxis2.range[1]':currentR1,
+    'yaxis.autorange':false,'yaxis.range[0]':b0.p[0],'yaxis.range[1]':b0.p[1],
+    'yaxis2.autorange':false,'yaxis2.range[0]':b0.v[0],'yaxis2.range[1]':b0.v[1]
+};
 
 Plotly.newPlot(elTop,pTop.data,pTop.layout,{responsive:true,displayModeBar:false,scrollZoom:false}).then(function(){
     renderInfo(initEnd);
-    Plotly.relayout(elTop,{'xaxis.range':[currentR0,currentR1],'xaxis2.range':[currentR0,currentR1],'yaxis.range':b0.p,'yaxis2.range':b0.v}).finally(function(){
+    Plotly.relayout(elTop,lockTopObj).finally(function(){
         setTimeout(function(){isUpdating=false;},150);
     });
     elTop.on('plotly_relayout',function(ed){if(isUpdating)return;
@@ -123,11 +131,11 @@ Plotly.newPlot(elTop,pTop.data,pTop.layout,{responsive:true,displayModeBar:false
         isUpdating=true;var span=r1-r0,maxB=(totalPoints-1)+0.5;
         if(r1>maxB){r1=maxB;r0=r1-span;}currentR0=r0;currentR1=r1;
         var vb=calcBounds(r0,r1);broadcastToSiblings({type:'MCHART_SYNC_XRANGE',r0:r0,r1:r1});
-        Plotly.relayout(elTop,{'xaxis.range':[r0,r1],'xaxis2.range':[r0,r1],'yaxis.range':vb.p,'yaxis2.range':vb.v}).finally(function(){setTimeout(function(){isUpdating=false;},20);});
+        Plotly.relayout(elTop,{'xaxis.autorange':false,'xaxis.range[0]':r0,'xaxis.range[1]':r1,'xaxis2.autorange':false,'xaxis2.range[0]':r0,'xaxis2.range[1]':r1,'yaxis.range':vb.p,'yaxis2.range':vb.v}).finally(function(){setTimeout(function(){isUpdating=false;},20);});
     });
     window.addEventListener('message',function(ev){var msg=ev.data||{};
         if(msg.type==='MCHART_SYNC_XRANGE'&&!isUpdating){isUpdating=true;currentR0=msg.r0;currentR1=msg.r1;var vb=calcBounds(currentR0,currentR1);
-            Plotly.relayout(elTop,{'xaxis.range':[currentR0,currentR1],'xaxis2.range':[currentR0,currentR1],'yaxis.range':vb.p,'yaxis2.range':vb.v}).finally(function(){setTimeout(function(){isUpdating=false;},20);});
+            Plotly.relayout(elTop,{'xaxis.autorange':false,'xaxis.range[0]':currentR0,'xaxis.range[1]':currentR1,'xaxis2.autorange':false,'xaxis2.range[0]':currentR0,'xaxis2.range[1]':currentR1,'yaxis.range':vb.p,'yaxis2.range':vb.v}).finally(function(){setTimeout(function(){isUpdating=false;},20);});
         }else if(msg.type==='MCHART_SYNC_FOCUS'&&msg.idx>=0)renderInfo(msg.idx);
     });
     function onMove(e){var cx=(e.touches&&e.touches.length>0)?e.touches[0].clientX:e.clientX;if(cx===undefined)return;
@@ -183,7 +191,11 @@ function renderInfo(idx){if(idx<0||idx>=totalPoints)return;
 }
 
 var initUpd={};
-for(var r=1;r<=4;r++){var kt=r===1?'xaxis':'xaxis'+r;if(pTech.layout&&pTech.layout[kt])pTech.layout[kt].range=[currentR0,currentR1];initUpd[kt+'.range']=[currentR0,currentR1];}
+for(var r=1;r<=4;r++){
+    var kt=r===1?'xaxis':'xaxis'+r;
+    if(pTech.layout&&pTech.layout[kt]){pTech.layout[kt].autorange=false;pTech.layout[kt].range=[currentR0,currentR1];}
+    initUpd[kt+'.autorange']=false;initUpd[kt+'.range[0]']=currentR0;initUpd[kt+'.range[1]']=currentR1;
+}
 Plotly.newPlot(elTech,pTech.data,pTech.layout,{responsive:true,displayModeBar:false,scrollZoom:false}).then(function(){
     renderInfo(initEnd);
     Plotly.relayout(elTech,initUpd).finally(function(){
@@ -194,13 +206,13 @@ Plotly.newPlot(elTech,pTech.data,pTech.layout,{responsive:true,displayModeBar:fa
         if(r0===null||r1===null||(Math.abs(r0-currentR0)<0.001&&Math.abs(r1-currentR1)<0.001))return;
         isUpdating=true;var span=r1-r0,maxB=(totalPoints-1)+0.5;
         if(r1>maxB){r1=maxB;r0=r1-span;}currentR0=r0;currentR1=r1;
-        var upd={};for(var i=1;i<=4;i++)upd[(i===1?'xaxis':'xaxis'+i)+'.range']=[r0,r1];
+        var upd={};for(var i=1;i<=4;i++){var px=i===1?'xaxis':'xaxis'+i;upd[px+'.autorange']=false;upd[px+'.range[0]']=r0;upd[px+'.range[1]']=r1;}
         broadcastToSiblings({type:'MCHART_SYNC_XRANGE',r0:r0,r1:r1});
         Plotly.relayout(elTech,upd).finally(function(){setTimeout(function(){isUpdating=false;},20);});
     });
     window.addEventListener('message',function(ev){var msg=ev.data||{};
         if(msg.type==='MCHART_SYNC_XRANGE'&&!isUpdating){isUpdating=true;currentR0=msg.r0;currentR1=msg.r1;
-            var upd={};for(var i=1;i<=4;i++)upd[(i===1?'xaxis':'xaxis'+i)+'.range']=[currentR0,currentR1];
+            var upd={};for(var i=1;i<=4;i++){var px=i===1?'xaxis':'xaxis'+i;upd[px+'.autorange']=false;upd[px+'.range[0]']=currentR0;upd[px+'.range[1]']=currentR1;}
             Plotly.relayout(elTech,upd).finally(function(){setTimeout(function(){isUpdating=false;},20);});
         }else if(msg.type==='MCHART_SYNC_FOCUS'){if(msg.showLine&&msg.idx>=0){renderInfo(msg.idx);var xa=elTech._fullLayout?elTech._fullLayout.xaxis:null;if(xa&&typeof xa.c2p==='function'){lineTech.style.left=(xa.c2p(msg.idx)+(xa._offset||80))+'px';lineTech.style.display='block';}}
             else lineTech.style.display='none';
@@ -261,7 +273,11 @@ function renderInfo(idx){if(idx<0||idx>=totalPoints)return;
 }
 
 var initUpd={};
-for(var c=1;c<=6;c++){var kc=c===1?'xaxis':'xaxis'+c;if(pChip.layout&&pChip.layout[kc])pChip.layout[kc].range=[currentR0,currentR1];initUpd[kc+'.range']=[currentR0,currentR1];}
+for(var c=1;c<=6;c++){
+    var kc=c===1?'xaxis':'xaxis'+c;
+    if(pChip.layout&&pChip.layout[kc]){pChip.layout[kc].autorange=false;pChip.layout[kc].range=[currentR0,currentR1];}
+    initUpd[kc+'.autorange']=false;initUpd[kc+'.range[0]']=currentR0;initUpd[kc+'.range[1]']=currentR1;
+}
 Plotly.newPlot(elChip,pChip.data,pChip.layout,{responsive:true,displayModeBar:false,scrollZoom:false}).then(function(){
     renderInfo(initEnd);
     Plotly.relayout(elChip,initUpd).finally(function(){
@@ -272,13 +288,13 @@ Plotly.newPlot(elChip,pChip.data,pChip.layout,{responsive:true,displayModeBar:fa
         if(r0===null||r1===null||(Math.abs(r0-currentR0)<0.001&&Math.abs(r1-currentR1)<0.001))return;
         isUpdating=true;var span=r1-r0,maxB=(totalPoints-1)+0.5;
         if(r1>maxB){r1=maxB;r0=r1-span;}currentR0=r0;currentR1=r1;
-        var upd={};for(var i=1;i<=6;i++)upd[(i===1?'xaxis':'xaxis'+i)+'.range']=[r0,r1];
+        var upd={};for(var i=1;i<=6;i++){var px=i===1?'xaxis':'xaxis'+i;upd[px+'.autorange']=false;upd[px+'.range[0]']=r0;upd[px+'.range[1]']=r1;}
         broadcastToSiblings({type:'MCHART_SYNC_XRANGE',r0:r0,r1:r1});
         Plotly.relayout(elChip,upd).finally(function(){setTimeout(function(){isUpdating=false;},20);});
     });
     window.addEventListener('message',function(ev){var msg=ev.data||{};
         if(msg.type==='MCHART_SYNC_XRANGE'&&!isUpdating){isUpdating=true;currentR0=msg.r0;currentR1=msg.r1;
-            var upd={};for(var i=1;i<=6;i++)upd[(i===1?'xaxis':'xaxis'+i)+'.range']=[currentR0,currentR1];
+            var upd={};for(var i=1;i<=6;i++){var px=i===1?'xaxis':'xaxis'+i;upd[px+'.autorange']=false;upd[px+'.range[0]']=currentR0;upd[px+'.range[1]']=currentR1;}
             Plotly.relayout(elChip,upd).finally(function(){setTimeout(function(){isUpdating=false;},20);});
         }else if(msg.type==='MCHART_SYNC_FOCUS'){if(msg.showLine&&msg.idx>=0){renderInfo(msg.idx);var xa=elChip._fullLayout?elChip._fullLayout.xaxis:null;if(xa&&typeof xa.c2p==='function'){lineChip.style.left=(xa.c2p(msg.idx)+(xa._offset||80))+'px';lineChip.style.display='block';}}
             else lineChip.style.display='none';
