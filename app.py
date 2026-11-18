@@ -1,7 +1,7 @@
 """
 app.py - 主應用程式介面與生命週期控制
-(三主頁籤架構：操作儀錶板 / 個股 / 參數設定 + 自選與查詢歷史同步 + 盤中均線多空燈號 + 動態chart_id杜絕跨頁籤殘留 + 批次增補近N日分點統計與明細版)
-版本: 202611190700
+(三主頁籤架構：操作儀錶板 / 個股 / 參數設定 + 自選與查詢歷史同步 + 盤中均線多空燈號 + 動態chart_id杜絕跨頁籤殘留 + 批次增補近N日分點統計與明細即時進度版)
+版本: 202611190710
 """
 import os
 import time
@@ -11,7 +11,7 @@ import streamlit.components.v1 as components
 import cloud_sync
 
 MODULE_NAME = "app"
-MODULE_VERSION = "202611190700"
+MODULE_VERSION = "202611190710"
 
 
 # 【防呆防錯備註 2026-11-07】：版本控制權由 app.py 作為唯一權威源，動態掃描所有模組最大版本號，杜絕多頭覆寫與重工
@@ -921,8 +921,8 @@ elif selected_main_tab == "⚙️ 參數設定":
                 st.error(f"集保批次作業失敗: {e}")
 
     # 【修訂說明 2026-11-19】【修改目的與防呆防錯原因】：
-    # 修改目的：新增批次增補所有資料庫個股近 N 日分點統計（1/10/20/60日）與分點逐日明細（前5名60日逐日買賣超）兩個獨立作業按鈕。
-    # 防呆防錯原因：拆分為統計與明細兩個獨立按鈕避免單次全市場請求過久逾時，完成後清除 get_cached_broker_payload 快取確保立即呈現最新資料。
+    # 修改目的：新增批次增補所有資料庫個股近 N 日分點統計（1/10/20/60日）與分點逐日明細（前5名60日逐日買賣超）兩個獨立作業按鈕，並附帶即時進度條與狀態文字。
+    # 防呆防錯原因：透過 progress_callback 即時刷新畫面進度條與單檔處理狀態，避免長時間批次執行時畫面無回應；完成後清除分點快取。
     backfill_broker_days = st.number_input(
         "增補分點日數 (N)",
         min_value=1,
@@ -932,30 +932,58 @@ elif selected_main_tab == "⚙️ 參數設定":
         key="input_backfill_broker_days"
     )
     if st.button("📊 增補近N日分點統計", key="btn_backfill_broker_ranks", use_container_width=True):
-        with st.spinner(f"正在批次增補所有資料庫個股近 {int(backfill_broker_days)} 日之 1/10/20/60 日分點統計..."):
-            try:
-                from data_fetcher import batch_backfill_broker_range_ranks
-                res_rank = batch_backfill_broker_range_ranks(recent_days=int(backfill_broker_days))
-                if res_rank.get("ok"):
-                    get_cached_broker_payload.clear()
-                    st.success(res_rank.get("msg", "分點統計增補完成！"))
-                else:
-                    st.warning(res_rank.get("msg", "未取得分點統計資料，請稍後再試。"))
-            except Exception as e:
-                st.error(f"批次增補分點統計失敗: {e}")
+        prog_bar = st.progress(0)
+        prog_text = st.empty()
+
+        def _on_rank_progress(done_cnt: int, total_cnt: int, msg_line: str):
+            ratio = min(1.0, max(0.0, done_cnt / total_cnt)) if total_cnt > 0 else 0.0
+            prog_bar.progress(ratio)
+            prog_text.info(msg_line)
+
+        try:
+            from data_fetcher import batch_backfill_broker_range_ranks
+            res_rank = batch_backfill_broker_range_ranks(
+                recent_days=int(backfill_broker_days),
+                progress_callback=_on_rank_progress
+            )
+            prog_bar.progress(1.0)
+            if res_rank.get("ok"):
+                get_cached_broker_payload.clear()
+                prog_text.empty()
+                st.success(res_rank.get("msg", "分點統計增補完成！"))
+            else:
+                prog_text.empty()
+                st.warning(res_rank.get("msg", "未取得分點統計資料，請稍後再試。"))
+        except Exception as e:
+            prog_text.empty()
+            st.error(f"批次增補分點統計失敗: {e}")
 
     if st.button("📈 增補近N日分點明細", key="btn_backfill_broker_series", use_container_width=True):
-        with st.spinner(f"正在批次增補所有資料庫個股近 {int(backfill_broker_days)} 日之買賣超前5名分點逐日明細..."):
-            try:
-                from data_fetcher import batch_backfill_broker_daily_series
-                res_ser = batch_backfill_broker_daily_series(recent_days=int(backfill_broker_days))
-                if res_ser.get("ok"):
-                    get_cached_broker_payload.clear()
-                    st.success(res_ser.get("msg", "分點逐日明細增補完成！"))
-                else:
-                    st.warning(res_ser.get("msg", "未取得分點逐日明細，請稍後再試。"))
-            except Exception as e:
-                st.error(f"批次增補分點明細失敗: {e}")
+        prog_bar = st.progress(0)
+        prog_text = st.empty()
+
+        def _on_series_progress(done_cnt: int, total_cnt: int, msg_line: str):
+            ratio = min(1.0, max(0.0, done_cnt / total_cnt)) if total_cnt > 0 else 0.0
+            prog_bar.progress(ratio)
+            prog_text.info(msg_line)
+
+        try:
+            from data_fetcher import batch_backfill_broker_daily_series
+            res_ser = batch_backfill_broker_daily_series(
+                recent_days=int(backfill_broker_days),
+                progress_callback=_on_series_progress
+            )
+            prog_bar.progress(1.0)
+            if res_ser.get("ok"):
+                get_cached_broker_payload.clear()
+                prog_text.empty()
+                st.success(res_ser.get("msg", "分點逐日明細增補完成！"))
+            else:
+                prog_text.empty()
+                st.warning(res_ser.get("msg", "未取得分點逐日明細，請稍後再試。"))
+        except Exception as e:
+            prog_text.empty()
+            st.error(f"批次增補分點明細失敗: {e}")
 
     if st.button("🗑️ 清除分點", key="btn_clear_all_brokers", use_container_width=True):
         st.session_state.confirm_clear_brokers = True
