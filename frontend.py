@@ -1,12 +1,12 @@
 """
-frontend.py - 前端圖表 HTML / JavaScript 互動渲染模組 (支援三頁籤完全解耦：主圖 + 指標頁籤 + 籌碼頁籤 + 分點頁籤預設20日與60日按需載入＋買超紅字正號/賣超綠字負號與紅綠柱狀圖版)
-版本: 202611180719
+frontend.py - 前端圖表 HTML / JavaScript 互動渲染模組 (支援三頁籤完全解耦：主圖 + 指標頁籤 + 籌碼頁籤 + 分點頁籤預設20日與60日按需載入＋真實買超紅柱/賣超綠柱與月份X軸版)
+版本: 202611180831
 """
 import json
 import pandas as pd
 
 MODULE_NAME = "frontend"
-MODULE_VERSION = "202611180719"
+MODULE_VERSION = "202611180831"
 
 COMMON_CSS = """
 html, body { margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: #ffffff; overflow-x: hidden; }
@@ -570,9 +570,9 @@ table.b-tbl td.val-dn { color: #16a085 !important; font-weight: 700 !important; 
 
   // 【修訂說明 2026-11-18】【修改目的與防呆防錯原因】：
   // 1. 修改目的：
-  //    (a) 賣超前五大分點（isBuyGroup === false）因原始明細數值以「賣超為正、買超為負」儲存，與圖表「買超正紅柱、賣超負綠柱」相反，故統一乘以 -1 反轉數值與柱狀方向，使有買有賣之每日柱狀體顏色（買超紅柱 #eb4d4b、賣超綠柱 #16a085）與數值正負完全一致。
+  //    (a) data_fetcher.py 與 storage.py 已統一以「買進 - 賣出」儲存真實淨買賣超，前端直接依真實正負值繪製（買超 >= 0 紅柱 #eb4d4b 向上、賣超 < 0 綠柱 #16a085 向下）。
   //    (b) X 軸刻度比照主圖規則，僅在每月第一個交易日顯示月份（如「10月」、「11月」），移除冗餘年份與日期，避免 X 軸文字擁擠重疊。
-  // 2. 防呆防錯原因：使用 monthTicksVals / monthTicksText 精準對應 category 型態之 xArr 日期字串，確保 hover 仍顯示完整 YYYY-MM-DD，而軸線僅呈現簡潔月份標示。
+  // 2. 防呆防錯原因：移除先前針對賣超分點強制乘以 -1 的權宜反轉，避免真實買超日遭誤反轉成綠柱；使用 monthTicksVals / monthTicksText 精準對應 category 型態之 xArr 日期字串。
   function renderBars(dayObj) {
     var wKey = 'w' + (selEl.value || '10');
     var wObj = dayObj[wKey] || {};
@@ -600,11 +600,7 @@ table.b-tbl td.val-dn { color: #16a085 !important; font-weight: 700 !important; 
         host.appendChild(div);
         var xArr = item.dates || [];
         var rawYArr = item.nets || [];
-        // 賣超前五大原始明細為「賣超正、買超負」，反轉為「買超正(+)、賣超負(-)」以對齊紅買綠賣柱狀圖
-        var yArr = rawYArr.map(function(v) {
-          var num = Number(v || 0);
-          return isBuyGroup ? num : -num;
-        });
+        var yArr = rawYArr.map(function(v) { return Number(v || 0); });
         var barColors = yArr.map(function(v) { return v >= 0 ? '#eb4d4b' : '#16a085'; });
 
         // 僅於每月第一個交易日顯示月份（例如：10月、11月），不需要年份與日
