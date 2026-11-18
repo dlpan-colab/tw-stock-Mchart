@@ -1,6 +1,6 @@
 """
-storage.py - 本地 SQLite 資料庫與股票歷史紀錄管理器 (支援含英文後綴台股ETF與雲端分點增量累積版)
-版本: 202611141210
+storage.py - 本地 SQLite 資料庫與股票歷史紀錄管理器 (支援含英文後綴台股ETF與雲端分點增量累積與批次清除分點版)
+版本: 202611180826
 """
 
 import os
@@ -17,7 +17,7 @@ from datetime import datetime, timedelta
 import pandas as pd
 
 MODULE_NAME = "storage"
-MODULE_VERSION = "202611141210"
+MODULE_VERSION = "202611180826"
 
 STORAGE_DIR = "."
 HISTORY_FILE = os.path.join(STORAGE_DIR, "stock_history.json")
@@ -424,6 +424,61 @@ def clear_recent_institutional_data(pure_code: str, weeks: int = 6) -> str:
         return f"清除法人紀錄失敗: {e}"
 
 
+def clear_all_broker_data() -> str:
+    """
+    【修訂說明 2026-11-18】【修改目的與防呆防錯原因】：
+    修改目的：一次性清除本地及雲端 Google Drive 資料夾內所有個股資料庫（data_*.db）之分點區間統計（broker_range_rank）與分點逐日明細（broker_daily_trades）資料表，並同步回寫雲端。
+    防呆防錯原因：僅刪除分點資料表並執行 VACUUM 釋放空間，完整保留 daily_k（日線）、institutional_investors（三大法人）、margin_short（資券）與 shareholding_distribution（集保大戶）資料；同步雲端前先 pull 避免覆蓋雲端既有歷史資料。
+    """
+    codes_set = set()
+    for p in glob.glob(os.path.join(STORAGE_DIR, "data_*.db")):
+        base = os.path.basename(p)
+        pure = base.replace("data_", "").replace(".db", "").strip().upper()
+        if pure and not pure.startswith("^"):
+            codes_set.add(pure)
+
+    try:
+        from cloud_sync import GoogleDriveSync
+        sync_client = GoogleDriveSync()
+        if sync_client.service and sync_client.folder_id:
+            q = f"'{sync_client.folder_id}' in parents and name contains 'data_' and name contains '.db' and trashed = false"
+            res = sync_client.service.files().list(
+                q=q,
+                fields="files(id, name)",
+                pageSize=200
+            ).execute()
+            for f in res.get("files", []):
+                fname = f.get("name", "")
+                pure = fname.replace("data_", "").replace(".db", "").strip().upper()
+                if pure and not pure.startswith("^"):
+                    codes_set.add(pure)
+    except Exception as e:
+        print(f"[Storage] 雲端分點資料庫列表掃描警告: {e}")
+
+    if not codes_set:
+        return "目前無任何已收集之個股資料庫。"
+
+    cleared_count = 0
+    for pure_code in sorted(codes_set):
+        db_path = os.path.join(STORAGE_DIR, f"data_{pure_code}.db")
+        if not os.path.exists(db_path) or os.path.getsize(db_path) == 0:
+            _do_sync_db_pull(pure_code)
+        if not os.path.exists(db_path) or os.path.getsize(db_path) == 0:
+            continue
+        try:
+            with sqlite3.connect(db_path) as conn:
+                cur = conn.cursor()
+                cur.execute("DELETE FROM broker_range_rank")
+                cur.execute("DELETE FROM broker_daily_trades")
+                conn.commit()
+            _do_sync_db_push(pure_code)
+            cleared_count += 1
+        except Exception as e:
+            print(f"[Storage] 清除 {pure_code} 分點資料失敗: {e}")
+
+    return f"已成功清除 {cleared_count} 檔個股之所有分點統計與逐日明細（日線、法人、資券與集保大戶資料完整保留）。"
+
+
 class StockChipStorage:
     def __init__(self, pure_code: str):
         self.pure_code = str(pure_code).strip().upper()
@@ -696,7 +751,10 @@ class StockChipStorage:
                 continue
             buy_v = int(r.get("買進(張)", 0) or 0)
             sell_v = int(r.get("賣出(張)", 0) or 0)
-            net_v = int(r.get("買賣超(張)", buy_v - sell_v) or 0)
+            # 【修訂說明 2026-11-18】【修改目的與防呆防錯原因】：
+            # 修改目的：寫入資料庫時強制以 buy_v - sell_v 計算真實淨買賣超，確保買超為正、賣超為負。
+            # 防呆防錯原因：防止任何呼叫端傳入未帶負號之單邊買賣超數值污染資料庫。
+            net_v = buy_v - sell_v
             records.append((b_name, d_str, buy_v, sell_v, net_v))
         if not records:
             return
