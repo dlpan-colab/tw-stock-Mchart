@@ -1,17 +1,18 @@
 """
 app.py - 主應用程式介面與生命週期控制
-(三主頁籤架構：操作儀錶板 / 個股 / 參數設定 + 自選與查詢歷史同步 + 盤中均線多空燈號 + 動態chart_id杜絕跨頁籤殘留 + 批次增補指定基準日起往前N日分點統計與明細版 + 分點頁籤高度展開版)
-版本: 202611190925
+(三主頁籤架構：操作儀錶板 / 個股 / 參數設定 + 自選與查詢歷史同步 + 盤中均線多空燈號 + 動態chart_id杜絕跨頁籤殘留 + 批次增補指定基準日起往前N日分點統計與明細版 + 分點15:00前對齊前一交易日與分點統計/分點日況雙頁籤版)
+版本: 202611190935
 """
 import os
 import time
 import re
+from datetime import datetime, timedelta
 import streamlit as st
 import streamlit.components.v1 as components
 import cloud_sync
 
 MODULE_NAME = "app"
-MODULE_VERSION = "202611190925"
+MODULE_VERSION = "202611190935"
 
 
 # 【防呆防錯備註 2026-11-07】：版本控制權由 app.py 作為唯一權威源，動態掃描所有模組最大版本號，杜絕多頭覆寫與重工
@@ -57,7 +58,8 @@ from frontend import (
     get_top_chart_html,
     get_tech_tab_html,
     get_chip_tab_html,
-    get_broker_tab_html
+    get_broker_stats_tab_html,
+    get_broker_daily_tab_html
 )
 from data_fetcher import (
     fetch_stock_broker_range_ranking,
@@ -352,7 +354,7 @@ st.markdown("""
         white-space: nowrap !important;
     }
 
-    /* 個股子頁籤（指標 / 籌碼 / 分點） */
+    /* 個股子頁籤（指標 / 籌碼 / 分點統計 / 分點日況） */
     [data-testid="stTabs"] [role="tablist"] {
         display: flex !important;
         width: 100% !important;
@@ -366,9 +368,10 @@ st.markdown("""
         flex: 1 1 0 !important;
         justify-content: center !important;
         font-weight: 700 !important;
-        font-size: 13.5px !important;
-        padding: 6px 8px !important;
+        font-size: 12.5px !important;
+        padding: 6px 4px !important;
         border-radius: 4px !important;
+        white-space: nowrap !important;
     }
     [data-testid="stTabs"] [aria-selected="true"] {
         background-color: #1e293b !important;
@@ -568,9 +571,6 @@ if selected_main_tab == "📊 操作儀錶板":
         st.caption(
             f"資料基準日：{latest_d_str} ｜ 均線燈號規則：成交價 > 5日/20日均線顯示紅色 ▲；成交價 <= 5日/20日均線顯示綠色 ▼（直接點擊表單內「股票名稱」即可進入個股圖表，維持清單原順序不置頂）"
         )
-        # 【修訂說明 2026-11-18】【修改目的與防呆防錯原因】：
-        # 修改目的：將操作儀錶板表格內的「股票名稱」改為原生可點擊按鈕，點擊後直接跳轉「📈 個股」主頁籤並保留清單原順序，同時移除下方重複按鈕列。
-        # 防呆防錯原因：加入 dash-grid-row 專用橫向不換行與文字按鈕樣式，防止手機窄螢幕將 7 欄自動折疊成垂直卡片，確保表格閱讀體驗一致。
         st.markdown("""
         <style>
         div[data-testid="stVerticalBlock"]:has(.dash-grid-anchor) [data-testid="stHorizontalBlock"] {
@@ -807,7 +807,6 @@ elif selected_main_tab == "⚙️ 參數設定":
             with st.spinner(f"正在重新爬取 {cur_code} 近 {refetch_inst_weeks} 週法人籌碼..."):
                 try:
                     from data_fetcher import fetch_stock_daily_k, fetch_institutional_investors
-                    from datetime import datetime, timedelta
                     k_res = fetch_stock_daily_k(cur_code, period="1y", force_refresh=False)
                     if k_res and k_res[0] is not None and not k_res[0].empty:
                         df_k = k_res[0]
@@ -849,7 +848,6 @@ elif selected_main_tab == "⚙️ 參數設定":
             with st.spinner(f"正在重新爬取 {cur_code} 近 {refetch_weeks} 週資券紀錄..."):
                 try:
                     from data_fetcher import fetch_stock_daily_k, fetch_margin_short_data
-                    from datetime import datetime, timedelta
                     k_res = fetch_stock_daily_k(cur_code, period="1y", force_refresh=False)
                     if k_res and k_res[0] is not None and not k_res[0].empty:
                         df_k = k_res[0]
@@ -921,9 +919,6 @@ elif selected_main_tab == "⚙️ 參數設定":
             except Exception as e:
                 st.error(f"集保批次作業失敗: {e}")
 
-    # 【修訂說明 2026-11-19】【修改目的與防呆防錯原因】：
-    # 修改目的：新增「增補分點基準日」參數（預設台灣時間 15:00 前為前一日、15:00 後為當日），並將「增補分點日數」明確標示為自增補分點基準日起往前計數。
-    # 防呆防錯原因：透過 progress_callback 即時刷新進度條與單檔處理結果，完成後清除分點快取。
     default_backfill_base = get_default_broker_backfill_base_date()
     backfill_base_date = st.text_input(
         "增補分點基準日 (YYYY-MM-DD，15:00前預設前一日)",
@@ -1018,7 +1013,7 @@ elif selected_main_tab == "⚙️ 參數設定":
 
 
 # =====================================================================
-# 主頁籤 2：📈 個股（完整單股 K 線、指標、籌碼、分點分析畫面）
+# 主頁籤 2：📈 個股（完整單股 K 線、指標、籌碼、分點統計、分點日況畫面）
 # =====================================================================
 else:
     history_records = load_stock_history()
@@ -1101,9 +1096,6 @@ else:
         if c_name and c_name != current_stock:
             update_stock_name_only(current_stock, c_name)
 
-        # 【修訂說明 2026-11-18】【修改目的與防呆防錯原因】：
-        # 修改目的：確保未開啟復盤基準日時 safe_end_idx 無條件精準鎖定最新交易日 (len(df) - 1)。
-        # 防呆防錯原因：原先僅判斷 safe_end_idx <= 0 才重設，若快取回傳殘留之中間索引（如 19），會導致初始視窗誤停於歷史舊日。
         if not st.session_state.use_target_date:
             safe_end_idx = len(df) - 1
         else:
@@ -1126,7 +1118,9 @@ else:
         )
         components.html(top_html, height=top_h + 62, scrolling=False)
 
-        tab_tech, tab_chip, tab_broker = st.tabs(["📊 指標", "💰 籌碼", "🏦 分點"])
+        tab_tech, tab_chip, tab_broker_stats, tab_broker_daily = st.tabs([
+            "📊 指標", "💰 籌碼", "📊 分點統計", "📈 分點日況"
+        ])
 
         with tab_tech:
             tech_html = get_tech_tab_html(
@@ -1152,17 +1146,44 @@ else:
             )
             components.html(chip_html, height=chip_h + 85, scrolling=False)
 
-        with tab_broker:
-            trade_dates_tuple = tuple(d.strftime('%Y-%m-%d') for d in df.index)
-            focus_date_str = trade_dates_tuple[safe_end_idx] if trade_dates_tuple else ""
-            req_60_key = f"{current_stock}_{focus_date_str}"
-            need_60d = req_60_key in st.session_state.broker_60d_requests
+        # 【修訂說明 2026-11-19】【修改目的與防呆防錯原因】：
+        # 修改目的：分點資料於台灣時間 15:00 以前自動對齊前一交易日（15:00 後方公布當日分點），並將分點統計與分點日況拆分為兩大獨立頁籤共用同一份分點快取資料。
+        # 防呆防錯原因：透過 broker_end_idx 精準鎖定已公布分點之最近交易日，避免盤中抓不到當日分點顯示空白。
+        trade_dates_tuple = tuple(d.strftime('%Y-%m-%d') for d in df.index)
+        now_tw = datetime.utcnow() + timedelta(hours=8)
+        today_tw_str = now_tw.strftime('%Y-%m-%d')
 
+        broker_end_idx = safe_end_idx
+        if (
+            not st.session_state.use_target_date
+            and trade_dates_tuple
+            and trade_dates_tuple[broker_end_idx] == today_tw_str
+            and now_tw.hour < 15
+            and broker_end_idx > 0
+        ):
+            broker_end_idx -= 1
+
+        focus_date_str = trade_dates_tuple[broker_end_idx] if trade_dates_tuple else ""
+        req_60_key = f"{current_stock}_{focus_date_str}"
+        need_60d = req_60_key in st.session_state.broker_60d_requests
+
+        with st.spinner(
+            f"正在載入 {current_stock} {'近 60 日' if need_60d else '近 20 日'}分點統計與明細（基準日 {focus_date_str}）..."
+        ):
+            broker_payload = get_cached_broker_payload(
+                stock_id=current_stock,
+                trade_dates_tuple=trade_dates_tuple,
+                target_end_idx=broker_end_idx,
+                force_refresh=st.session_state.force_refresh,
+                include_60d=need_60d
+            )
+
+        with tab_broker_stats:
             if not current_stock.startswith("^") and is_tw_stock_or_etf(current_stock) and focus_date_str:
                 if not need_60d:
                     if st.button(
                         f"📥 載入近 60 日分點統計與明細（基準日 {focus_date_str}）",
-                        key=f"btn_load_60d_{req_60_key}",
+                        key=f"btn_load_60d_stats_{req_60_key}",
                         use_container_width=True
                     ):
                         st.session_state.broker_60d_requests.add(req_60_key)
@@ -1170,27 +1191,39 @@ else:
                 else:
                     st.caption(f"✅ 已載入近 60 日分點統計與明細（基準日 {focus_date_str}）")
 
-            with st.spinner(
-                f"正在載入 {current_stock} {'近 60 日' if need_60d else '近 20 日'}分點統計與明細..."
-            ):
-                broker_payload = get_cached_broker_payload(
-                    stock_id=current_stock,
-                    trade_dates_tuple=trade_dates_tuple,
-                    target_end_idx=safe_end_idx,
-                    force_refresh=st.session_state.force_refresh,
-                    include_60d=need_60d
-                )
-            broker_html = get_broker_tab_html(
+            broker_stats_html = get_broker_stats_tab_html(
                 df=df,
                 broker_payload=broker_payload,
-                chart_id=f"mchart_broker_{cid_suffix}",
-                end_idx=safe_end_idx,
+                chart_id=f"mchart_broker_stats_{cid_suffix}",
+                end_idx=broker_end_idx,
                 disp_days=disp_n,
                 is_mobile=st.session_state.is_mobile_mode
             )
-            # 【修訂說明 2026-11-19】調高分點容器高度並開啟 scrolling=True，避免近20日/60日統計表與前5名分點明細圖遭裁切
-            broker_box_h = 2650 if need_60d else 2100
-            components.html(broker_html, height=broker_box_h, scrolling=True)
+            stats_box_h = 1650 if need_60d else 1250
+            components.html(broker_stats_html, height=stats_box_h, scrolling=True)
+
+        with tab_broker_daily:
+            if not current_stock.startswith("^") and is_tw_stock_or_etf(current_stock) and focus_date_str:
+                if not need_60d:
+                    if st.button(
+                        f"📥 載入近 60 日分點統計與明細（基準日 {focus_date_str}）",
+                        key=f"btn_load_60d_daily_{req_60_key}",
+                        use_container_width=True
+                    ):
+                        st.session_state.broker_60d_requests.add(req_60_key)
+                        st.rerun()
+                else:
+                    st.caption(f"✅ 已載入近 60 日分點統計與明細（基準日 {focus_date_str}）")
+
+            broker_daily_html = get_broker_daily_tab_html(
+                df=df,
+                broker_payload=broker_payload,
+                chart_id=f"mchart_broker_daily_{cid_suffix}",
+                end_idx=broker_end_idx,
+                disp_days=disp_n,
+                is_mobile=st.session_state.is_mobile_mode
+            )
+            components.html(broker_daily_html, height=1150, scrolling=True)
 
         display_name = c_name if c_name else get_stock_chinese_name(current_stock)
         btm_c1, btm_c2, btm_c3 = st.columns([6.4, 1.3, 1.3])
