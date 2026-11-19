@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """
 獨立分點爬蟲與區間邏輯測試頁面（Streamlit 專用版）
-用途：實測指定基準日、往前計數近 N 日、分點統計（1/10/20/60日）與分點逐日明細之真實回傳資料
+用途：實測指定基準日、往前計數近 N 日、分點統計（1/10/20/60日）與分點逐日明細之真實回傳資料與網頁原文
 """
 import re
 import time
@@ -106,10 +106,8 @@ def _parse_side_table(table_soup, base_url: str, is_sell: bool = False) -> pd.Da
 
 
 def test_fetch_broker_ranking(code: str, start_date: str, end_date: str):
-    if start_date == end_date:
-        url = f"{MDJ_BASE_DOMAIN}/z/zc/zco/zco_{code}.djhtm"
-    else:
-        url = f"{MDJ_BASE_DOMAIN}/z/zc/zco/zco.djhtm?a={code}&e={start_date}&f={end_date}"
+    # 【修訂說明 2026-11-19】一律帶入起訖日期參數（含單日起訖同一天），區分不同基準交易日
+    url = f"{MDJ_BASE_DOMAIN}/z/zc/zco/zco.djhtm?a={code}&e={start_date}&f={end_date}"
 
     try:
         res = requests.get(url, headers=MDJ_HEADERS, timeout=8)
@@ -118,6 +116,8 @@ def test_fetch_broker_ranking(code: str, start_date: str, end_date: str):
         page_date = _parse_roc_or_iso_date(m_dt.group(1)) if m_dt else "未標示"
 
         soup = BeautifulSoup(html, "html.parser")
+        raw_preview = re.sub(r"\s+", " ", soup.get_text(" ", strip=True))[:300]
+
         buy_tbl, sell_tbl = None, None
         for tbl in soup.find_all("table"):
             txt = tbl.get_text(" ", strip=True)
@@ -139,6 +139,7 @@ def test_fetch_broker_ranking(code: str, start_date: str, end_date: str):
             "page_date": page_date,
             "df_buy": df_b,
             "df_sell": df_s,
+            "raw_preview": raw_preview,
             "err": ""
         }
     except Exception as e:
@@ -148,6 +149,7 @@ def test_fetch_broker_ranking(code: str, start_date: str, end_date: str):
             "page_date": "-",
             "df_buy": pd.DataFrame(),
             "df_sell": pd.DataFrame(),
+            "raw_preview": "",
             "err": str(e)
         }
 
@@ -165,6 +167,7 @@ def test_fetch_broker_detail(detail_url: str, start_date: str, end_date: str) ->
         res = requests.get(q_url, headers=MDJ_HEADERS, timeout=8)
         html = res.content.decode("cp950", errors="replace")
         soup = BeautifulSoup(html, "html.parser")
+        raw_preview = re.sub(r"\s+", " ", soup.get_text(" ", strip=True))[:300]
         recs = []
         for tr in soup.find_all("tr"):
             tds = tr.find_all("td")
@@ -180,11 +183,11 @@ def test_fetch_broker_detail(detail_url: str, start_date: str, end_date: str) ->
                     "買賣超": _clean_int(texts[3])
                 })
         if not recs:
-            return pd.DataFrame(), q_url, ""
+            return pd.DataFrame(), q_url, "", raw_preview
         df_out = pd.DataFrame(recs).drop_duplicates(subset=["日期"]).sort_values("日期").reset_index(drop=True)
-        return df_out, q_url, ""
+        return df_out, q_url, "", raw_preview
     except Exception as e:
-        return pd.DataFrame(), q_url, str(e)
+        return pd.DataFrame(), q_url, str(e), ""
 
 
 st.set_page_config(page_title="分點獨立測試工具", layout="wide")
@@ -236,7 +239,9 @@ if run_rank or run_detail:
                         st.caption(f"網址: {out['url']}")
                         if out["err"]:
                             st.error(out["err"])
-                        if b_cnt > 0 or s_cnt > 0:
+                        if b_cnt == 0 and s_cnt == 0:
+                            st.code(out["raw_preview"] or "(回傳內容為空)", language="text")
+                        else:
                             ca, cb = st.columns(2)
                             with ca:
                                 st.dataframe(out["df_buy"][["分點名稱", "買進", "賣出", "買賣超", "佔比"]].head(5), use_container_width=True)
@@ -250,15 +255,18 @@ if run_rank or run_detail:
                     rank_out = test_fetch_broker_ranking(stock_code, s_10, end_d)
                     if rank_out["df_buy"].empty:
                         st.warning(f"`{end_d}` 近10日買超清單為空，無法測試明細（HTTP={rank_out['status_code']}, 錯誤={rank_out['err']}）")
+                        st.code(rank_out["raw_preview"] or "(回傳內容為空)", language="text")
                     else:
                         for _, r in rank_out["df_buy"].head(3).iterrows():
                             b_name = r["分點名稱"]
                             d_url = r["明細網址"]
-                            df_d, q_url, d_err = test_fetch_broker_detail(d_url, s_60, end_d)
+                            df_d, q_url, d_err, d_prev = test_fetch_broker_detail(d_url, s_60, end_d)
                             st.write(f"分點 **{b_name}** 近60日明細 (`{s_60}` ~ `{end_d}`)：共 `{len(df_d)}` 筆")
                             st.caption(f"明細網址: {q_url}")
                             if d_err:
                                 st.error(d_err)
-                            elif not df_d.empty:
+                            elif df_d.empty:
+                                st.code(d_prev or "(回傳內容為空)", language="text")
+                            else:
                                 st.dataframe(df_d.tail(10), use_container_width=True)
                             time.sleep(0.15)
