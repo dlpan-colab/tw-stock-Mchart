@@ -1,7 +1,7 @@
 """
 app.py - 主應用程式介面與生命週期控制
-(三主頁籤架構：操作儀錶板 / 個股 / 參數設定 + 自選與查詢歷史同步 + 盤中均線多空燈號 + 動態chart_id杜絕跨頁籤殘留 + 批次增補指定基準日起往前N日分點統計與明細版)
-版本: 202611190840
+(三主頁籤架構：操作儀錶板 / 個股 / 參數設定 + 自選與查詢歷史同步 + 盤中均線多空燈號 + 動態chart_id杜絕跨頁籤殘留 + 批次增補指定基準日起往前N日分點統計與明細版 + 分點頁籤高度展開版)
+版本: 202611190925
 """
 import os
 import time
@@ -11,7 +11,7 @@ import streamlit.components.v1 as components
 import cloud_sync
 
 MODULE_NAME = "app"
-MODULE_VERSION = "202611190840"
+MODULE_VERSION = "202611190925"
 
 
 # 【防呆防錯備註 2026-11-07】：版本控制權由 app.py 作為唯一權威源，動態掃描所有模組最大版本號，杜絕多頭覆寫與重工
@@ -1188,7 +1188,9 @@ else:
                 disp_days=disp_n,
                 is_mobile=st.session_state.is_mobile_mode
             )
-            components.html(broker_html, height=1350, scrolling=False)
+            # 【修訂說明 2026-11-19】調高分點容器高度並開啟 scrolling=True，避免近20日/60日統計表與前5名分點明細圖遭裁切
+            broker_box_h = 2650 if need_60d else 2100
+            components.html(broker_html, height=broker_box_h, scrolling=True)
 
         display_name = c_name if c_name else get_stock_chinese_name(current_stock)
         btm_c1, btm_c2, btm_c3 = st.columns([6.4, 1.3, 1.3])
