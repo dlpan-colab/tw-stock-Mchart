@@ -28,7 +28,7 @@ def get_system_version() -> str:
             mod_file = os.path.join(base_dir, f"{mod_name}.py")
             if os.path.exists(mod_file):
                 with open(mod_file, "r", encoding="utf-8") as f:
-                    content = f.read(500)
+                    content = f.read(2000)
                     m = re.search(r'MODULE_VERSION\s*=\s*["\'](\d{12})["\']', content)
                     if m:
                         versions.append(m.group(1))
