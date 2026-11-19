@@ -1,7 +1,7 @@
 """
 data_fetcher.py - 整合技術與籌碼資料擷取模組
-(支援含英文後綴台股ETF + TWSE/TPEx官方日K即時補齊 + 雲端增量累積分點引擎 + 集保單檔FinMind與批次分離 + 賣超負值正規化 + 操作儀錶板盤中報價版 + 批次增補指定基準日起往前N日分點統計與明細版)
-版本: 202611190840
+(支援含英文後綴台股ETF + TWSE/TPEx官方日K即時補齊 + 雲端增量累積分點引擎 + 集保單檔FinMind與批次分離 + 賣超負值正規化 + 操作儀錶板盤中報價版 + 富邦10欄並排表格與精準單日分點統計/明細穩定版)
+版本: 202611190915
 """
 import os
 import re
@@ -17,7 +17,7 @@ from datetime import datetime, timedelta
 from urllib.parse import urljoin, urlparse, parse_qs, urlencode, urlunparse
 
 MODULE_NAME = "data_fetcher"
-MODULE_VERSION = "202611190840"
+MODULE_VERSION = "202611190915"
 
 from storage import (
     StockChipStorage,
@@ -734,53 +734,56 @@ def _parse_roc_or_iso_date(date_text: str) -> str:
     return ""
 
 
+def _parse_5_broker_cells(td_slice: list, base_url: str, is_sell_side: bool) -> dict:
+    if len(td_slice) < 4:
+        return None
+    texts = [td.get_text(" ", strip=True) for td in td_slice]
+    if any(k in texts[0] for k in ("買超券商", "賣超券商", "券商名稱", "排行")):
+        return None
+    b_name, sys_tag = _clean_broker_name(texts[0])
+    if not b_name or b_name in ("合計", "總計", "其他"):
+        return None
+    buy_val = _clean_broker_int(texts[1])
+    sell_val = _clean_broker_int(texts[2])
+    net_val = _clean_broker_int(texts[3])
+    if is_sell_side:
+        net_val = -abs(net_val)
+    ratio_str = texts[4].strip() if len(texts) >= 5 and "%" in texts[4] else "-"
+    detail_url = ""
+    a_tag = td_slice[0].find("a", href=True)
+    if a_tag:
+        detail_url = _resolve_mdj_broker_url(a_tag["href"], base_url)
+    return {
+        "分點名稱": b_name,
+        "體系": sys_tag,
+        "買進(張)": buy_val,
+        "賣出(張)": sell_val,
+        "買賣超(張)": net_val,
+        "佔比": ratio_str,
+        "明細網址": detail_url
+    }
+
+
 def _parse_broker_side_table(table_soup, base_url: str, is_sell_side: bool = False) -> pd.DataFrame:
-    """
-    【修訂說明 2026-11-17】
-    賣超方（右側欄位）之「買賣超(張)」強制轉為負值（-abs(net_val)），
-    確保前端賣超列表一律呈現綠字與負號，區間柱狀圖亦精準朝下顯示賣超張數。
-    """
     rows_out = []
     if table_soup is None:
         return pd.DataFrame()
     for tr in table_soup.find_all("tr"):
         tds = tr.find_all("td")
-        if len(tds) < 4:
-            continue
-        texts = [td.get_text(" ", strip=True) for td in tds]
-        if any(k in texts[0] for k in ("買超券商", "賣超券商", "券商名稱", "排行")):
-            continue
-        b_name, sys_tag = _clean_broker_name(texts[0])
-        if not b_name or b_name in ("合計", "總計", "其他"):
-            continue
-        buy_val = _clean_broker_int(texts[1])
-        sell_val = _clean_broker_int(texts[2])
-        net_val = _clean_broker_int(texts[3])
-        if is_sell_side:
-            net_val = -abs(net_val)
-        ratio_str = texts[4].strip() if len(texts) >= 5 and "%" in texts[4] else "-"
-        detail_url = ""
-        a_tag = tds[0].find("a", href=True)
-        if a_tag:
-            detail_url = _resolve_mdj_broker_url(a_tag["href"], base_url)
-        rows_out.append({
-            "分點名稱": b_name,
-            "體系": sys_tag,
-            "買進(張)": buy_val,
-            "賣出(張)": sell_val,
-            "買賣超(張)": net_val,
-            "佔比": ratio_str,
-            "明細網址": detail_url
-        })
+        item = _parse_5_broker_cells(tds, base_url, is_sell_side=is_sell_side)
+        if item:
+            rows_out.append(item)
     return pd.DataFrame(rows_out)
 
 
 def fetch_stock_broker_range_ranking(pure_code: str, start_date: str, end_date: str):
     """
     【修訂說明 2026-11-19】【修改目的與防呆防錯原因】：
-    100% 還原原本已驗證成功之富邦 eBroker 網址規則：
-    - 當 start_date == end_date（最新當日）使用 zco_{code}.djhtm。
-    - 區間查詢使用標準 YYYY-MM-DD 格式之 zco.djhtm?a={code}&e={s_str}&f={e_str}。
+    1. 修改目的：統一使用 zco.djhtm?a={code}&e={s_str}&f={e_str}（含 s_str == e_str 歷史單日），
+       並直接解析富邦 eBroker 同一張 10 欄並排表格（前 5 欄買超券商、後 5 欄賣超券商）。
+    2. 防呆防錯原因：
+       - 賣超方（右側欄位）之「買賣超(張)」強制轉為負值（-abs(net_val)）。
+       - 同時保留左右獨立 5 欄子表格之相容解析。
     """
     code = str(pure_code or "").strip().upper()
     if not code or code.startswith("^") or not is_tw_stock_or_etf(code):
@@ -788,13 +791,10 @@ def fetch_stock_broker_range_ranking(pure_code: str, start_date: str, end_date: 
 
     s_str = str(start_date).strip()[:10]
     e_str = str(end_date).strip()[:10]
-    if s_str == e_str:
-        target_url = f"{MDJ_BASE_DOMAIN}/z/zc/zco/zco_{code}.djhtm"
-    else:
-        target_url = f"{MDJ_BASE_DOMAIN}/z/zc/zco/zco.djhtm?a={code}&e={s_str}&f={e_str}"
+    target_url = f"{MDJ_BASE_DOMAIN}/z/zc/zco/zco.djhtm?a={code}&e={s_str}&f={e_str}"
 
     try:
-        res = requests.get(target_url, headers=MDJ_HEADERS, timeout=5)
+        res = requests.get(target_url, headers=MDJ_HEADERS, timeout=6)
         if res.status_code != 200:
             return pd.DataFrame(), pd.DataFrame()
         try:
@@ -803,14 +803,40 @@ def fetch_stock_broker_range_ranking(pure_code: str, start_date: str, end_date: 
             html_text = res.text
 
         soup = BeautifulSoup(html_text, "html.parser")
-        buy_tbl = None
-        sell_tbl = None
+        buy_rows, sell_rows = [], []
 
+        # 1. 優先解析最內層 10 欄並排表格（前 5 欄買超、後 5 欄賣超）
         for tbl in soup.find_all("table"):
             txt = tbl.get_text(" ", strip=True)
             if "買超券商" in txt and "賣超券商" in txt:
-                sub_tables = tbl.find_all("table")
-                for stbl in sub_tables:
+                has_inner = any(
+                    ("買超券商" in st.get_text(" ", strip=True) and "賣超券商" in st.get_text(" ", strip=True))
+                    for st in tbl.find_all("table")
+                )
+                if has_inner:
+                    continue
+
+                for tr in tbl.find_all("tr"):
+                    tds = tr.find_all("td", recursive=False)
+                    if not tds:
+                        tds = tr.find_all("td")
+                    if len(tds) >= 10:
+                        b_item = _parse_5_broker_cells(tds[0:5], target_url, is_sell_side=False)
+                        s_item = _parse_5_broker_cells(tds[5:10], target_url, is_sell_side=True)
+                        if b_item:
+                            buy_rows.append(b_item)
+                        if s_item:
+                            sell_rows.append(s_item)
+                if buy_rows or sell_rows:
+                    return pd.DataFrame(buy_rows), pd.DataFrame(sell_rows)
+
+        # 2. 相容備援：左右獨立 5 欄子表格
+        buy_tbl = None
+        sell_tbl = None
+        for tbl in soup.find_all("table"):
+            txt = tbl.get_text(" ", strip=True)
+            if "買超券商" in txt and "賣超券商" in txt:
+                for stbl in tbl.find_all("table"):
                     stxt = stbl.get_text(" ", strip=True)
                     if "買超券商" in stxt and "賣超券商" not in stxt and buy_tbl is None:
                         buy_tbl = stbl
@@ -818,14 +844,6 @@ def fetch_stock_broker_range_ranking(pure_code: str, start_date: str, end_date: 
                         sell_tbl = stbl
                 if buy_tbl is not None or sell_tbl is not None:
                     break
-
-        if buy_tbl is None and sell_tbl is None:
-            for tbl in soup.find_all("table"):
-                txt = tbl.get_text(" ", strip=True)
-                if "買超券商" in txt and "賣超券商" not in txt and len(tbl.find_all("tr")) >= 3:
-                    buy_tbl = tbl
-                elif "賣超券商" in txt and "買超券商" not in txt and len(tbl.find_all("tr")) >= 3:
-                    sell_tbl = tbl
 
         df_buy = _parse_broker_side_table(buy_tbl, target_url, is_sell_side=False)
         df_sell = _parse_broker_side_table(sell_tbl, target_url, is_sell_side=True)
@@ -835,6 +853,11 @@ def fetch_stock_broker_range_ranking(pure_code: str, start_date: str, end_date: 
 
 
 def fetch_single_broker_daily_series(detail_url: str, start_date: str, end_date: str) -> pd.DataFrame:
+    """
+    【修訂說明 2026-11-19】【修改目的與防呆防錯原因】：
+    1. 修改目的：擷取單一分點逐日買賣超明細。
+    2. 防呆防錯原因：富邦明細表第 4 欄為買賣合計總量（買進+賣出），改以「買進(張) - 賣出(張)」精準計算當日買賣超淨額。
+    """
     if not detail_url:
         return pd.DataFrame()
 
@@ -850,7 +873,7 @@ def fetch_single_broker_daily_series(detail_url: str, start_date: str, end_date:
     query_url = urlunparse((parsed.scheme, parsed.netloc, parsed.path, parsed.params, urlencode(flat_qs), ""))
 
     try:
-        res = requests.get(query_url, headers=MDJ_HEADERS, timeout=5)
+        res = requests.get(query_url, headers=MDJ_HEADERS, timeout=6)
         if res.status_code != 200:
             return pd.DataFrame()
         try:
@@ -862,7 +885,7 @@ def fetch_single_broker_daily_series(detail_url: str, start_date: str, end_date:
         records = []
         for tr in soup.find_all("tr"):
             tds = tr.find_all("td")
-            if len(tds) < 4:
+            if len(tds) < 3:
                 continue
             texts = [td.get_text(" ", strip=True) for td in tds]
             iso_d = _parse_roc_or_iso_date(texts[0])
@@ -872,7 +895,7 @@ def fetch_single_broker_daily_series(detail_url: str, start_date: str, end_date:
                 continue
             b_vol = _clean_broker_int(texts[1])
             s_vol = _clean_broker_int(texts[2])
-            n_vol = _clean_broker_int(texts[3]) if len(texts) >= 4 else (b_vol - s_vol)
+            n_vol = b_vol - s_vol
             records.append({
                 "日期": iso_d,
                 "買進(張)": b_vol,
@@ -948,7 +971,6 @@ def fetch_dashboard_watchlist_rows(history_records: list) -> list:
             merged = pd.DataFrame()
 
         if len(merged) < 20:
-            # 若歷史不足 20 日以計算完整 20MA，補抓 3mo
             try:
                 alt_suffix = ".TWO" if market_label == "櫃" else ".TW"
                 h3m = yf.Ticker(f"{code}{alt_suffix}").history(period="3mo")
@@ -1058,7 +1080,7 @@ def _load_stock_storage_and_dates_for_backfill(pure_code: str) -> tuple:
     """
     【修訂說明 2026-11-19】【修改目的與防呆防錯原因】：
     1. 修改目的：確保先建立 StockChipStorage 並完成 Google 雲端資料庫拉取後再讀取日線，
-       若本地與雲端日線筆數不足（< 65 筆）則透過 fetch_stock_daily_k 補齊日線，避免交易日清單為空導致跳過。
+       若本地與雲端日線筆數不足（< 65 筆）則透過 fetch_stock_daily_k 補齊日線。
     2. 防呆防錯原因：回傳已初始化的 (storage, trade_dates_list)，確保後續讀寫與雲端上傳共用同一有效資料庫實例。
     """
     storage = StockChipStorage(pure_code)
@@ -1097,10 +1119,9 @@ def batch_backfill_broker_range_ranks(
     """
     【修訂說明 2026-11-19】【修改目的與防呆防錯原因】：
     1. 修改目的：針對所有已建立資料庫之個股，自「增補分點基準日（base_date_str）」起往前計數 N 個交易日（recent_days），
-       逐日作為基準日向富邦 eBroker 補齊分點買賣超前10名統計（broker_range_rank），並保留明細網址（url）供後續明細作業直接讀取。
+       逐日作為基準日補齊 1/10/20/60 日四區間之分點買賣超前10名統計（broker_range_rank），並保留明細網址（url）。
     2. 防呆防錯原因：
-       - 先完整初始化並拉取雲端資料庫再讀取交易日清單，杜絕交易日為空導致 0 寫入、0 略過。
-       - 基準日為該股資料庫最新交易日（或指定基準日即該日）時抓 1/10/20/60 日；其餘歷史基準日抓 10/20/60 日。
+       - 採用實測通過的 10 欄並排解析與起訖日期參數（含單日 e=f=end_date_str），確保所有歷史基準日均能寫入完整 4 區間統計。
        - 單檔個股只要有任何新寫入即同步上傳 Google 雲端硬碟（_do_sync_db_push）。
     """
     from storage import _do_sync_db_push
@@ -1154,7 +1175,6 @@ def batch_backfill_broker_range_ranks(
             continue
 
         anchor_idx = _resolve_anchor_idx(trade_dates, target_base)
-        latest_idx = len(trade_dates) - 1
         start_pos = max(0, anchor_idx - n_days + 1)
         stock_changed = False
         stock_added_days = 0
@@ -1162,7 +1182,7 @@ def batch_backfill_broker_range_ranks(
 
         for target_idx in range(start_pos, anchor_idx + 1):
             end_date_str = trade_dates[target_idx]
-            req_windows = (1, 10, 20, 60) if target_idx == latest_idx else (10, 20, 60)
+            req_windows = (1, 10, 20, 60)
 
             existing_bundle = storage.load_broker_range_rank(end_date_str)
             if existing_bundle is not None and all(_has_valid_win(existing_bundle, w) for w in req_windows):
@@ -1191,7 +1211,7 @@ def batch_backfill_broker_range_ranks(
                     }
 
                 if idx_w < len(missing_wins) - 1:
-                    time.sleep(0.05)
+                    time.sleep(0.06)
 
             if has_new_valid and day_bundle:
                 storage.save_broker_range_rank(end_date_str, day_bundle, sync_cloud=False)
@@ -1199,7 +1219,7 @@ def batch_backfill_broker_range_ranks(
                 stock_added_days += 1
                 stock_changed = True
 
-            time.sleep(0.03)
+            time.sleep(0.04)
 
         if stock_changed:
             _do_sync_db_push(code)
@@ -1238,9 +1258,9 @@ def batch_backfill_broker_daily_series(
     【修訂說明 2026-11-19】【修改目的與防呆防錯原因】：
     1. 修改目的：針對所有已建立資料庫之個股，自「增補分點基準日（base_date_str）」起往前計數 N 個交易日（recent_days），
        優先直接從資料庫已寫入的統計紀錄（broker_range_rank）讀取近 10/20/60 日前 5 名分點與明細網址，
-       補齊其 60 日逐日買賣超明細（broker_daily_trades）並同步雲端。
+       補齊其逐日買賣超明細（broker_daily_trades）並同步雲端。
     2. 防呆防錯原因：
-       - 若該分點於 [60日起始日 ~ 基準日] 區間內資料庫已有逐日明細紀錄，則自動跳過不重複請求。
+       - 若該分點於 [60日起始日 ~ 基準日] 區間內資料庫已有至基準日之逐日明細紀錄，則自動跳過不重複請求。
        - 單檔個股只要有任何新明細寫入即同步上傳 Google 雲端硬碟（_do_sync_db_push）。
     """
     from storage import _do_sync_db_push
@@ -1308,7 +1328,7 @@ def batch_backfill_broker_daily_series(
                                     broker_url_map[b_name] = d_url
 
                     if idx_w < 2:
-                        time.sleep(0.05)
+                        time.sleep(0.06)
 
             for b_name, d_url in broker_url_map.items():
                 existing_df = storage.load_broker_daily_series(b_name, earliest_start, end_date_str)
@@ -1325,7 +1345,7 @@ def batch_backfill_broker_daily_series(
                     saved_series_count += 1
                     stock_added_series += 1
                     stock_changed = True
-                time.sleep(0.03)
+                time.sleep(0.04)
 
         if stock_changed:
             _do_sync_db_push(code)
@@ -1349,7 +1369,7 @@ def batch_backfill_broker_daily_series(
         "skipped_series": skipped_series_count,
         "msg": (
             f"分點逐日明細增補完成（基準日 {target_base} 往前 {n_days} 日）：共掃描 {total_codes} 檔個股，"
-            f"更新並同步雲端 {updated_stocks} 檔（新增 {saved_series_count} 筆分點 60 日逐日明細，"
+            f"更新並同步雲端 {updated_stocks} 檔（新增 {saved_series_count} 筆分點逐日明細，"
             f"略過已有明細 {skipped_series_count} 筆）。"
         )
     }
