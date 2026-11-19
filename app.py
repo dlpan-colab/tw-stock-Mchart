@@ -1,7 +1,7 @@
 """
 app.py - 主應用程式介面與生命週期控制
-(三主頁籤架構：操作儀錶板 / 個股 / 參數設定 + 自選與查詢歷史同步 + 盤中均線多空燈號 + 動態chart_id杜絕跨頁籤殘留 + 批次增補近N日分點統計與明細即時進度版)
-版本: 202611190710
+(三主頁籤架構：操作儀錶板 / 個股 / 參數設定 + 自選與查詢歷史同步 + 盤中均線多空燈號 + 動態chart_id杜絕跨頁籤殘留 + 批次增補指定基準日起往前N日分點統計與明細版)
+版本: 202611190840
 """
 import os
 import time
@@ -11,7 +11,7 @@ import streamlit.components.v1 as components
 import cloud_sync
 
 MODULE_NAME = "app"
-MODULE_VERSION = "202611190710"
+MODULE_VERSION = "202611190840"
 
 
 # 【防呆防錯備註 2026-11-07】：版本控制權由 app.py 作為唯一權威源，動態掃描所有模組最大版本號，杜絕多頭覆寫與重工
@@ -62,7 +62,8 @@ from frontend import (
 from data_fetcher import (
     fetch_stock_broker_range_ranking,
     fetch_single_broker_daily_series,
-    fetch_dashboard_watchlist_rows
+    fetch_dashboard_watchlist_rows,
+    get_default_broker_backfill_base_date
 )
 
 INDEX_MAP = {
@@ -73,7 +74,7 @@ INDEX_MAP = {
     "DJI": "^DJI", "道瓊": "^DJI", "^DJI": "^DJI",
     "IXIC": "^IXIC", "COMP": "^IXIC", "那指": "^IXIC", "那斯達克": "^IXIC", "^IXIC": "^IXIC",
     "SOX": "^SOX", "費半": "^SOX", "半導體": "^SOX", "^SOX": "^SOX",
-    "GSPC": "^GSPC", "SP500": "^GSPC", "標普": "^GSPC", "^GSPC": "^GSPC",
+    "GSPC": "^GSPC", "SP500": "^GSPC", "標普500": "^GSPC", "^GSPC": "^GSPC",
     # 亞股
     "N225": "^N225", "NIKKEI": "^N225", "日經": "^N225", "^N225": "^N225",
     "KS11": "^KS11", "KOSPI": "^KS11", "韓綜": "^KS11", "^KS11": "^KS11",
@@ -921,10 +922,16 @@ elif selected_main_tab == "⚙️ 參數設定":
                 st.error(f"集保批次作業失敗: {e}")
 
     # 【修訂說明 2026-11-19】【修改目的與防呆防錯原因】：
-    # 修改目的：新增批次增補所有資料庫個股近 N 日分點統計（1/10/20/60日）與分點逐日明細（前5名60日逐日買賣超）兩個獨立作業按鈕，並附帶即時進度條與狀態文字。
-    # 防呆防錯原因：透過 progress_callback 即時刷新畫面進度條與單檔處理狀態，避免長時間批次執行時畫面無回應；完成後清除分點快取。
+    # 修改目的：新增「增補分點基準日」參數（預設台灣時間 15:00 前為前一日、15:00 後為當日），並將「增補分點日數」明確標示為自增補分點基準日起往前計數。
+    # 防呆防錯原因：透過 progress_callback 即時刷新進度條與單檔處理結果，完成後清除分點快取。
+    default_backfill_base = get_default_broker_backfill_base_date()
+    backfill_base_date = st.text_input(
+        "增補分點基準日 (YYYY-MM-DD，15:00前預設前一日)",
+        value=default_backfill_base,
+        key="input_backfill_broker_base_date"
+    )
     backfill_broker_days = st.number_input(
-        "增補分點日數 (N)",
+        "增補分點日數（自增補分點基準日起往前計數）",
         min_value=1,
         max_value=60,
         value=5,
@@ -944,6 +951,7 @@ elif selected_main_tab == "⚙️ 參數設定":
             from data_fetcher import batch_backfill_broker_range_ranks
             res_rank = batch_backfill_broker_range_ranks(
                 recent_days=int(backfill_broker_days),
+                base_date_str=str(backfill_base_date or default_backfill_base).strip(),
                 progress_callback=_on_rank_progress
             )
             prog_bar.progress(1.0)
@@ -971,6 +979,7 @@ elif selected_main_tab == "⚙️ 參數設定":
             from data_fetcher import batch_backfill_broker_daily_series
             res_ser = batch_backfill_broker_daily_series(
                 recent_days=int(backfill_broker_days),
+                base_date_str=str(backfill_base_date or default_backfill_base).strip(),
                 progress_callback=_on_series_progress
             )
             prog_bar.progress(1.0)
