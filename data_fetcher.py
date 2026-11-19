@@ -1,7 +1,7 @@
 """ 
 data_fetcher.py - 整合技術與籌碼資料擷取模組
-(支援含英文後綴台股ETF + TWSE/TPEx官方日K即時補齊 + 雲端增量累積分點引擎 + 集保單檔FinMind與批次分離 + 賣超負值正規化 + 操作儀錶板盤中報價版 + 富邦10欄並排表格與精準單日分點統計/明細穩定版)
-版本: 202611190915
+(支援含英文後綴台股ETF + TWSE/TPEx官方日K即時補齊 + 雲端增量累積分點引擎 + 集保官網qryStock約15週歷史查詢與id=1-5批次分離 + 賣超負值正規化 + 操作儀錶板盤中報價版 + 富邦10欄並排表格與精準單日分點統計/明細穩定版)
+版本: 202611191915
 """
 import os
 import re
@@ -17,7 +17,7 @@ from datetime import datetime, timedelta
 from urllib.parse import urljoin, urlparse, parse_qs, urlencode, urlunparse
 
 MODULE_NAME = "data_fetcher"
-MODULE_VERSION = "202611190915"
+MODULE_VERSION = "202611191915"
 
 from storage import (
     StockChipStorage,
@@ -519,30 +519,127 @@ def fetch_margin_short_data(pure_code: str, df_dates: pd.DatetimeIndex, start_da
     return records_ms
 
 
+def fetch_tdcc_holding_history(pure_code: str, weeks: int = 15) -> list:
+    """
+    【修訂說明 2026-11-19】【修改目的與防呆防錯原因】：
+    1. 修改目的：捨棄免費版無授權之 FinMind TaiwanStockHoldingSharesPer，改採集保官網歷史查詢介面
+       （https://www.tdcc.com.tw/portal/zh/smWeb/qryStock），一次比對本地資料庫缺失週別並補齊約 15 週
+       （官方下拉選單提供之所有可用公告週別）1～15 級股權分散表歷史資料。
+    2. 防呆防錯原因：
+       - 先 GET 取得表單隱藏欄位（base_payload）與 <option> 可用日期（YYYYMMDD），並與本地已有週別比對，
+         僅針對缺失週別發送 POST 查詢，避免重複抓取已知週別。
+       - 嚴格限定表格首欄為純數字 1 <= level <= 15（排除第 16 差異數與第 17 合計列）。
+    """
+    code = str(pure_code or "").strip().upper()
+    if not code or code.startswith("^") or not is_tw_stock_or_etf(code):
+        return []
+
+    url_tdcc = "https://www.tdcc.com.tw/portal/zh/smWeb/qryStock"
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
+        "Referer": url_tdcc,
+        "Origin": "https://www.tdcc.com.tw",
+    }
+
+    existing_weeks = set()
+    try:
+        storage = StockChipStorage(code)
+        df_exist = storage.load_holding_df()
+        if df_exist is not None and not df_exist.empty and "date" in df_exist.columns:
+            existing_weeks = set(pd.to_datetime(df_exist["date"]).dt.strftime("%Y%m%d").tolist())
+    except Exception:
+        pass
+
+    records_h = []
+    try:
+        sess = requests.Session()
+        res_get = sess.get(url_tdcc, headers=headers, timeout=8)
+        if res_get.status_code != 200:
+            return []
+
+        soup_get = BeautifulSoup(res_get.text, "html.parser")
+        base_payload = {}
+        for inp in soup_get.find_all("input"):
+            name = inp.get("name")
+            if name:
+                base_payload[name] = inp.get("value", "")
+
+        avail_dates = []
+        for opt in soup_get.find_all("option"):
+            val = str(opt.get("value", "")).strip()
+            if val.isdigit() and len(val) == 8:
+                avail_dates.append(val)
+
+        if not avail_dates:
+            return []
+
+        max_w = max(1, int(weeks or 15))
+        target_dates = avail_dates[:max_w]
+        missing_dates = [d for d in target_dates if d not in existing_weeks]
+        if not missing_dates:
+            return []
+
+        for d_str in missing_dates:
+            payload = base_payload.copy()
+            payload.update({
+                "scaDate": d_str,
+                "sqlMethod": "StockNo",
+                "stockNo": code,
+                "stockName": "",
+                "sub": "查詢"
+            })
+            try:
+                res_post = sess.post(url_tdcc, data=payload, headers=headers, timeout=8)
+                if res_post.status_code != 200:
+                    continue
+                soup_post = BeautifulSoup(res_post.text, "html.parser")
+                iso_d = f"{d_str[:4]}-{d_str[4:6]}-{d_str[6:8]}"
+
+                for tbl in soup_post.find_all("table"):
+                    if "1,000,001" not in tbl.get_text():
+                        continue
+                    for tr in tbl.find_all("tr"):
+                        cols = [td.get_text(strip=True).replace(",", "") for td in tr.find_all("td")]
+                        if len(cols) >= 5 and cols[0].isdigit():
+                            lvl = int(cols[0])
+                            if 1 <= lvl <= 15:
+                                try:
+                                    pct = float(cols[4].replace("%", "").strip())
+                                    records_h.append((iso_d, lvl, pct))
+                                except Exception:
+                                    continue
+                    break
+            except Exception:
+                pass
+            time.sleep(0.25)
+    except Exception:
+        pass
+
+    return records_h
+
+
 def fetch_tdcc_holding_data(pure_code: str) -> list:
     """
-    【修訂說明 2026-11-16】【修改目的與防呆防錯原因】：
-    1. 修改目的：單一個股查詢時僅透過 FinMind 取得該單一個股最近一週公告之大戶持股分級比例，
-       不再每次下載全市場集保 CSV 總表（全市場下載僅限批次作業）。
-    2. 防呆防錯原因：僅取最新單一公告日期（max(date)）且嚴格保留 1 <= level <= 15 級距。
+    【修訂說明 2026-11-19】【修改目的與防呆防錯原因】：
+    1. 修改目的：單一個股查詢時直接呼叫集保官網歷史查詢（fetch_tdcc_holding_history），
+       一次補齊該個股所有缺失之歷史週別（約 15 週）1～15 級股權分散表比例。
+    2. 防呆防錯原因：嚴格過濾 1 <= level <= 15，排除第 16（差異數）與第 17（合計）列，防止比例重複加總。
     """
-    hist_recs = fetch_tdcc_holding_history(pure_code, weeks=2)
+    hist_recs = fetch_tdcc_holding_history(pure_code, weeks=15)
     if not hist_recs:
         return []
-    max_d = max(r[0] for r in hist_recs)
-    return [(d, lvl, pct) for (d, lvl, pct) in hist_recs if d == max_d and 1 <= lvl <= 15]
+    return [(d, lvl, pct) for (d, lvl, pct) in hist_recs if 1 <= lvl <= 15]
 
 
 def batch_fetch_and_save_latest_tdcc_holding(target_codes: list = None) -> dict:
     """
-    【修訂說明 2026-11-16】【修改目的與防呆防錯原因】：
-    1. 修改目的：提供【上市/上櫃】批次作業，優先嘗試集保官方開放資料網鏡像與主站（id=1-5）；
-       若因雲端主機位於海外遭集保官網阻擋逾時，自動切換至 FinMind 備援線路批次取得已收錄個股最近一週
-       大戶持股分級比例，寫入各檔個股之 data_{code}.db（shareholding_distribution 資料表）並同步雲端。
+    【修訂說明 2026-11-19】【修改目的與防呆防錯原因】：
+    1. 修改目的：提供【上市/上櫃】批次作業，下載集保官方開放資料網最新單週全市場總表（id=1-5），
+       寫入已收錄個股之 data_{code}.db（shareholding_distribution 資料表）並同步雲端。
     2. 防呆防錯原因：
-       - 僅保留 1 <= level <= 15 級距，嚴格排除第 16（其他）、17（合計）列，防止比例計算重複加總。
+       - 移除無效之 FinMind 免費版集保備援迴圈，避免連線失敗時逐檔空轉等待。
+       - 僅保留 1 <= level <= 15 級距，嚴格排除第 16（其他）、17（合計）列。
        - 僅針對系統已建立之台股個股/ETF（排除 ^ 開頭指數）寫入，避免無差別產生數千個無效 .db 檔。
-       - FinMind 備援模式僅擷取每檔回傳之最新單一公告日期（max(date)）紀錄寫入並加入 0.08s 節流防呆。
     """
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
@@ -575,7 +672,7 @@ def batch_fetch_and_save_latest_tdcc_holding(target_codes: list = None) -> dict:
     source_used = "集保開放資料總表"
     for u in tdcc_urls:
         try:
-            res = requests.get(u, headers=headers, timeout=6)
+            res = requests.get(u, headers=headers, timeout=8)
             if res.status_code == 200 and res.text and "," in res.text[:200]:
                 csv_text = res.text
                 break
@@ -606,23 +703,10 @@ def batch_fetch_and_save_latest_tdcc_holding(target_codes: list = None) -> dict:
                 continue
 
     if not grouped_by_code:
-        source_used = "FinMind雲端備援線路"
-        for code in sorted(candidate_set):
-            try:
-                hist_recs = fetch_tdcc_holding_history(code, weeks=2)
-                if hist_recs:
-                    max_d = max(r[0] for r in hist_recs)
-                    latest_recs = [(d, lvl, pct) for (d, lvl, pct) in hist_recs if d == max_d and 1 <= lvl <= 15]
-                    if latest_recs:
-                        grouped_by_code[code] = latest_recs
-                        if max_d > latest_announce_date:
-                            latest_announce_date = max_d
-            except Exception:
-                pass
-            time.sleep(0.08)
-
-    if not grouped_by_code:
-        return {"ok": False, "msg": "集保開放資料網與 FinMind 備援線路皆未能取得最新一週分級紀錄，請稍後再試。"}
+        return {
+            "ok": False,
+            "msg": "集保開放資料總表（id=1-5）目前無法連線或尚未更新（單股歷史 15 週資料可於進入個股頁籤時自動向集保官網 qryStock 補齊）。"
+        }
 
     saved_stocks = 0
     saved_rows = 0
@@ -643,42 +727,6 @@ def batch_fetch_and_save_latest_tdcc_holding(target_codes: list = None) -> dict:
         "rows_count": saved_rows,
         "msg": f"已透過【{source_used}】完成 {saved_stocks} 檔個股（共 {saved_rows} 筆分級，最新公告日 {latest_announce_date}）大戶持股寫入並同步雲端！"
     }
-
-
-def fetch_tdcc_holding_history(pure_code: str, weeks: int = 8) -> list:
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-    }
-    start_dt = (datetime.now() - timedelta(days=weeks * 7 + 14)).strftime('%Y-%m-%d')
-    records_h = []
-    try:
-        url_h = "https://api.finmindtrade.com/api/v4/data"
-        p_h = {
-            "dataset": "TaiwanStockHoldingSharesPer",
-            "data_id": pure_code,
-            "start_date": start_dt,
-            "token": FINMIND_TOKEN
-        }
-        res_h = requests.get(url_h, params=p_h, headers=headers, timeout=5)
-        if res_h.status_code == 200:
-            data_h = res_h.json().get('data', [])
-            if data_h:
-                h_df = pd.DataFrame(data_h)
-                level_map = {
-                    "1-999": 1, "1,000-5,000": 2, "5,001-10,000": 3, "10,001-15,000": 4,
-                    "15,001-20,000": 5, "20,001-30,000": 6, "30,001-40,000": 7, "40,001-50,000": 8,
-                    "50,001-100,000": 9, "100,001-200,000": 10, "200,001-400,000": 11,
-                    "400,001-600,000": 12, "600,001-800,000": 13, "800,001-1,000,000": 14,
-                    "more than 1,000,001": 15
-                }
-                for _, r in h_df.iterrows():
-                    lvl_str = str(r.get('HoldingSharesLevel', '')).strip()
-                    lvl_int = level_map.get(lvl_str)
-                    if lvl_int and 1 <= lvl_int <= 15:
-                        records_h.append((r['date'], lvl_int, float(r.get('percent', 0) or 0)))
-    except Exception:
-        pass
-    return records_h
 
 
 # =====================================================================
