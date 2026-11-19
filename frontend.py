@@ -1,19 +1,19 @@
 """
 frontend.py - 前端 HTML/CSS 渲染模組
-(恢復 16 日正常版純淨 20 日初始可視視窗 + 分點買賣超紅綠對齊＋柱狀圖 staticPlot 徹底鎖死不可平移縮放版 + 分點統計與分點日況雙頁籤分離版)
-版本: 202611190935
+(恢復 16 日正常版純淨 20 日初始可視視窗 + 分點買賣超紅綠對齊＋柱狀圖 staticPlot 徹底鎖死不可平移縮放版 + 分點統計與分點日況雙頁籤分離版 + 分點日況預設20日版)
+版本: 202611190945
 """
 import json
 import pandas as pd
 
 MODULE_NAME = "frontend"
-MODULE_VERSION = "202611190935"
+MODULE_VERSION = "202611190945"
 
 
 # 【修訂說明 2026-11-18】【修改目的與防呆防錯原因】：
 # 修改目的：保留主圖上方圖例與互動操作說明列，並兼容未傳入 version_tag 之呼叫方式。
 # 防呆防錯原因：app.py 以 get_legend_html() 無參數呼叫，設定預設參數確保不觸發 TypeError。
-def get_legend_html(version_tag: str = "202611190935") -> str:
+def get_legend_html(version_tag: str = "202611190945") -> str:
     return """
     <div style="font-size:12px; color:#334155; background:#f1f5f9; padding:5px 8px; border-radius:5px; margin-bottom:4px; line-height:1.5;">
         <b>📌 圖例與互動操作說明：</b>
@@ -392,6 +392,9 @@ def get_broker_daily_tab_html(
         is_index = len(dates_list) == 0 or (df['Turnover_Rate'].max() == 0 and df['Foreign_Net'].abs().max() == 0)
     safe_payload = broker_payload if isinstance(broker_payload, dict) else {"by_date": {}}
 
+    # 【修訂說明 2026-11-19】【修改目的與防呆防錯原因】：
+    # 修改目的：將「分點日況」統計區間天數預設改為近 20 日。
+    # 防呆防錯原因：預設選取 20 日可完整呈現近一個月分點逐日進出波段，並保留 10/20/60 日自由切換。
     tpl = COMMON_CSS + BROKER_SHARED_CSS + """
 <div class="frame-root" id="__CID___broker_daily_root">
     <div id="__CID___d_hdr" class="pane-info-bar" style="margin-bottom:6px;"></div>
@@ -400,8 +403,8 @@ def get_broker_daily_tab_html(
         <div style="display:flex;align-items:center;gap:8px;margin-bottom:4px;flex-wrap:wrap;">
             <label for="__CID___b_sel" style="font-size:12.5px;font-weight:bold;color:#334155;">統計區間天數：</label>
             <select id="__CID___b_sel" style="padding:4px 8px;font-size:13px;border-radius:4px;border:1px solid #94a3b8;font-weight:bold;">
-                <option value="10" selected>近 10 日（含關注交易日）</option>
-                <option value="20">近 20 日（含關注交易日）</option>
+                <option value="10">近 10 日（含關注交易日）</option>
+                <option value="20" selected>近 20 日（含關注交易日）</option>
                 <option value="60">近 60 日（含關注交易日）</option>
             </select>
         </div>
@@ -418,7 +421,7 @@ var MSG_60D_ON_DEMAND='尚未載入近 60 日明細（預設僅載入至 20 日�
 function pushH(){if(!rootEl)return;var h=Math.ceil(rootEl.scrollHeight)+16;if(window.parent&&window.parent!==window)window.parent.postMessage({isStreamlitMessage:true,type:"streamlit:setFrameHeight",height:h},"*");}
 if(typeof ResizeObserver!=='undefined'&&rootEl){new ResizeObserver(function(){pushH();}).observe(rootEl);}
 function fmtNet(v,isBuySide){var n=Number(v)||0;if(isBuySide){var a=Math.abs(n);return a>0?'+'+a.toLocaleString('en-US'):'0';}else{var b=Math.abs(n);return b>0?'-'+b.toLocaleString('en-US'):'0';}}
-function renderBars(){if(!barsEl)return;var win=selEl?selEl.value:'10',dStr=dates[curIdx]||'',dayObj=(payload.by_date&&payload.by_date[dStr])?payload.by_date[dStr]:null;
+function renderBars(){if(!barsEl)return;var win=selEl?selEl.value:'20',dStr=dates[curIdx]||'',dayObj=(payload.by_date&&payload.by_date[dStr])?payload.by_date[dStr]:null;
     if(hdrEl){
         if(isIndex){hdrEl.innerHTML='<b>📈 券商分點逐日進出日況（'+dStr+'）</b> ｜ <span style="color:#64748b;">大盤指數無單一券商分點明細</span>';}
         else{hdrEl.innerHTML='<b>📈 券商分點逐日進出日況</b> ｜ 關注交易日：<b>'+dStr+'</b> <span style="color:#64748b;font-size:11.5px;">（買超前 5 名與賣超前 5 名逐日進出柱狀圖）</span>';}
@@ -432,7 +435,7 @@ function renderBars(){if(!barsEl)return;var win=selEl?selEl.value:'10',dStr=date
     var bList=wObj.top5_buy_series||[],sList=wObj.top5_sell_series||[];
     if(bList.length===0&&sList.length===0){if(warnEl){warnEl.textContent='查無該區間前 5 名分點之逐日進出明細（可能為資料來源暫時無回應）';warnEl.style.display='block';}barsEl.innerHTML='';pushH();return;}
     if(warnEl)warnEl.style.display='none';
-    var winNum=parseInt(win,10)||10;
+    var winNum=parseInt(win,10)||20;
     var sIdx=Math.max(0,curIdx-winNum+1);
     var axisDates=dates.slice(sIdx,curIdx+1);
     var tVals=[],tTexts=[],curM='';
