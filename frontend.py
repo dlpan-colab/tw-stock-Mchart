@@ -1,19 +1,19 @@
 """
 frontend.py - 前端 HTML/CSS 渲染模組
-(恢復 16 日正常版純淨 20 日初始可視視窗 + 分點買賣超紅綠對齊＋柱狀圖 staticPlot 徹底鎖死不可平移縮放版)
-版本: 202611182200
+(恢復 16 日正常版純淨 20 日初始可視視窗 + 分點買賣超紅綠對齊＋柱狀圖 staticPlot 徹底鎖死不可平移縮放版 + 分點統計與分點日況雙頁籤分離版)
+版本: 202611190935
 """
 import json
 import pandas as pd
 
 MODULE_NAME = "frontend"
-MODULE_VERSION = "202611182200"
+MODULE_VERSION = "202611190935"
 
 
 # 【修訂說明 2026-11-18】【修改目的與防呆防錯原因】：
 # 修改目的：保留主圖上方圖例與互動操作說明列，並兼容未傳入 version_tag 之呼叫方式。
 # 防呆防錯原因：app.py 以 get_legend_html() 無參數呼叫，設定預設參數確保不觸發 TypeError。
-def get_legend_html(version_tag: str = "202611182200") -> str:
+def get_legend_html(version_tag: str = "202611190935") -> str:
     return """
     <div style="font-size:12px; color:#334155; background:#f1f5f9; padding:5px 8px; border-radius:5px; margin-bottom:4px; line-height:1.5;">
         <b>📌 圖例與互動操作說明：</b>
@@ -293,17 +293,29 @@ Plotly.newPlot(elChip,pChip.data,pChip.layout,{responsive:true,displayModeBar:fa
             )
 
 
-# 【修訂說明 2026-11-18】【修改目的與防呆防錯原因】：
-# 1. 修改目的：
-#    (a) 兼容現行 app.py 傳入之參數 (df, broker_payload, chart_id, end_idx, disp_days, is_mobile) 與舊版簽名，無需更動 app.py。
-#    (b) 買超前 10 名強制顯示紅字與正號(+)、賣超前 10 名強制顯示綠字與負號(-)，提高 CSS 權重避免遭預設黑字覆蓋。
-#    (c) 第 5 項柱狀圖以關注交易日往前推算之完整區間交易日陣列 (dates.slice(...)) 作為統一 X 軸，無進出交易日自動補 0，徹底防止明細少於 3 筆時柱子拉寬成整片方塊；X 軸維持僅於每月首日標示月份。
-#    (d) 分點柱狀圖 config 設為 staticPlot: true 且 .b-bar 設 pointer-events: none; touch-action: pan-y，徹底禁止任何手指／滑鼠上下左右平移或雙指放大縮小。
-# 2. 防呆防錯原因：Plotly 在 staticPlot: false 時即使設定 fixedrange: true，手機雙指捏合仍會繞過改寫座標軸範圍；改用 staticPlot: true 從底層完全關閉互動事件，確保比例永遠鎖定且網頁捲動順暢。
-def get_broker_tab_html(
+BROKER_SHARED_CSS = """<style>
+.b-card{background:#fff;border:1px solid #e2e8f0;border-radius:6px;padding:6px;margin-bottom:8px}
+.b-title{font-size:13px;font-weight:bold;color:#1e293b;background:#f1f5f9;padding:4px 8px;border-radius:4px;margin-bottom:6px;border-left:3px solid #2c3e50}
+.b-grid{display:grid;grid-template-columns:1fr 1fr;gap:6px}@media(max-width:720px){.b-grid{grid-template-columns:1fr}}
+.b-wrap{overflow-x:auto;border:1px solid #e2e8f0;border-radius:4px}
+.b-tbl{width:100%;border-collapse:collapse;font-size:11.5px;text-align:right;white-space:nowrap}
+.b-tbl th{background:#f8fafc;color:#334155;font-weight:700;padding:4px 5px;border-bottom:1px solid #cbd5e1}
+.b-tbl td{padding:3px 5px;border-bottom:1px solid #f1f5f9;color:#1e293b}
+.b-tbl td.val-up{color:#eb4d4b!important;font-weight:bold!important}
+.b-tbl td.val-dn{color:#16a085!important;font-weight:bold!important}
+.b-tbl th:nth-child(1),.b-tbl td:nth-child(1),.b-tbl th:nth-child(2),.b-tbl td:nth-child(2){text-align:left}
+.gov-badge{display:inline-block;background:#fef3c7;color:#92400e;font-size:10px;padding:0 3px;border-radius:3px;margin-left:3px;border:1px solid #f59e0b}
+.b-bar{width:100%;height:185px;border:1px solid #e2e8f0;border-radius:4px;margin-bottom:6px;background:#fff;pointer-events:none!important;touch-action:pan-y!important;user-select:none!important;-webkit-user-select:none!important}
+</style>"""
+
+
+# 【修訂說明 2026-11-19】【修改目的與防呆防錯原因】：
+# 1. 修改目的：將原「🏦 分點」拆分為「📊 分點統計」（get_broker_stats_tab_html）與「📈 分點日況」（get_broker_daily_tab_html）兩大獨立頁籤。
+# 2. 防呆防錯原因：兩者皆支援跨圖表十字線同步（MCHART_SYNC_FOCUS）與 ResizeObserver 自動回報容器高度，並保留 get_broker_tab_html 向下相容別名。
+def get_broker_stats_tab_html(
     df: pd.DataFrame,
     broker_payload: dict = None,
-    chart_id: str = "mchart_broker",
+    chart_id: str = "mchart_broker_stats",
     end_idx: int = None,
     disp_days: int = 20,
     is_mobile: bool = False,
@@ -317,25 +329,74 @@ def get_broker_tab_html(
         is_index = len(dates_list) == 0 or (df['Turnover_Rate'].max() == 0 and df['Foreign_Net'].abs().max() == 0)
     safe_payload = broker_payload if isinstance(broker_payload, dict) else {"by_date": {}}
 
-    tpl = COMMON_CSS + """<style>
-.b-card{background:#fff;border:1px solid #e2e8f0;border-radius:6px;padding:6px;margin-bottom:8px}
-.b-title{font-size:13px;font-weight:bold;color:#1e293b;background:#f1f5f9;padding:4px 8px;border-radius:4px;margin-bottom:6px;border-left:3px solid #2c3e50}
-.b-grid{display:grid;grid-template-columns:1fr 1fr;gap:6px}@media(max-width:720px){.b-grid{grid-template-columns:1fr}}
-.b-wrap{overflow-x:auto;border:1px solid #e2e8f0;border-radius:4px}
-.b-tbl{width:100%;border-collapse:collapse;font-size:11.5px;text-align:right;white-space:nowrap}
-.b-tbl th{background:#f8fafc;color:#334155;font-weight:700;padding:4px 5px;border-bottom:1px solid #cbd5e1}
-.b-tbl td{padding:3px 5px;border-bottom:1px solid #f1f5f9;color:#1e293b}
-.b-tbl td.val-up{color:#eb4d4b!important;font-weight:bold!important}
-.b-tbl td.val-dn{color:#16a085!important;font-weight:bold!important}
-.b-tbl th:nth-child(1),.b-tbl td:nth-child(1),.b-tbl th:nth-child(2),.b-tbl td:nth-child(2){text-align:left}
-.gov-badge{display:inline-block;background:#fef3c7;color:#92400e;font-size:10px;padding:0 3px;border-radius:3px;margin-left:3px;border:1px solid #f59e0b}
-.b-bar{width:100%;height:185px;border:1px solid #e2e8f0;border-radius:4px;margin-bottom:6px;background:#fff;pointer-events:none!important;touch-action:pan-y!important;user-select:none!important;-webkit-user-select:none!important}
-</style>
-<div class="frame-root" id="__CID___broker_root">
+    tpl = COMMON_CSS + BROKER_SHARED_CSS + """
+<div class="frame-root" id="__CID___broker_stats_root">
     <div id="__CID___b_hdr" class="pane-info-bar" style="margin-bottom:6px;"></div>
     <div id="__CID___b_tbls"></div>
+</div>
+<script>(function(){var dates=__DATES__,isIndex=__IS_IDX__,payload=__BROKER_JSON__,curIdx=__INIT_END__;
+var rootEl=document.getElementById('__CID___broker_stats_root'),hdrEl=document.getElementById('__CID___b_hdr'),tblsEl=document.getElementById('__CID___b_tbls');
+var MSG_60D_ON_DEMAND='尚未載入近 60 日統計（預設僅載入至 20 日；請點擊上方「📥 載入近 60 日分點統計與明細」按鈕按需抓取）';
+function pushH(){if(!rootEl)return;var h=Math.ceil(rootEl.scrollHeight)+16;if(window.parent&&window.parent!==window)window.parent.postMessage({isStreamlitMessage:true,type:"streamlit:setFrameHeight",height:h},"*");}
+if(typeof ResizeObserver!=='undefined'&&rootEl){new ResizeObserver(function(){pushH();}).observe(rootEl);}
+function fmtI(v){var n=Number(v)||0;return n.toLocaleString('en-US');}
+function fmtNet(v,isBuySide){var n=Number(v)||0;if(isBuySide){var a=Math.abs(n);return a>0?'+'+a.toLocaleString('en-US'):'0';}else{var b=Math.abs(n);return b>0?'-'+b.toLocaleString('en-US'):'0';}}
+function buildSideTable(title,rows,isBuySide){var h='<div style="border:1px solid #cbd5e1;border-radius:5px;padding:4px;background:#fff;"><div style="font-size:12px;font-weight:bold;margin-bottom:4px;color:'+(isBuySide?'#eb4d4b':'#16a085')+';">'+title+'</div><div class="b-wrap"><table class="b-tbl"><thead><tr><th>名次</th><th>分點名稱</th><th>買進</th><th>賣出</th><th>買賣超</th><th>佔比</th></tr></thead><tbody>';
+    if(!rows||rows.length===0){h+='<tr><td colspan="6" style="text-align:center;color:#94a3b8;padding:10px;">查無分點明細資料</td></tr>';}
+    else{for(var i=0;i<rows.length;i++){var r=rows[i],badge=(r.sys==='官股'||r.sys==='八大官股')?'<span class="gov-badge">官股</span>':'',cls=isBuySide?'val-up':'val-dn';
+        h+='<tr><td>'+(i+1)+'</td><td><b>'+r.name+'</b>'+badge+'</td><td>'+fmtI(r.buy)+'</td><td>'+fmtI(r.sell)+'</td><td class="'+cls+'">'+fmtNet(r.net,isBuySide)+'</td><td>'+(r.ratio||'-')+'</td></tr>';}}
+    return h+'</tbody></table></div></div>';
+}
+function renderStats(idx){if(idx<0||idx>=dates.length)return;curIdx=idx;var dStr=dates[curIdx]||'';
+    if(isIndex){hdrEl.innerHTML='<b>📊 券商分點買賣超統計（'+dStr+'）</b> ｜ <span style="color:#64748b;">大盤指數無單一券商分點明細</span>';tblsEl.innerHTML='';pushH();return;}
+    var dayObj=(payload.by_date&&payload.by_date[dStr])?payload.by_date[dStr]:null;
+    hdrEl.innerHTML='<b>📊 券商分點買賣超統計</b> ｜ 關注交易日：<b>'+dStr+'</b> <span style="color:#64748b;font-size:11.5px;">（買超紅字＋號、賣超綠字－號；15:00前預設對齊前一交易日）</span>';
+    if(!dayObj){tblsEl.innerHTML='<div class="b-card" style="color:#64748b;font-size:12.5px;padding:12px;">尚無 <b>'+dStr+'</b> 之分點統計資料（可能為非交易日或尚未載入該日資料）。</div>';pushH();return;}
+    var secs=[{k:'w1',t:'1. 當日買賣超前 10 名'},{k:'w10',t:'2. 近 10 日買賣超前 10 名'},{k:'w20',t:'3. 近 20 日買賣超前 10 名'},{k:'w60',t:'4. 近 60 日買賣超前 10 名'}];
+    var h='';
+    for(var s=0;s<secs.length;s++){var obj=dayObj[secs[s].k]||{};var rng=obj.range_label?' <span style="font-weight:normal;color:#475569;font-size:11.5px;">（區間：'+obj.range_label+'）</span>':'';
+        h+='<div class="b-card"><div class="b-title">'+secs[s].t+rng+'</div>';
+        if(secs[s].k==='w60'&&(!obj.buy||obj.buy.length===0)&&(!obj.sell||obj.sell.length===0)){
+            h+='<div style="color:#64748b;font-size:12px;padding:8px 10px;background:#f8fafc;border-radius:4px;border:1px dashed #cbd5e1;">'+MSG_60D_ON_DEMAND+'</div></div>';
+        }else{
+            h+='<div class="b-grid">'+buildSideTable('🔴 買超前 10 名（張）',obj.buy||[],true)+buildSideTable('🟢 賣超前 10 名（張）',obj.sell||[],false)+'</div></div>';
+        }
+    }
+    tblsEl.innerHTML=h;setTimeout(pushH,60);
+}
+window.addEventListener('message',function(ev){var msg=ev.data||{};if(msg.type==='MCHART_SYNC_FOCUS'&&msg.idx>=0)renderStats(msg.idx);});
+renderStats(curIdx);
+})();</script>"""
+    return (tpl.replace("__CID__", chart_id)
+            .replace("__DATES__", json.dumps(dates_list))
+            .replace("__IS_IDX__", "true" if is_index else "false")
+            .replace("__BROKER_JSON__", json.dumps(safe_payload, ensure_ascii=False))
+            .replace("__INIT_END__", str(resolved_end))
+            )
+
+
+def get_broker_daily_tab_html(
+    df: pd.DataFrame,
+    broker_payload: dict = None,
+    chart_id: str = "mchart_broker_daily",
+    end_idx: int = None,
+    disp_days: int = 20,
+    is_mobile: bool = False,
+    initial_end_idx: int = None,
+    is_index: bool = None
+) -> str:
+    n_pts = len(df)
+    resolved_end = end_idx if end_idx is not None else (initial_end_idx if initial_end_idx is not None else (n_pts - 1))
+    dates_list = _extract_dates_list(df)
+    if is_index is None:
+        is_index = len(dates_list) == 0 or (df['Turnover_Rate'].max() == 0 and df['Foreign_Net'].abs().max() == 0)
+    safe_payload = broker_payload if isinstance(broker_payload, dict) else {"by_date": {}}
+
+    tpl = COMMON_CSS + BROKER_SHARED_CSS + """
+<div class="frame-root" id="__CID___broker_daily_root">
+    <div id="__CID___d_hdr" class="pane-info-bar" style="margin-bottom:6px;"></div>
     <div class="b-card">
-        <div class="b-title">5. 區間買賣超統計各前 5 名分點 — 各日買賣超柱狀圖</div>
+        <div class="b-title">區間買賣超統計各前 5 名分點 — 各日買賣超柱狀圖</div>
         <div style="display:flex;align-items:center;gap:8px;margin-bottom:4px;flex-wrap:wrap;">
             <label for="__CID___b_sel" style="font-size:12.5px;font-weight:bold;color:#334155;">統計區間天數：</label>
             <select id="__CID___b_sel" style="padding:4px 8px;font-size:13px;border-radius:4px;border:1px solid #94a3b8;font-weight:bold;">
@@ -351,20 +412,17 @@ def get_broker_tab_html(
 <script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>
 <script>(function(){var dates=__DATES__,isIndex=__IS_IDX__,payload=__BROKER_JSON__,curIdx=__INIT_END__;
 var cfg={responsive:true,staticPlot:true,displayModeBar:false,scrollZoom:false,doubleClick:false};
-var rootEl=document.getElementById('__CID___broker_root'),hdrEl=document.getElementById('__CID___b_hdr');
-var tblsEl=document.getElementById('__CID___b_tbls'),selEl=document.getElementById('__CID___b_sel'),warnEl=document.getElementById('__CID___b_warn'),barsEl=document.getElementById('__CID___b_bars');
-var MSG_60D_ON_DEMAND='尚未載入近 60 日統計（預設僅載入至 20 日；請點擊上方「📥 載入近 60 日分點統計與明細」按鈕按需抓取）';
+var rootEl=document.getElementById('__CID___broker_daily_root'),hdrEl=document.getElementById('__CID___d_hdr');
+var selEl=document.getElementById('__CID___b_sel'),warnEl=document.getElementById('__CID___b_warn'),barsEl=document.getElementById('__CID___b_bars');
+var MSG_60D_ON_DEMAND='尚未載入近 60 日明細（預設僅載入至 20 日；請點擊上方「📥 載入近 60 日分點統計與明細」按鈕按需抓取）';
 function pushH(){if(!rootEl)return;var h=Math.ceil(rootEl.scrollHeight)+16;if(window.parent&&window.parent!==window)window.parent.postMessage({isStreamlitMessage:true,type:"streamlit:setFrameHeight",height:h},"*");}
 if(typeof ResizeObserver!=='undefined'&&rootEl){new ResizeObserver(function(){pushH();}).observe(rootEl);}
-function fmtI(v){var n=Number(v)||0;return n.toLocaleString('en-US');}
 function fmtNet(v,isBuySide){var n=Number(v)||0;if(isBuySide){var a=Math.abs(n);return a>0?'+'+a.toLocaleString('en-US'):'0';}else{var b=Math.abs(n);return b>0?'-'+b.toLocaleString('en-US'):'0';}}
-function buildSideTable(title,rows,isBuySide){var h='<div style="border:1px solid #cbd5e1;border-radius:5px;padding:4px;background:#fff;"><div style="font-size:12px;font-weight:bold;margin-bottom:4px;color:'+(isBuySide?'#eb4d4b':'#16a085')+';">'+title+'</div><div class="b-wrap"><table class="b-tbl"><thead><tr><th>名次</th><th>分點名稱</th><th>買進</th><th>賣出</th><th>買賣超</th><th>佔比</th></tr></thead><tbody>';
-    if(!rows||rows.length===0){h+='<tr><td colspan="6" style="text-align:center;color:#94a3b8;padding:10px;">查無分點明細資料</td></tr>';}   
-    else{for(var i=0;i<rows.length;i++){var r=rows[i],badge=(r.sys==='八大官股')?'<span class="gov-badge">八大官股</span>':'',cls=isBuySide?'val-up':'val-dn';
-        h+='<tr><td>'+(i+1)+'</td><td><b>'+r.name+'</b>'+badge+'</td><td>'+fmtI(r.buy)+'</td><td>'+fmtI(r.sell)+'</td><td class="'+cls+'">'+fmtNet(r.net,isBuySide)+'</td><td>'+(r.ratio||'-')+'</td></tr>';}}
-    return h+'</tbody></table></div></div>';
-}
 function renderBars(){if(!barsEl)return;var win=selEl?selEl.value:'10',dStr=dates[curIdx]||'',dayObj=(payload.by_date&&payload.by_date[dStr])?payload.by_date[dStr]:null;
+    if(hdrEl){
+        if(isIndex){hdrEl.innerHTML='<b>📈 券商分點逐日進出日況（'+dStr+'）</b> ｜ <span style="color:#64748b;">大盤指數無單一券商分點明細</span>';}
+        else{hdrEl.innerHTML='<b>📈 券商分點逐日進出日況</b> ｜ 關注交易日：<b>'+dStr+'</b> <span style="color:#64748b;font-size:11.5px;">（買超前 5 名與賣超前 5 名逐日進出柱狀圖）</span>';}
+    }
     if(isIndex||!dayObj){if(warnEl)warnEl.style.display='none';barsEl.innerHTML='<div style="color:#94a3b8;font-size:12px;padding:8px;">無可用之分點逐日明細資料。</div>';pushH();return;}
     var wObj=dayObj['w'+win]||null;
     if(!wObj||((!wObj.buy||wObj.buy.length===0)&&(!wObj.sell||wObj.sell.length===0))){
@@ -408,26 +466,9 @@ function renderBars(){if(!barsEl)return;var win=selEl?selEl.value:'10',dStr=date
     for(var j=0;j<sList.length;j++)drawOne('__CID___sb_'+j,sList[j],j,false);
     setTimeout(pushH,80);
 }
-function renderAll(idx){if(idx<0||idx>=dates.length)return;curIdx=idx;var dStr=dates[curIdx]||'';
-    if(isIndex){hdrEl.innerHTML='<b>🏦 券商分點進出統計（'+dStr+'）</b> ｜ <span style="color:#64748b;">大盤指數無單一券商分點明細</span>';tblsEl.innerHTML='';renderBars();return;}
-    var dayObj=(payload.by_date&&payload.by_date[dStr])?payload.by_date[dStr]:null;
-    hdrEl.innerHTML='<b>🏦 券商分點買賣超統計</b> ｜ 關注交易日：<b>'+dStr+'</b> <span style="color:#64748b;font-size:11.5px;">（預設載入當日/10日/20日；近 60 日可按需載入，買超紅字＋號、賣超綠字－號）</span>';
-    if(!dayObj){tblsEl.innerHTML='<div class="b-card" style="color:#64748b;font-size:12.5px;padding:12px;">尚無 <b>'+dStr+'</b> 之分點統計資料（可能為非交易日或外部券商網頁暫時無回應）。</div>';renderBars();return;}
-    var secs=[{k:'w1',t:'1. 當日買賣超前 10 名'},{k:'w10',t:'2. 近 10 日買賣超前 10 名'},{k:'w20',t:'3. 近 20 日買賣超前 10 名'},{k:'w60',t:'4. 近 60 日買賣超前 10 名'}];
-    var h='';
-    for(var s=0;s<secs.length;s++){var obj=dayObj[secs[s].k]||{};var rng=obj.range_label?' <span style="font-weight:normal;color:#475569;font-size:11.5px;">（區間：'+obj.range_label+'）</span>':'';
-        h+='<div class="b-card"><div class="b-title">'+secs[s].t+rng+'</div>';
-        if(secs[s].k==='w60'&&(!obj.buy||obj.buy.length===0)&&(!obj.sell||obj.sell.length===0)){
-            h+='<div style="color:#64748b;font-size:12px;padding:8px 10px;background:#f8fafc;border-radius:4px;border:1px dashed #cbd5e1;">'+MSG_60D_ON_DEMAND+'</div></div>';
-        }else{
-            h+='<div class="b-grid">'+buildSideTable('🔴 買超前 10 名（張）',obj.buy||[],true)+buildSideTable('🟢 賣超前 10 名（張）',obj.sell||[],false)+'</div></div>';
-        }
-    }
-    tblsEl.innerHTML=h;renderBars();setTimeout(pushH,60);
-}
 if(selEl)selEl.addEventListener('change',renderBars);
-window.addEventListener('message',function(ev){var msg=ev.data||{};if(msg.type==='MCHART_SYNC_FOCUS'&&msg.idx>=0)renderAll(msg.idx);});
-renderAll(curIdx);
+window.addEventListener('message',function(ev){var msg=ev.data||{};if(msg.type==='MCHART_SYNC_FOCUS'&&msg.idx>=0){curIdx=msg.idx;renderBars();}});
+renderBars();
 })();</script>"""
     return (tpl.replace("__CID__", chart_id)
             .replace("__DATES__", json.dumps(dates_list))
@@ -435,3 +476,26 @@ renderAll(curIdx);
             .replace("__BROKER_JSON__", json.dumps(safe_payload, ensure_ascii=False))
             .replace("__INIT_END__", str(resolved_end))
             )
+
+
+def get_broker_tab_html(
+    df: pd.DataFrame,
+    broker_payload: dict = None,
+    chart_id: str = "mchart_broker",
+    end_idx: int = None,
+    disp_days: int = 20,
+    is_mobile: bool = False,
+    initial_end_idx: int = None,
+    is_index: bool = None
+) -> str:
+    """向下相容別名：預設回傳分點統計頁籤 HTML"""
+    return get_broker_stats_tab_html(
+        df=df,
+        broker_payload=broker_payload,
+        chart_id=chart_id,
+        end_idx=end_idx,
+        disp_days=disp_days,
+        is_mobile=is_mobile,
+        initial_end_idx=initial_end_idx,
+        is_index=is_index
+    )
