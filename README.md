@@ -17,7 +17,10 @@
 * **日 K 線與流通股數**：`yfinance`（主）＋ 證交所 `STOCK_DAY` / 櫃買 `st43_result.php`（補齊延遲日 K）。
 * **三大法人**：證交所 `T86` / 櫃買 `3itrade_hedge_result.php`（主）＋ FinMind `TaiwanStockInstitutionalInvestorsBuySell`（備）。
 * **融資融券**：FinMind `TaiwanStockMarginPurchaseShortSale`。
-* **集保大戶持股**：集保開放資料 `opendata.tdcc.com.tw/getOD.ashx?id=1-5`（僅取最新單一公告日 1～15 級；**嚴禁使用 FinMind 免費版作為集保大戶資料源或備援**，因無免費授權只會造成無效等待）。
+* **集保大戶持股**：
+  * **歷史分級查詢（約 15 週，1～15 級）**：集保官網歷史查詢頁面 `www.tdcc.com.tw/portal/zh/smWeb/qryStock`（先 `GET` 取得表單隱藏欄位與下拉選單 `<option>` 之所有可用公告週別 `YYYYMMDD`，比對本地 `shareholding_distribution` 篩出缺失週別後，再逐週 `POST` 查詢並解析含 `"1,000,001"` 表格寫入資料庫）。
+  * **最新單週全市場批次補齊**：集保開放資料 `opendata.tdcc.com.tw/getOD.ashx?id=1-5`（取最新單一公告日 1～15 級）。
+  * **嚴禁使用 FinMind 免費版作為集保大戶資料源或備援**：經實測 FinMind 免費版不開放 `TaiwanStockHoldingSharesPer`（僅回傳升級贊助訊息），呼叫只會造成無效等待。
 * **券商分點進出**：富邦 e點通（`fubon-ebrokerdj.fbs.com.tw`）。
   * **區間與單日進出排行（含歷史單日）**：統一使用 `z/zc/zco/zco.djhtm?a={code}&e={start_date}&f={end_date}`（單日查詢時 `e` 與 `f` 帶入同一交易日即可精準取得歷史單日排行，避免誤抓預設最新日）。
   * **網頁結構與正負號解讀鐵律**：頁面為**同一張 10 欄並排表格**（前 5 欄為買超券商、後 5 欄為賣超券商），且網站原始 HTML 中「賣超前 10 名」的買賣超張數欄位是以**正數**呈現，解析時必須強制正規化為負值（`-abs(net_val)`），前端統一顯示「買超紅字＋號、賣超綠字－號」。
