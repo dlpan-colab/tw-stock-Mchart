@@ -1,19 +1,19 @@
 """
 frontend.py - 前端 HTML/CSS 渲染模組
-(恢復 16 日正常版純淨 20 日初始可視視窗 + 分點買賣超紅綠對齊＋柱狀圖 staticPlot 徹底鎖死不可平移縮放版 + 分點統計與分點日況雙頁籤分離版 + 分點日況預設20日版)
-版本: 202611190945
+(恢復 16 日正常版純淨 20 日初始可視視窗 + 分點買賣超紅綠對齊＋柱狀圖 staticPlot 徹底鎖死不可平移縮放版 + 分點統計與分點日況雙頁籤分離版 + 分點日況預設20日自動貼合容器寬度版)
+版本: 202611191835
 """
 import json
 import pandas as pd
 
 MODULE_NAME = "frontend"
-MODULE_VERSION = "202611190945"
+MODULE_VERSION = "202611191835"
 
 
 # 【修訂說明 2026-11-18】【修改目的與防呆防錯原因】：
 # 修改目的：保留主圖上方圖例與互動操作說明列，並兼容未傳入 version_tag 之呼叫方式。
 # 防呆防錯原因：app.py 以 get_legend_html() 無參數呼叫，設定預設參數確保不觸發 TypeError。
-def get_legend_html(version_tag: str = "202611190945") -> str:
+def get_legend_html(version_tag: str = "202611191835") -> str:
     return """
     <div style="font-size:12px; color:#334155; background:#f1f5f9; padding:5px 8px; border-radius:5px; margin-bottom:4px; line-height:1.5;">
         <b>📌 圖例與互動操作說明：</b>
@@ -294,9 +294,10 @@ Plotly.newPlot(elChip,pChip.data,pChip.layout,{responsive:true,displayModeBar:fa
 
 
 BROKER_SHARED_CSS = """<style>
-.b-card{background:#fff;border:1px solid #e2e8f0;border-radius:6px;padding:6px;margin-bottom:8px}
+.b-card{background:#fff;border:1px solid #e2e8f0;border-radius:6px;padding:6px;margin-bottom:8px;width:100%;box-sizing:border-box}
 .b-title{font-size:13px;font-weight:bold;color:#1e293b;background:#f1f5f9;padding:4px 8px;border-radius:4px;margin-bottom:6px;border-left:3px solid #2c3e50}
-.b-grid{display:grid;grid-template-columns:1fr 1fr;gap:6px}@media(max-width:720px){.b-grid{grid-template-columns:1fr}}
+.b-grid{display:grid;grid-template-columns:1fr 1fr;gap:6px;width:100%}@media(max-width:720px){.b-grid{grid-template-columns:1fr}}
+.b-grid>div{min-width:0;width:100%}
 .b-wrap{overflow-x:auto;border:1px solid #e2e8f0;border-radius:4px}
 .b-tbl{width:100%;border-collapse:collapse;font-size:11.5px;text-align:right;white-space:nowrap}
 .b-tbl th{background:#f8fafc;color:#334155;font-weight:700;padding:4px 5px;border-bottom:1px solid #cbd5e1}
@@ -305,7 +306,7 @@ BROKER_SHARED_CSS = """<style>
 .b-tbl td.val-dn{color:#16a085!important;font-weight:bold!important}
 .b-tbl th:nth-child(1),.b-tbl td:nth-child(1),.b-tbl th:nth-child(2),.b-tbl td:nth-child(2){text-align:left}
 .gov-badge{display:inline-block;background:#fef3c7;color:#92400e;font-size:10px;padding:0 3px;border-radius:3px;margin-left:3px;border:1px solid #f59e0b}
-.b-bar{width:100%;height:185px;border:1px solid #e2e8f0;border-radius:4px;margin-bottom:6px;background:#fff;pointer-events:none!important;touch-action:pan-y!important;user-select:none!important;-webkit-user-select:none!important}
+.b-bar{width:100%;max-width:100%;box-sizing:border-box;overflow:hidden;height:185px;border:1px solid #e2e8f0;border-radius:4px;margin-bottom:6px;background:#fff;pointer-events:none!important;touch-action:pan-y!important;user-select:none!important;-webkit-user-select:none!important}
 </style>"""
 
 
@@ -393,8 +394,10 @@ def get_broker_daily_tab_html(
     safe_payload = broker_payload if isinstance(broker_payload, dict) else {"by_date": {}}
 
     # 【修訂說明 2026-11-19】【修改目的與防呆防錯原因】：
-    # 修改目的：將「分點日況」統計區間天數預設改為近 20 日。
-    # 防呆防錯原因：預設選取 20 日可完整呈現近一個月分點逐日進出波段，並保留 10/20/60 日自由切換。
+    # 1. 修改目的：解決「📈 分點日況」位於預設隱藏頁籤時，初次載入以預設 700px 寬度繪圖導致右側 2/3 遭裁切的問題。
+    # 2. 防呆防錯原因：
+    #    - 偵測 rootEl 實際可見寬度（offsetWidth / getBoundingClientRect().width），若尚為隱藏狀態（<= 0）則延後至頁籤展開可見時再執行首次繪圖；
+    #    - 繪製每張柱狀圖時明確讀取外框實際像素寬度寫入 lay.width，並於容器寬度變化超過 8px 時自動重繪。
     tpl = COMMON_CSS + BROKER_SHARED_CSS + """
 <div class="frame-root" id="__CID___broker_daily_root">
     <div id="__CID___d_hdr" class="pane-info-bar" style="margin-bottom:6px;"></div>
@@ -418,14 +421,25 @@ var cfg={responsive:true,staticPlot:true,displayModeBar:false,scrollZoom:false,d
 var rootEl=document.getElementById('__CID___broker_daily_root'),hdrEl=document.getElementById('__CID___d_hdr');
 var selEl=document.getElementById('__CID___b_sel'),warnEl=document.getElementById('__CID___b_warn'),barsEl=document.getElementById('__CID___b_bars');
 var MSG_60D_ON_DEMAND='尚未載入近 60 日明細（預設僅載入至 20 日；請點擊上方「📥 載入近 60 日分點統計與明細」按鈕按需抓取）';
+var lastRenderedW=0,hasRenderedOnce=false,resizeTimer=null;
+function getVisibleW(){
+    if(!rootEl)return 0;
+    var w=Math.floor(rootEl.getBoundingClientRect().width||rootEl.offsetWidth||document.documentElement.clientWidth||0);
+    return w;
+}
 function pushH(){if(!rootEl)return;var h=Math.ceil(rootEl.scrollHeight)+16;if(window.parent&&window.parent!==window)window.parent.postMessage({isStreamlitMessage:true,type:"streamlit:setFrameHeight",height:h},"*");}
-if(typeof ResizeObserver!=='undefined'&&rootEl){new ResizeObserver(function(){pushH();}).observe(rootEl);}
 function fmtNet(v,isBuySide){var n=Number(v)||0;if(isBuySide){var a=Math.abs(n);return a>0?'+'+a.toLocaleString('en-US'):'0';}else{var b=Math.abs(n);return b>0?'-'+b.toLocaleString('en-US'):'0';}}
-function renderBars(){if(!barsEl)return;var win=selEl?selEl.value:'20',dStr=dates[curIdx]||'',dayObj=(payload.by_date&&payload.by_date[dStr])?payload.by_date[dStr]:null;
+function renderBars(forceDraw){
+    if(!barsEl)return;
+    var win=selEl?selEl.value:'20',dStr=dates[curIdx]||'',dayObj=(payload.by_date&&payload.by_date[dStr])?payload.by_date[dStr]:null;
     if(hdrEl){
         if(isIndex){hdrEl.innerHTML='<b>📈 券商分點逐日進出日況（'+dStr+'）</b> ｜ <span style="color:#64748b;">大盤指數無單一券商分點明細</span>';}
         else{hdrEl.innerHTML='<b>📈 券商分點逐日進出日況</b> ｜ 關注交易日：<b>'+dStr+'</b> <span style="color:#64748b;font-size:11.5px;">（買超前 5 名與賣超前 5 名逐日進出柱狀圖）</span>';}
     }
+    var curW=getVisibleW();
+    if(curW<=0&&!forceDraw){return;}
+    lastRenderedW=curW;
+    hasRenderedOnce=true;
     if(isIndex||!dayObj){if(warnEl)warnEl.style.display='none';barsEl.innerHTML='<div style="color:#94a3b8;font-size:12px;padding:8px;">無可用之分點逐日明細資料。</div>';pushH();return;}
     var wObj=dayObj['w'+win]||null;
     if(!wObj||((!wObj.buy||wObj.buy.length===0)&&(!wObj.sell||wObj.sell.length===0))){
@@ -449,6 +463,8 @@ function renderBars(){if(!barsEl)return;var win=selEl?selEl.value:'20',dStr=date
     for(var j=0;j<sList.length;j++)html+='<div id="__CID___sb_'+j+'" class="b-bar"></div>';
     html+='</div></div>';barsEl.innerHTML=html;
     function drawOne(divId,item,rankIdx,isBuySide){var el=document.getElementById(divId);if(!el||typeof Plotly==='undefined')return;
+        var boxW=Math.floor(el.getBoundingClientRect().width||el.clientWidth||0);
+        if(boxW<=0){boxW=curW>720?Math.floor((curW-24)/2):Math.max(260,curW-18);}
         var netMap={};
         var rawD=item.dates||[],rawN=item.nets||[];
         for(var k=0;k<rawD.length;k++){netMap[rawD[k]]=Number(rawN[k])||0;}
@@ -458,8 +474,9 @@ function renderBars(){if(!barsEl)return;var win=selEl?selEl.value:'20',dStr=date
         var titlePrefix=isBuySide?'買超':'賣超';
         var tr={x:axisDates,y:yVals,type:'bar',marker:{color:cols},hoverinfo:'skip'};
         var lay={
+            width:boxW,height:182,autosize:false,
             title:{text:'<b>'+titlePrefix+'#'+(rankIdx+1)+' '+item.name+' (區間:'+totStr+'張)</b>',font:{size:11.5,color:isBuySide?'#eb4d4b':'#16a085'},x:0.02,xanchor:'left'},
-            margin:{l:46,r:10,t:28,b:22},height:180,template:'plotly_white',showlegend:false,hovermode:false,dragmode:false,
+            margin:{l:46,r:10,t:28,b:22},template:'plotly_white',showlegend:false,hovermode:false,dragmode:false,
             xaxis:{type:'category',categoryorder:'array',categoryarray:axisDates,range:[-0.5,axisDates.length-0.5],fixedrange:true,showgrid:false,tickmode:'array',tickvals:tVals,ticktext:tTexts,tickfont:{size:10}},
             yaxis:{fixedrange:true,zeroline:true,zerolinecolor:'#94a3b8',zerolinewidth:1,tickfont:{size:10},title:{text:'張',font:{size:10}}}
         };
@@ -469,9 +486,26 @@ function renderBars(){if(!barsEl)return;var win=selEl?selEl.value:'20',dStr=date
     for(var j=0;j<sList.length;j++)drawOne('__CID___sb_'+j,sList[j],j,false);
     setTimeout(pushH,80);
 }
-if(selEl)selEl.addEventListener('change',renderBars);
-window.addEventListener('message',function(ev){var msg=ev.data||{};if(msg.type==='MCHART_SYNC_FOCUS'&&msg.idx>=0){curIdx=msg.idx;renderBars();}});
-renderBars();
+if(typeof ResizeObserver!=='undefined'&&rootEl){
+    new ResizeObserver(function(){
+        pushH();
+        var nowW=getVisibleW();
+        if(nowW>0&&(!hasRenderedOnce||Math.abs(nowW-lastRenderedW)>8)){
+            clearTimeout(resizeTimer);
+            resizeTimer=setTimeout(function(){renderBars(true);},60);
+        }
+    }).observe(rootEl);
+}
+window.addEventListener('resize',function(){
+    var nowW=getVisibleW();
+    if(nowW>0&&(!hasRenderedOnce||Math.abs(nowW-lastRenderedW)>8)){
+        clearTimeout(resizeTimer);
+        resizeTimer=setTimeout(function(){renderBars(true);},80);
+    }
+});
+if(selEl)selEl.addEventListener('change',function(){renderBars(true);});
+window.addEventListener('message',function(ev){var msg=ev.data||{};if(msg.type==='MCHART_SYNC_FOCUS'&&msg.idx>=0){curIdx=msg.idx;renderBars(false);}});
+renderBars(false);
 })();</script>"""
     return (tpl.replace("__CID__", chart_id)
             .replace("__DATES__", json.dumps(dates_list))
