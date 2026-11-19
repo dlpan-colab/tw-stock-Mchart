@@ -1,0 +1,100 @@
+# 【Colab 獨立測試腳本 2026-11-19 修訂版】
+# 修改目的：每次 POST 回應後更新 SYNCHRONIZER_TOKEN 與表單隱藏欄位，解決第 2 週起被防重送權杖擋下之問題
+# 防呆防錯原因：若 POST 回應異常或缺少表單欄位，自動重新 GET 取得最新權杖，確保連續多週查詢不中斷（不更動正式專案資料庫）
+import time
+import requests
+import pandas as pd
+from bs4 import BeautifulSoup
+
+TEST_CODE = "3026"
+URL_TDCC = "https://www.tdcc.com.tw/portal/zh/smWeb/qryStock"
+HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
+    "Referer": URL_TDCC,
+    "Origin": "https://www.tdcc.com.tw",
+}
+
+def extract_hidden_inputs(soup: BeautifulSoup) -> dict:
+    """從頁面擷取所有表單 input 隱藏欄位（含最新 SYNCHRONIZER_TOKEN）"""
+    fields = {}
+    for inp in soup.find_all("input"):
+        name = inp.get("name")
+        if name:
+            fields[name] = inp.get("value", "")
+    return fields
+
+sess = requests.Session()
+
+# 1. 初始 GET 取得表單隱藏欄位與可用公告週別 (<option>)
+res_get = sess.get(URL_TDCC, headers=HEADERS, timeout=10)
+print(f"[GET] HTTP 狀態碼: {res_get.status_code} | 網頁長度: {len(res_get.text)}")
+
+soup_get = BeautifulSoup(res_get.text, "html.parser")
+current_payload = extract_hidden_inputs(soup_get)
+print("[GET] 初始隱藏欄位:", current_payload)
+
+avail_dates = []
+for opt in soup_get.find_all("option"):
+    val = str(opt.get("value", "")).strip()
+    if val.isdigit() and len(val) == 8:
+        avail_dates.append(val)
+
+print(f"[GET] 取得可用週別總數: {len(avail_dates)}")
+print("[GET] 前 15 週清單:", avail_dates[:15])
+
+# 2. 逐週測試 POST 查詢（前 15 週），每次回應後更新最新權杖
+summary = []
+for idx, d_str in enumerate(avail_dates[:15], start=1):
+    # 若上一輪未取得有效權杖，重新 GET 補齊
+    if not current_payload.get("SYNCHRONIZER_TOKEN"):
+        res_reget = sess.get(URL_TDCC, headers=HEADERS, timeout=10)
+        current_payload = extract_hidden_inputs(BeautifulSoup(res_reget.text, "html.parser"))
+
+    payload = current_payload.copy()
+    payload.update({
+        "scaDate": d_str,
+        "sqlMethod": "StockNo",
+        "stockNo": TEST_CODE,
+        "stockName": "",
+        "sub": "查詢",
+    })
+    res_post = sess.post(URL_TDCC, data=payload, headers=HEADERS, timeout=10)
+    soup_post = BeautifulSoup(res_post.text, "html.parser")
+
+    # 【關鍵修訂】立即更新下一輪要帶入的隱藏欄位（最新核發之 SYNCHRONIZER_TOKEN）
+    next_inputs = extract_hidden_inputs(soup_post)
+    if next_inputs.get("SYNCHRONIZER_TOKEN"):
+        current_payload = next_inputs
+    else:
+        current_payload = {}
+
+    parsed_rows = []
+    for tbl in soup_post.find_all("table"):
+        if "1,000,001" not in tbl.get_text():
+            continue
+        for tr in tbl.find_all("tr"):
+            cols = [td.get_text(strip=True).replace(",", "") for td in tr.find_all("td")]
+            if len(cols) >= 5 and cols[0].isdigit():
+                lvl = int(cols[0])
+                if 1 <= lvl <= 15:
+                    pct = float(cols[4].replace("%", "").strip())
+                    parsed_rows.append((lvl, pct))
+        break
+
+    pct_1000 = next((p for (l, p) in parsed_rows if l == 15), None)
+    pct_400 = round(sum(p for (l, p) in parsed_rows if l >= 11), 2) if parsed_rows else None
+    note = "成功" if len(parsed_rows) == 15 else ("查無資料" if "查無資料" in soup_post.get_text() else "未匹配1,000,001表格")
+
+    summary.append({
+        "序": idx,
+        "公告週別": d_str,
+        "HTTP": res_post.status_code,
+        "解析級距數": len(parsed_rows),
+        "1000張以上(%)": pct_1000,
+        "400張以上(%)": pct_400,
+        "狀態": note,
+    })
+    time.sleep(0.25)
+
+df_res = pd.DataFrame(summary)
+display(df_res)
