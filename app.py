@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """
-獨立分點爬蟲與區間邏輯測試頁面（Streamlit 專用版）
-用途：實測指定基準日、往前計數近 N 日、分點統計（1/10/20/60日）與分點逐日明細之真實回傳資料與網頁原文
+獨立分點爬蟲與區間邏輯測試頁面（Streamlit 專用版 - 10欄並排表格解析版）
+用途：實測指定基準日、往前計數近 N 日、分點統計（1/10/20/60日）與分點逐日明細之真實回傳資料
 """
 import re
 import time
@@ -75,64 +75,79 @@ def _parse_roc_or_iso_date(date_text: str) -> str:
     return ""
 
 
-def _parse_side_table(table_soup, base_url: str, is_sell: bool = False) -> pd.DataFrame:
-    if table_soup is None:
-        return pd.DataFrame()
-    rows = []
-    for tr in table_soup.find_all("tr"):
-        tds = tr.find_all("td")
-        if len(tds) < 4:
-            continue
-        texts = [td.get_text(" ", strip=True) for td in tds]
-        if any(k in texts[0] for k in ("買超券商", "賣超券商", "券商名稱", "排行")):
-            continue
-        b_name = re.sub(r"\s+", " ", texts[0]).strip()
-        if not b_name or b_name in ("合計", "總計", "其他"):
-            continue
-        net_v = _clean_int(texts[3])
-        if is_sell:
-            net_v = -abs(net_v)
-        a_tag = tds[0].find("a", href=True)
-        d_url = _resolve_detail_url(a_tag["href"], base_url) if a_tag else ""
-        rows.append({
-            "分點名稱": b_name,
-            "買進": _clean_int(texts[1]),
-            "賣出": _clean_int(texts[2]),
-            "買賣超": net_v,
-            "佔比": texts[4].strip() if len(texts) >= 5 and "%" in texts[4] else "-",
-            "明細網址": d_url
-        })
-    return pd.DataFrame(rows)
+def _parse_5_cells(td_slice: list, base_url: str, is_sell: bool) -> dict:
+    if len(td_slice) < 4:
+        return None
+    texts = [td.get_text(" ", strip=True) for td in td_slice]
+    if any(k in texts[0] for k in ("買超券商", "賣超券商", "券商名稱", "排行")):
+        return None
+    b_name = re.sub(r"\s+", " ", texts[0]).strip()
+    if not b_name or b_name in ("合計", "總計", "其他"):
+        return None
+    net_v = _clean_int(texts[3])
+    if is_sell:
+        net_v = -abs(net_v)
+    a_tag = td_slice[0].find("a", href=True)
+    d_url = _resolve_detail_url(a_tag["href"], base_url) if a_tag else ""
+    return {
+        "分點名稱": b_name,
+        "買進": _clean_int(texts[1]),
+        "賣出": _clean_int(texts[2]),
+        "買賣超": net_v,
+        "佔比": texts[4].strip() if len(texts) >= 5 and "%" in texts[4] else "-",
+        "明細網址": d_url
+    }
+
+
+def _parse_combined_or_side_tables(soup, base_url: str) -> tuple:
+    """
+    【修訂說明 2026-11-19】
+    直接解析富邦 eBroker 同一張 10 欄並排表格（前 5 欄為買超券商、後 5 欄為賣超券商），
+    若頁面為左右獨立 5 欄子表格亦自動相容。
+    """
+    buy_rows, sell_rows = [], []
+
+    for tbl in soup.find_all("table"):
+        txt = tbl.get_text(" ", strip=True)
+        if "買超券商" in txt and "賣超券商" in txt:
+            # 尋找最內層包含買賣超資料列的表格
+            has_inner = any(
+                ("買超券商" in st.get_text(" ", strip=True) and "賣超券商" in st.get_text(" ", strip=True))
+                for st in tbl.find_all("table")
+            )
+            if has_inner:
+                continue
+
+            for tr in tbl.find_all("tr"):
+                tds = tr.find_all("td", recursive=False)
+                if not tds:
+                    tds = tr.find_all("td")
+                if len(tds) >= 10:
+                    b_item = _parse_5_cells(tds[0:5], base_url, is_sell=False)
+                    s_item = _parse_5_cells(tds[5:10], base_url, is_sell=True)
+                    if b_item:
+                        buy_rows.append(b_item)
+                    if s_item:
+                        sell_rows.append(s_item)
+            if buy_rows or sell_rows:
+                break
+
+    return pd.DataFrame(buy_rows), pd.DataFrame(sell_rows)
 
 
 def test_fetch_broker_ranking(code: str, start_date: str, end_date: str):
-    # 【修訂說明 2026-11-19】一律帶入起訖日期參數（含單日起訖同一天），區分不同基準交易日
     url = f"{MDJ_BASE_DOMAIN}/z/zc/zco/zco.djhtm?a={code}&e={start_date}&f={end_date}"
 
     try:
         res = requests.get(url, headers=MDJ_HEADERS, timeout=8)
         html = res.content.decode("cp950", errors="replace")
-        m_dt = re.search(r"資料日期[：:]\s*(\d{2,4}[-/]\d{1,2}[-/]\d{1,2})", html)
+        m_dt = re.search(r"(?:最後更新日|資料日期)[：:]\s*(\d{2,4}[-/]\d{1,2}[-/]\d{1,2})", html)
         page_date = _parse_roc_or_iso_date(m_dt.group(1)) if m_dt else "未標示"
 
         soup = BeautifulSoup(html, "html.parser")
         raw_preview = re.sub(r"\s+", " ", soup.get_text(" ", strip=True))[:300]
+        df_b, df_s = _parse_combined_or_side_tables(soup, url)
 
-        buy_tbl, sell_tbl = None, None
-        for tbl in soup.find_all("table"):
-            txt = tbl.get_text(" ", strip=True)
-            if "買超券商" in txt and "賣超券商" in txt:
-                for stbl in tbl.find_all("table"):
-                    stxt = stbl.get_text(" ", strip=True)
-                    if "買超券商" in stxt and "賣超券商" not in stxt and buy_tbl is None:
-                        buy_tbl = stbl
-                    elif "賣超券商" in stxt and "買超券商" not in stxt and sell_tbl is None:
-                        sell_tbl = stbl
-                if buy_tbl is not None or sell_tbl is not None:
-                    break
-
-        df_b = _parse_side_table(buy_tbl, url, is_sell=False)
-        df_s = _parse_side_table(sell_tbl, url, is_sell=True)
         return {
             "url": url,
             "status_code": res.status_code,
