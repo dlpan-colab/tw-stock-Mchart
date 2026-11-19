@@ -1,7 +1,7 @@
 """ 
 data_fetcher.py - 整合技術與籌碼資料擷取模組
-(支援含英文後綴台股ETF + TWSE/TPEx官方日K即時補齊 + 雲端增量累積分點引擎 + 集保官網qryStock約15週歷史查詢與id=1-5批次分離 + 賣超負值正規化 + 操作儀錶板盤中報價版 + 富邦10欄並排表格與精準單日分點統計/明細穩定版)
-版本: 202611191915
+(支援含英文後綴台股ETF + TWSE/TPEx官方日K即時補齊 + 雲端增量累積分點引擎 + 集保官網qryStock動態Token多週歷史查詢與id=1-5批次分離 + 賣超負值正規化 + 操作儀錶板盤中報價版 + 富邦10欄並排表格與精準單日分點統計/明細穩定版)
+版本: 202611192250
 """
 import os
 import re
@@ -17,7 +17,7 @@ from datetime import datetime, timedelta
 from urllib.parse import urljoin, urlparse, parse_qs, urlencode, urlunparse
 
 MODULE_NAME = "data_fetcher"
-MODULE_VERSION = "202611191915"
+MODULE_VERSION = "202611192250"
 
 from storage import (
     StockChipStorage,
@@ -522,12 +522,15 @@ def fetch_margin_short_data(pure_code: str, df_dates: pd.DatetimeIndex, start_da
 def fetch_tdcc_holding_history(pure_code: str, weeks: int = 15) -> list:
     """
     【修訂說明 2026-11-19】【修改目的與防呆防錯原因】：
-    1. 修改目的：捨棄免費版無授權之 FinMind TaiwanStockHoldingSharesPer，改採集保官網歷史查詢介面
-       （https://www.tdcc.com.tw/portal/zh/smWeb/qryStock），一次比對本地資料庫缺失週別並補齊約 15 週
-       （官方下拉選單提供之所有可用公告週別）1～15 級股權分散表歷史資料。
+    1. 修改目的：
+       - 捨棄免費版無授權之 FinMind TaiwanStockHoldingSharesPer，改採集保官網歷史查詢介面
+         （https://www.tdcc.com.tw/portal/zh/smWeb/qryStock），一次比對本地資料庫缺失週別並補齊約 15 週
+         （官方下拉選單提供之所有可用公告週別）1～15 級股權分散表歷史資料。
+       - 因應集保官網 Struts SYNCHRONIZER_TOKEN 單次防重送驗證機制，每次 POST 回應後立即從回應頁面
+         重新擷取最新核發之表單隱藏欄位（SYNCHRONIZER_TOKEN）供下一週查詢使用，解決第 2 週起被擋下之問題。
     2. 防呆防錯原因：
-       - 先 GET 取得表單隱藏欄位（base_payload）與 <option> 可用日期（YYYYMMDD），並與本地已有週別比對，
-         僅針對缺失週別發送 POST 查詢，避免重複抓取已知週別。
+       - 若任一週 POST 回應未包含有效之 SYNCHRONIZER_TOKEN 或連線異常，下一輪自動執行 GET 重新取得最新權杖，
+         確保連續多週歷史查詢不中斷。
        - 嚴格限定表格首欄為純數字 1 <= level <= 15（排除第 16 差異數與第 17 合計列）。
     """
     code = str(pure_code or "").strip().upper()
@@ -540,6 +543,14 @@ def fetch_tdcc_holding_history(pure_code: str, weeks: int = 15) -> list:
         "Referer": url_tdcc,
         "Origin": "https://www.tdcc.com.tw",
     }
+
+    def _extract_hidden_inputs(soup_obj: BeautifulSoup) -> dict:
+        fields = {}
+        for inp in soup_obj.find_all("input"):
+            name = inp.get("name")
+            if name:
+                fields[name] = inp.get("value", "")
+        return fields
 
     existing_weeks = set()
     try:
@@ -558,11 +569,7 @@ def fetch_tdcc_holding_history(pure_code: str, weeks: int = 15) -> list:
             return []
 
         soup_get = BeautifulSoup(res_get.text, "html.parser")
-        base_payload = {}
-        for inp in soup_get.find_all("input"):
-            name = inp.get("name")
-            if name:
-                base_payload[name] = inp.get("value", "")
+        current_payload = _extract_hidden_inputs(soup_get)
 
         avail_dates = []
         for opt in soup_get.find_all("option"):
@@ -580,7 +587,16 @@ def fetch_tdcc_holding_history(pure_code: str, weeks: int = 15) -> list:
             return []
 
         for d_str in missing_dates:
-            payload = base_payload.copy()
+            # 【防呆防錯】若上一輪未取得有效權杖，重新 GET 補齊最新 SYNCHRONIZER_TOKEN
+            if not current_payload.get("SYNCHRONIZER_TOKEN"):
+                try:
+                    res_reget = sess.get(url_tdcc, headers=headers, timeout=8)
+                    if res_reget.status_code == 200:
+                        current_payload = _extract_hidden_inputs(BeautifulSoup(res_reget.text, "html.parser"))
+                except Exception:
+                    current_payload = {}
+
+            payload = current_payload.copy()
             payload.update({
                 "scaDate": d_str,
                 "sqlMethod": "StockNo",
@@ -591,8 +607,13 @@ def fetch_tdcc_holding_history(pure_code: str, weeks: int = 15) -> list:
             try:
                 res_post = sess.post(url_tdcc, data=payload, headers=headers, timeout=8)
                 if res_post.status_code != 200:
+                    current_payload = {}
                     continue
                 soup_post = BeautifulSoup(res_post.text, "html.parser")
+                # 【修訂重點】立即更新下一輪要帶入的隱藏欄位（最新核發之 SYNCHRONIZER_TOKEN）
+                next_inputs = _extract_hidden_inputs(soup_post)
+                current_payload = next_inputs if next_inputs.get("SYNCHRONIZER_TOKEN") else {}
+
                 iso_d = f"{d_str[:4]}-{d_str[4:6]}-{d_str[6:8]}"
 
                 for tbl in soup_post.find_all("table"):
@@ -610,7 +631,7 @@ def fetch_tdcc_holding_history(pure_code: str, weeks: int = 15) -> list:
                                     continue
                     break
             except Exception:
-                pass
+                current_payload = {}
             time.sleep(0.25)
     except Exception:
         pass
