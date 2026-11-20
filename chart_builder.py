@@ -1,6 +1,6 @@
 """
-chart_builder.py - Plotly 圖表建置模組 (主圖1/2緊緻化、指標頁籤乖離率、籌碼分頁標準字典防快取遺失、主標題藍色加大、副圖左上角內嵌標籤與大盤加權^TWII上市資券千張＋上市融資金額(億)雙副圖版)
-版本: 202611202145
+chart_builder.py - Plotly 圖表建置模組 (主圖1/2緊緻化、指標頁籤乖離率、籌碼分頁標準字典防快取遺失、主標題藍色加大、副圖左上角內嵌標籤與大盤加權^TWII上市資券千張＋上市融資金額(億)雙副圖防疊字版)
+版本: 202611202200
 """
 
 from typing import Tuple, Optional, Dict
@@ -10,7 +10,7 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
 MODULE_NAME = "chart_builder"
-MODULE_VERSION = "202611202145"
+MODULE_VERSION = "202611202200"
 
 from data_fetcher import fetch_stock_daily_k, fetch_stock_name
 from indicators import calculate_all_indicators
@@ -342,8 +342,6 @@ def build_split_figures(
     # =====================================================================
     # 3. 頁籤 2【籌碼】副圖：外資、投信、自營、資券、大戶1(或大盤融資金額億)、大戶2
     # =====================================================================
-    # 【修訂說明 2026-11-20】【修改目的與防呆防錯原因】：
-    # 第 5 列啟用 secondary_y=True，供大盤加權（^TWII）繪製「上市融資金額增減(億)」單一柱狀圖＋「融資維持率」折線。
     fig_chip = make_subplots(
         rows=6, cols=1, shared_xaxes=True, vertical_spacing=0.03,
         row_heights=[0.15, 0.15, 0.15, 0.21, 0.17, 0.17],
@@ -449,16 +447,23 @@ def build_split_figures(
         fig_chip.update_yaxes(title_text='', range=[0, 100], showgrid=False, showticklabels=False, fixedrange=True, showspikes=False, tickfont=dict(size=11), secondary_y=True, row=5, col=1)
     fig_chip.update_yaxes(title_text='', range=m2_range, fixedrange=True, showspikes=False, tickfont=dict(size=11), row=6, col=1)
 
-    # 【防呆防錯備註 2026-11-20】：
-    # 第 4 列與第 5 列皆啟用 secondary_y=True，因此第 5 列主軸為 y6 domain，第 6 列為 y8 domain。
-    chip_pane_labels = [
-        ('y domain', '外資'),
-        ('y2 domain', '投信'),
-        ('y3 domain', '自營'),
-        ('y4 domain', '上市資券(千張)/維持率' if is_twii else '資券'),
-        ('y6 domain', '上市融資金額(億)/融資維持率' if is_twii else f'≥{major1_thresh}'),
-        ('y8 domain', f'≥{major2_thresh}'),
-    ]
+    # 【修訂說明 2026-11-20】【修改目的與防呆防錯原因】：
+    # 1. 修改目的：大盤加權（^TWII）僅於第 4、5 列有實際資料，第 1～3 列與第 6 列無資料，故不渲染無資料列標籤，徹底消除零線重疊疊字。
+    # 2. 防呆防錯原因：第 4 列與第 5 列皆啟用 secondary_y=True，因此第 5 列主軸為 y6 domain。
+    if is_twii:
+        chip_pane_labels = [
+            ('y4 domain', '上市資券(千張)/維持率'),
+            ('y6 domain', '上市融資金額(億)/融資維持率'),
+        ]
+    else:
+        chip_pane_labels = [
+            ('y domain', '外資'),
+            ('y2 domain', '投信'),
+            ('y3 domain', '自營'),
+            ('y4 domain', '資券'),
+            ('y6 domain', f'≥{major1_thresh}'),
+            ('y8 domain', f'≥{major2_thresh}'),
+        ]
     for y_ref_str, lbl_c in chip_pane_labels:
         fig_chip.add_annotation(
             x=0.006, y=0.98, xref='paper', yref=y_ref_str,
