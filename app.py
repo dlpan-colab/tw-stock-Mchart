@@ -1,7 +1,7 @@
 """ 
 app.py - 主應用程式介面與生命週期控制
 (三主頁籤架構：操作儀錶板 / 個股 / 參數設定 + 自選與查詢歷史同步 + 盤中均線多空燈號 + 動態chart_id杜絕跨頁籤殘留 + 批次增補指定基準日起往前N日分點統計與明細版 + 分點15:00前對齊前一交易日與分點統計/分點日況雙頁籤版)
-版本: 202611190935
+版本: 202611202030
 """
 import os
 import time
@@ -12,7 +12,7 @@ import streamlit.components.v1 as components
 import cloud_sync
 
 MODULE_NAME = "app"
-MODULE_VERSION = "202611190935"
+MODULE_VERSION = "202611202030"
 
 
 # 【防呆防錯備註 2026-11-07】：版本控制權由 app.py 作為唯一權威源，動態掃描所有模組最大版本號，杜絕多頭覆寫與重工
@@ -1226,11 +1226,22 @@ else:
             components.html(broker_daily_html, height=1150, scrolling=True)
 
         display_name = c_name if c_name else get_stock_chinese_name(current_stock)
+        # 【修訂說明 2026-11-20】【修改目的與防呆防錯原因】：
+        # 修改目的：加大頁面下方「目前標的」股票名稱／代號／市櫃字體至 16px 並以藍色（#1d4ed8）加粗呈現，提升閱讀辨識度。
+        # 防呆防錯原因：自 fig_top.layout.title.text 擷取市場別標籤（上市／上櫃／指數），避免重複發動網路查詢。
+        mkt_tag_str = ""
+        try:
+            top_title_txt = str(fig_top.layout.title.text or "")
+            m_mkt = re.search(r'\((上市|上櫃|指數|海外)\)', top_title_txt)
+            if m_mkt:
+                mkt_tag_str = f" ({m_mkt.group(1)})"
+        except Exception:
+            mkt_tag_str = ""
         btm_c1, btm_c2, btm_c3 = st.columns([6.4, 1.3, 1.3])
         with btm_c1:
             st.markdown(
-                f"<div style='font-size:12.5px; color:#475569; padding-top:4px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;'>"
-                f"📌 目前標的：<b>{current_stock} {display_name}</b></div>",
+                f"<div style='font-size:16px; font-weight:800; color:#1d4ed8; padding-top:2px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;'>"
+                f"📌 目前標的：{display_name} ({current_stock}){mkt_tag_str}</div>",
                 unsafe_allow_html=True
             )
         with btm_c2:
