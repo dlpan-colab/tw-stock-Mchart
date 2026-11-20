@@ -1,19 +1,19 @@
 """
 frontend.py - 前端 HTML/CSS 渲染模組
-(恢復 16 日正常版純淨 20 日初始可視視窗 + 分點買賣超紅綠對齊＋柱狀圖 staticPlot 徹底鎖死不可平移縮放版 + 分點統計與分點日況雙頁籤分離版 + 分點日況預設20日自動貼合容器寬度版)
-版本: 202611191835
+(恢復 16 日正常版純淨 20 日初始可視視窗 + 分點買賣超紅綠對齊＋柱狀圖 staticPlot 徹底鎖死不可平移縮放版 + 分點統計與分點日況雙頁籤分離版 + 分點日況預設20日自動貼合容器寬度版 + 大盤加權^TWII上市資券與融資/融券維持率資訊列版)
+版本: 202611202115
 """
 import json
 import pandas as pd
 
 MODULE_NAME = "frontend"
-MODULE_VERSION = "202611191835"
+MODULE_VERSION = "202611202115"
 
 
 # 【修訂說明 2026-11-18】【修改目的與防呆防錯原因】：
 # 修改目的：保留主圖上方圖例與互動操作說明列，並兼容未傳入 version_tag 之呼叫方式。
 # 防呆防錯原因：app.py 以 get_legend_html() 無參數呼叫，設定預設參數確保不觸發 TypeError。
-def get_legend_html(version_tag: str = "202611191835") -> str:
+def get_legend_html(version_tag: str = "202611202115") -> str:
     return """
     <div style="font-size:12px; color:#334155; background:#f1f5f9; padding:5px 8px; border-radius:5px; margin-bottom:4px; line-height:1.5;">
         <b>📌 圖例與互動操作說明：</b>
@@ -227,6 +227,9 @@ def get_chip_tab_html(fig_btm, df: pd.DataFrame, chart_id: str, chip_height: int
     end_idx = n_pts - 1 if initial_end_idx is None else initial_end_idx
     dates_list = _extract_dates_list(df)
     fig_chip = fig_btm["chip"] if isinstance(fig_btm, dict) and "chip" in fig_btm else getattr(fig_btm, "_fig_chip", fig_btm)
+    is_twii = ("^TWII" in str(chart_id).upper()) or (
+        'Margin_Maint_Pct' in df.columns and not df['Margin_Maint_Pct'].dropna().empty
+    )
 
     tpl = COMMON_CSS + """
 <div class="frame-root" id="__CID___chip_root">
@@ -237,6 +240,7 @@ def get_chip_tab_html(fig_btm, df: pd.DataFrame, chart_id: str, chip_height: int
 <script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>
 <script>(function(){__HELPERS__
 var pChip=__P_CHIP__,dates=__DATES__,foreigns=__FOREIGNS__,trusts=__TRUSTS__,dealers=__DEALERS__,mDiffs=__MDIFFS__,sDiffs=__SDIFFS__,rat=__RATIOS__;
+var mMaints=__MMAINTS__,sMaints=__SMAINTS__,isTwii=__IS_TWII__;
 var m1_pcts=__M1PCTS__,m2_pcts=__M2PCTS__,m1_thresh=__M1TH__,m2_thresh=__M2TH__;
 var totalPoints=dates.length,initEnd=__INIT_END__,targetDays=Number(__DISP_DAYS__)||20;
 var currentR0=Math.max(0,initEnd-targetDays+1)-0.5,currentR1=initEnd+0.5,isUpdating=false;
@@ -244,8 +248,13 @@ var elChip=document.getElementById('__CID___chip'),infoMs=document.getElementByI
 
 function renderInfo(idx){if(idx<0||idx>=totalPoints)return;
     var d=dates[idx],mT=mDiffs[idx]!=null?Number(mDiffs[idx])/1000.0:null,sT=sDiffs[idx]!=null?Number(sDiffs[idx])/1000.0:null;
-    infoMs.innerHTML='<span class="tag-lbl"><b>資券[千張]('+d+')</b></span>融資:'+fmtDiff(mT,3)+' 融券:'+fmtDiff(sT,3)+' <span class="tag-lbl"><b>券資比:'+fmtNum(rat[idx])+'%</b></span>';
-    infoChip.innerHTML='<span class="tag-lbl"><b>法人集保('+d+')</b></span>外資:'+fmtDiff(foreigns[idx],0)+' 投信:'+fmtDiff(trusts[idx],0)+' 自營:'+fmtDiff(dealers[idx],0)+' | ≥'+m1_thresh+'張: '+fmtNum(m1_pcts[idx])+'% ≥'+m2_thresh+'張: '+fmtNum(m2_pcts[idx])+'%';
+    if(isTwii){
+        infoMs.innerHTML='<span class="tag-lbl"><b>上市資券[千張]('+d+')</b></span>融資:'+fmtDiff(mT,2)+' 融券:'+fmtDiff(sT,2)+' | <span style="color:#e67e22;font-weight:bold;">融資維持率:'+fmtNum(mMaints[idx])+'%</span> <span style="color:#8e44ad;font-weight:bold;">融券維持率:'+fmtNum(sMaints[idx])+'%</span>';
+        infoChip.innerHTML='<span class="tag-lbl"><b>大盤指數('+d+')</b></span>加權指數僅顯示上市資券增減與融資/融券維持率（無單一法人/集保分級）';
+    }else{
+        infoMs.innerHTML='<span class="tag-lbl"><b>資券[千張]('+d+')</b></span>融資:'+fmtDiff(mT,3)+' 融券:'+fmtDiff(sT,3)+' <span class="tag-lbl"><b>券資比:'+fmtNum(rat[idx])+'%</b></span>';
+        infoChip.innerHTML='<span class="tag-lbl"><b>法人集保('+d+')</b></span>外資:'+fmtDiff(foreigns[idx],0)+' 投信:'+fmtDiff(trusts[idx],0)+' 自營:'+fmtDiff(dealers[idx],0)+' | ≥'+m1_thresh+'張: '+fmtNum(m1_pcts[idx])+'% ≥'+m2_thresh+'張: '+fmtNum(m2_pcts[idx])+'%';
+    }
 }
 
 for(var c=1;c<=6;c++){var kc=c===1?'xaxis':'xaxis'+c;if(pChip.layout&&pChip.layout[kc])pChip.layout[kc].range=[currentR0,currentR1];}
@@ -286,6 +295,9 @@ Plotly.newPlot(elChip,pChip.data,pChip.layout,{responsive:true,displayModeBar:fa
             .replace("__MDIFFS__", json.dumps(df['Margin_Diff'].fillna(0).tolist() if 'Margin_Diff' in df.columns else [0] * n_pts))
             .replace("__SDIFFS__", json.dumps(df['Short_Diff'].fillna(0).tolist() if 'Short_Diff' in df.columns else [0] * n_pts))
             .replace("__RATIOS__", json.dumps(df['Short_Margin_Ratio'].fillna(0).tolist() if 'Short_Margin_Ratio' in df.columns else [0] * n_pts))
+            .replace("__MMAINTS__", _series_to_json_nullable(df, 'Margin_Maint_Pct', n_pts))
+            .replace("__SMAINTS__", _series_to_json_nullable(df, 'Short_Maint_Pct', n_pts))
+            .replace("__IS_TWII__", "true" if is_twii else "false")
             .replace("__M1PCTS__", json.dumps(df['Major1_Pct'].fillna(0).tolist() if 'Major1_Pct' in df.columns else [0] * n_pts))
             .replace("__M2PCTS__", json.dumps(df['Major2_Pct'].fillna(0).tolist() if 'Major2_Pct' in df.columns else [0] * n_pts))
             .replace("__M1TH__", str(m1_thresh)).replace("__M2TH__", str(m2_thresh))
