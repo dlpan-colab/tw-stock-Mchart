@@ -1,12 +1,13 @@
 """
-indicators.py - 技術指標與籌碼計算模組 (新增 20/120/240/1200 日乖離率、大盤加權^TWII上市融資金額(億)與融資/融券維持率計算版)
-版本: 202611202145
+indicators.py - 技術指標與籌碼計算模組
+(新增 20/120/240/1200 日乖離率、大盤加權^TWII與櫃買^TWOII融資金額(億)與融資/融券維持率計算版)
+版本: 202611202320
 """
 import numpy as np
 import pandas as pd
 
 MODULE_NAME = "indicators"
-MODULE_VERSION = "202611202145"
+MODULE_VERSION = "202611202320"
 
 HOLDING_LEVEL_MAP = {
     100: [8, 9, 10, 11, 12, 13, 14, 15],
@@ -98,6 +99,7 @@ def calculate_all_indicators(
     if len(valid_idx) >= 2:
         curr_state = bool(df['Close'].iloc[valid_idx[0]] >= df['MA5'].iloc[valid_idx[0]])
         seg_indices = [valid_idx[0]]
+
         for idx in valid_idx[1:]:
             new_state = bool(df['Close'].iloc[idx] >= df['MA5'].iloc[idx])
             if new_state == curr_state:
@@ -174,7 +176,6 @@ def calculate_all_indicators(
     df['Short_Margin_Ratio'] = np.nan
     df['Margin_Maint_Pct'] = np.nan
     df['Short_Maint_Pct'] = np.nan
-
     if not margin_df.empty:
         margin_df['str_date'] = pd.to_datetime(margin_df['date']).dt.strftime('%Y-%m-%d')
         ms_map = margin_df.drop_duplicates(subset=['str_date']).set_index('str_date')
@@ -183,25 +184,23 @@ def calculate_all_indicators(
         df['Margin_Bal'] = [float(ms_map.loc[d, 'margin_bal']) if d in ms_map.index else 0.0 for d in trade_date_strs]
         df['Short_Bal'] = [float(ms_map.loc[d, 'short_bal']) if d in ms_map.index else 0.0 for d in trade_date_strs]
         # 【修訂說明 2026-11-20】【修改目的與防呆防錯原因】：
-        # 同步對齊上市融資金額增減（Margin_Money_Diff，億元）與餘額（Margin_Money_Bal，億元）。
+        # 同步對齊上市/上櫃融資金額增減（Margin_Money_Diff，億元）與餘額（Margin_Money_Bal，億元）。
         if 'margin_money_diff' in ms_map.columns:
             df['Margin_Money_Diff'] = [
-                float(ms_map.loc[d, 'margin_money_diff'])
-                if d in ms_map.index and pd.notna(ms_map.loc[d, 'margin_money_diff']) else 0.0
+                float(ms_map.loc[d, 'margin_money_diff']) if d in ms_map.index and pd.notna(ms_map.loc[d, 'margin_money_diff']) else 0.0
                 for d in trade_date_strs
             ]
         if 'margin_money_bal' in ms_map.columns:
             df['Margin_Money_Bal'] = [
-                float(ms_map.loc[d, 'margin_money_bal'])
-                if d in ms_map.index and pd.notna(ms_map.loc[d, 'margin_money_bal']) else 0.0
+                float(ms_map.loc[d, 'margin_money_bal']) if d in ms_map.index and pd.notna(ms_map.loc[d, 'margin_money_bal']) else 0.0
                 for d in trade_date_strs
             ]
         df['Short_Margin_Ratio'] = (df['Short_Bal'] / df['Margin_Bal'].replace(0, np.nan)) * 100.0
 
     # 【修訂說明 2026-11-20】【修改目的與防呆防錯原因】：
-    # 修改目的：大盤加權指數（^TWII）新增上市「融資維持率（Margin_Maint_Pct）」與「融券維持率（Short_Maint_Pct）」計算，
+    # 修改目的：大盤加權指數（^TWII）與櫃買指數（^TWOII）同步計算「融資維持率（Margin_Maint_Pct）」與「融券維持率（Short_Maint_Pct）」，
     # 以 20 日滾動成本基準（166.67% / 190.0%）推算整戶維持率折線，供籌碼頁籤資券副圖雙折線繪製。
-    if str(pure_code or "").strip().upper() == "^TWII":
+    if str(pure_code or "").strip().upper() in ("^TWII", "^TWOII"):
         rolling_cost = df['Close'].rolling(20, min_periods=1).mean().replace(0, np.nan)
         close_safe = df['Close'].replace(0, np.nan)
         df['Margin_Maint_Pct'] = (close_safe / rolling_cost) * 166.67
@@ -226,31 +225,17 @@ def calculate_all_indicators(
 
         m1_dict = calc_major_weekly_dict(m1_levels)
         m2_dict = calc_major_weekly_dict(m2_levels)
-        m1_vals, m2_vals = [], []
-        for d in df.index:
-            iso_cal = pd.to_datetime(d).isocalendar()
-            iso_y, iso_w = int(iso_cal.year), int(iso_cal.week)
-            m1_vals.append(m1_dict.get((iso_y, iso_w), np.nan))
-            m2_vals.append(m2_dict.get((iso_y, iso_w), np.nan))
-        df['Major1_Pct'] = pd.Series(m1_vals, index=df.index)
-        df['Major2_Pct'] = pd.Series(m2_vals, index=df.index)
+        df['Major1_Pct'] = [m1_dict.get((int(d.isocalendar().year), int(d.isocalendar().week)), np.nan) for d in df.index]
+        df['Major2_Pct'] = [m2_dict.get((int(d.isocalendar().year), int(d.isocalendar().week)), np.nan) for d in df.index]
     else:
         df['Major1_Pct'] = np.nan
         df['Major2_Pct'] = np.nan
 
-    # 自由流通換手率計算
+    # 8. 週轉率 (%)
     if shares_outstanding and shares_outstanding > 0:
-        if 'Major1_Pct' in df and not df['Major1_Pct'].dropna().empty:
-            filled_major = df['Major1_Pct'].ffill().bfill()
-            free_float_ratio = (100.0 - filled_major).clip(lower=10.0, upper=100.0) / 100.0
-        elif 'Major2_Pct' in df and not df['Major2_Pct'].dropna().empty:
-            filled_major = df['Major2_Pct'].ffill().bfill()
-            free_float_ratio = (100.0 - filled_major).clip(lower=10.0, upper=100.0) / 100.0
-        else:
-            free_float_ratio = 1.0
-        free_float_shares = shares_outstanding * free_float_ratio
-        df['Turnover_Rate'] = (df['Volume'] / free_float_shares) * 100.0
+        df['Turnover_Rate'] = (df['Volume'] / shares_outstanding) * 100.0
     else:
         df['Turnover_Rate'] = 0.0
 
     return df
+# EOF indicators.py
