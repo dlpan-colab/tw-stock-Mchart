@@ -1,6 +1,6 @@
 """
-chart_builder.py - Plotly 圖表建置模組 (主圖1/2緊緻化、指標頁籤乖離率、籌碼分頁標準字典防快取遺失、主標題藍色加大、副圖左上角內嵌標籤與大盤加權^TWII上市資券千張＋上市融資金額(億)雙副圖防疊字版)
-版本: 202611202200
+chart_builder.py - Plotly 圖表建置模組 (主圖1/2緊緻化、指標頁籤乖離率、籌碼分頁標準字典防快取遺失、主標題藍色加大、副圖左上角內嵌標籤與加權^TWII/櫃買^TWOII資券千張＋融資金額(億)雙副圖防疊字版)
+版本: 202611202330
 """
 
 from typing import Tuple, Optional, Dict
@@ -10,7 +10,7 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
 MODULE_NAME = "chart_builder"
-MODULE_VERSION = "202611202200"
+MODULE_VERSION = "202611202330"
 
 from data_fetcher import fetch_stock_daily_k, fetch_stock_name
 from indicators import calculate_all_indicators
@@ -151,8 +151,11 @@ def build_split_figures(
     m1_range = calc_holding_range(sub_df['Major1_Pct'])
     m2_range = calc_holding_range(sub_df['Major2_Pct'])
 
-    is_twii = (str(raw_ticker).strip().upper() == "^TWII")
-    if is_twii:
+    raw_upper = str(raw_ticker).strip().upper()
+    is_tw_index = raw_upper in ("^TWII", "^TWOII")
+    mkt_prefix = "上櫃" if raw_upper == "^TWOII" else "上市"
+
+    if is_tw_index:
         maint_vals = pd.concat([
             sub_df['Margin_Maint_Pct'].dropna() if 'Margin_Maint_Pct' in sub_df.columns else pd.Series(dtype=float),
             sub_df['Short_Maint_Pct'].dropna() if 'Short_Maint_Pct' in sub_df.columns else pd.Series(dtype=float)
@@ -386,15 +389,15 @@ def build_split_figures(
             x=date_str_list, y=df['Major2_Pct'], line=dict(color='#3498db', width=1.5),
             connectgaps=True, hoverinfo='none'
         ), row=6, col=1)
-    elif is_twii:
-        # 第 4 列：上市資券（千張）增減柱狀＋融資/融券維持率雙折線
+    elif is_tw_index:
+        # 第 4 列：上市/上櫃資券（千張）增減柱狀＋融資/融券維持率雙折線
         fig_chip.add_trace(go.Bar(
             x=date_str_list, y=df['Margin_Diff'], marker_color=m_colors,
-            name='上市融資', width=0.4, offset=-0.4, hoverinfo='none'
+            name=f'{mkt_prefix}融資', width=0.4, offset=-0.4, hoverinfo='none'
         ), secondary_y=False, row=4, col=1)
         fig_chip.add_trace(go.Bar(
             x=date_str_list, y=df['Short_Diff'], marker_color=s_colors,
-            name='上市融券', width=0.4, offset=0.0, hoverinfo='none'
+            name=f'{mkt_prefix}融券', width=0.4, offset=0.0, hoverinfo='none'
         ), secondary_y=False, row=4, col=1)
         fig_chip.add_hline(y=0, line_color='rgba(150,150,150,0.7)', line_width=1, secondary_y=False, row=4, col=1)
 
@@ -407,10 +410,10 @@ def build_split_figures(
             connectgaps=True, hoverinfo='none', name='融券維持率%'
         ), secondary_y=True, row=4, col=1)
 
-        # 第 5 列：上市融資金額增減（億）單一柱狀圖＋融資維持率折線
+        # 第 5 列：上市/上櫃融資金額增減（億）單一柱狀圖＋融資維持率折線
         fig_chip.add_trace(go.Bar(
             x=date_str_list, y=df['Margin_Money_Diff'], marker_color=mm_colors,
-            name='融資金額增減(億)', hoverinfo='none'
+            name=f'{mkt_prefix}融資金額增減(億)', hoverinfo='none'
         ), secondary_y=False, row=5, col=1)
         fig_chip.add_hline(y=0, line_color='rgba(150,150,150,0.7)', line_width=1, secondary_y=False, row=5, col=1)
         fig_chip.add_trace(go.Scatter(
@@ -439,7 +442,7 @@ def build_split_figures(
     fig_chip.update_yaxes(title_text='', range=dn_range, fixedrange=True, showspikes=False, tickfont=dict(size=11), row=3, col=1)
     fig_chip.update_yaxes(title_text='', range=ms_range, fixedrange=True, showspikes=False, tickfont=dict(size=11), secondary_y=False, row=4, col=1)
     fig_chip.update_yaxes(title_text='', range=ratio_range, showgrid=False, showticklabels=False, fixedrange=True, showspikes=False, tickfont=dict(size=11), secondary_y=True, row=4, col=1)
-    if is_twii:
+    if is_tw_index:
         fig_chip.update_yaxes(title_text='', range=mm_range, fixedrange=True, showspikes=False, tickfont=dict(size=11), secondary_y=False, row=5, col=1)
         fig_chip.update_yaxes(title_text='', range=mmaint_range, showgrid=False, showticklabels=False, fixedrange=True, showspikes=False, tickfont=dict(size=11), secondary_y=True, row=5, col=1)
     else:
@@ -448,12 +451,12 @@ def build_split_figures(
     fig_chip.update_yaxes(title_text='', range=m2_range, fixedrange=True, showspikes=False, tickfont=dict(size=11), row=6, col=1)
 
     # 【修訂說明 2026-11-20】【修改目的與防呆防錯原因】：
-    # 1. 修改目的：大盤加權（^TWII）僅於第 4、5 列有實際資料，第 1～3 列與第 6 列無資料，故不渲染無資料列標籤，徹底消除零線重疊疊字。
+    # 1. 修改目的：加權指數（^TWII）與櫃買指數（^TWOII）僅於第 4、5 列有實際資料，第 1～3 列與第 6 列無資料，故不渲染無資料列標籤，徹底消除零線重疊疊字。
     # 2. 防呆防錯原因：第 4 列與第 5 列皆啟用 secondary_y=True，因此第 5 列主軸為 y6 domain。
-    if is_twii:
+    if is_tw_index:
         chip_pane_labels = [
-            ('y4 domain', '上市資券(千張)/維持率'),
-            ('y6 domain', '上市融資金額(億)/融資維持率'),
+            ('y4 domain', f'{mkt_prefix}資券(千張)/維持率'),
+            ('y6 domain', f'{mkt_prefix}融資金額(億)/融資維持率'),
         ]
     else:
         chip_pane_labels = [
