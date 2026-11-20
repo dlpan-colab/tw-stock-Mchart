@@ -1,7 +1,7 @@
 """ 
 data_fetcher.py - 整合技術與籌碼資料擷取模組
-(支援含英文後綴台股ETF + TWSE/TPEx官方日K即時補齊 + 雲端增量累積分點引擎 + 集保官網qryStock動態Token多週歷史查詢與id=1-5批次分離 + 賣超負值正規化 + 操作儀錶板盤中報價版 + 富邦10欄並排表格與精準單日分點統計/明細穩定版)
-版本: 202611192250
+(支援含英文後綴台股ETF + TWSE/TPEx官方日K即時補齊 + 大盤加權^TWII上市資券增減擷取 + 雲端增量累積分點引擎 + 集保官網qryStock動態Token多週歷史查詢與id=1-5批次分離 + 賣超負值正規化 + 操作儀錶板盤中報價版 + 富邦10欄並排表格與精準單日分點統計/明細穩定版)
+版本: 202611202100
 """
 import os
 import re
@@ -17,7 +17,7 @@ from datetime import datetime, timedelta
 from urllib.parse import urljoin, urlparse, parse_qs, urlencode, urlunparse
 
 MODULE_NAME = "data_fetcher"
-MODULE_VERSION = "202611192250"
+MODULE_VERSION = "202611202100"
 
 from storage import (
     StockChipStorage,
@@ -256,10 +256,41 @@ def sync_chip_data(
     full_ticker: str = None
 ):
     """
-    智慧增量同步三大法人、資券與集保大戶（支援台股個股及含英文後綴之 ETF）。
+    智慧增量同步三大法人、資券與集保大戶（支援台股個股、含英文後綴之 ETF，以及大盤加權指數 ^TWII 上市資券）。
     """
     pure_code = str(pure_code).strip().upper()
     storage = StockChipStorage(pure_code)
+
+    # 【修訂說明 2026-11-20】【修改目的與防呆防錯原因】：
+    # 修改目的：開放大盤加權指數 ^TWII 同步上市全市場每日融資與融券增減/餘額（存入 data_^TWII.db margin_short 資料表）。
+    # 防呆防錯原因：^TWII 僅同步資券並回傳空法人與空集保 DataFrame，其餘非台股標的維持直接返回空值。
+    if pure_code == "^TWII":
+        if len(df_dates) == 0:
+            return (pd.DataFrame(), pd.DataFrame(), pd.DataFrame())
+        last_margin_date = storage.get_latest_margin_date()
+        latest_trade_date_str = df_dates[-1].strftime('%Y-%m-%d')
+        now_tw = datetime.utcnow() + timedelta(hours=8)
+        now_tw_date_str = now_tw.strftime('%Y-%m-%d')
+
+        should_fetch_margin = force_refresh
+        if not should_fetch_margin:
+            if not last_margin_date:
+                should_fetch_margin = True
+            elif last_margin_date < latest_trade_date_str:
+                if now_tw_date_str == latest_trade_date_str and now_tw.hour < 21:
+                    should_fetch_margin = False
+                else:
+                    should_fetch_margin = True
+
+        if should_fetch_margin:
+            start_filter = None if force_refresh else last_margin_date
+            margin_records = fetch_twse_total_margin_data(df_dates, start_date_exclusive=start_filter)
+            if margin_records:
+                storage.save_margin_data(margin_records)
+
+        if status_placeholder:
+            status_placeholder.empty()
+        return (pd.DataFrame(), storage.load_margin_df(), pd.DataFrame())
 
     if pure_code.startswith("^") or not is_tw_stock_or_etf(pure_code):
         return (pd.DataFrame(), pd.DataFrame(), pd.DataFrame())
@@ -467,6 +498,91 @@ def fetch_institutional_investors(
 
     records.sort(key=lambda x: x[0])
     return records
+
+
+def fetch_twse_total_margin_data(df_dates: pd.DatetimeIndex, start_date_exclusive: str = None) -> list:
+    """
+    【修訂說明 2026-11-20】【修改目的與防呆防錯原因】：
+    1. 修改目的：擷取上市大盤（^TWII）全市場每日融資、融券增減張數與餘額
+       （主資料源：FinMind TaiwanStockTotalMarginPurchaseShortSale；備援補齊最新交易日：證交所 MI_MARGN）。
+    2. 防呆防錯原因：回傳格式嚴格對齊 storage.save_margin_data 之 5 元組
+       (date_str, m_diff, s_diff, m_bal, s_bal)，直接複用既有 margin_short 資料表免改資料庫結構。
+    """
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36"
+    }
+    if start_date_exclusive:
+        query_start = (pd.to_datetime(start_date_exclusive) + timedelta(days=1)).strftime('%Y-%m-%d')
+    else:
+        query_start = (
+            (df_dates[0] - timedelta(days=5)).strftime('%Y-%m-%d')
+            if len(df_dates) > 0 else (datetime.now() - timedelta(days=90)).strftime('%Y-%m-%d')
+        )
+
+    rec_map = {}
+    try:
+        url_fm = "https://api.finmindtrade.com/api/v4/data"
+        p_fm = {
+            "dataset": "TaiwanStockTotalMarginPurchaseShortSale",
+            "start_date": query_start,
+            "token": FINMIND_TOKEN
+        }
+        res_fm = requests.get(url_fm, params=p_fm, headers=headers, timeout=6)
+        if res_fm.status_code == 200:
+            data_fm = res_fm.json().get("data", [])
+            if data_fm:
+                df_raw = pd.DataFrame(data_fm)
+                piv_today = df_raw.pivot_table(index="date", columns="name", values="TodayBalance", aggfunc="last")
+                piv_yes = df_raw.pivot_table(index="date", columns="name", values="YesBalance", aggfunc="last")
+                for d_str in piv_today.index:
+                    m_today = float(piv_today.loc[d_str, "MarginPurchase"]) if "MarginPurchase" in piv_today.columns and pd.notna(piv_today.loc[d_str, "MarginPurchase"]) else 0.0
+                    m_yes = float(piv_yes.loc[d_str, "MarginPurchase"]) if "MarginPurchase" in piv_yes.columns and pd.notna(piv_yes.loc[d_str, "MarginPurchase"]) else m_today
+                    s_today = float(piv_today.loc[d_str, "ShortSale"]) if "ShortSale" in piv_today.columns and pd.notna(piv_today.loc[d_str, "ShortSale"]) else 0.0
+                    s_yes = float(piv_yes.loc[d_str, "ShortSale"]) if "ShortSale" in piv_yes.columns and pd.notna(piv_yes.loc[d_str, "ShortSale"]) else s_today
+                    rec_map[str(d_str)] = (
+                        str(d_str),
+                        m_today - m_yes,
+                        s_today - s_yes,
+                        m_today,
+                        s_today
+                    )
+    except Exception:
+        pass
+
+    # 若最新交易日尚未出現在 FinMind，向證交所 MI_MARGN 補齊單日全市場信用交易統計
+    if len(df_dates) > 0:
+        latest_d_str = df_dates[-1].strftime('%Y-%m-%d')
+        if latest_d_str not in rec_map:
+            try:
+                d_compact = df_dates[-1].strftime('%Y%m%d')
+                url_twse_ms = f"https://www.twse.com.tw/rwd/zh/marginTrading/MI_MARGN?date={d_compact}&selectType=MS&response=json"
+                res_t = requests.get(url_twse_ms, headers=headers, timeout=4)
+                if res_t.status_code == 200:
+                    js_t = res_t.json()
+                    if js_t.get("stat") == "OK":
+                        m_yes, m_today, s_yes, s_today = 0.0, 0.0, 0.0, 0.0
+                        for tbl in js_t.get("tables", []):
+                            for row in tbl.get("data", []):
+                                if len(row) >= 6:
+                                    item_name = str(row[0]).strip()
+                                    yes_v = float(str(row[4]).replace(",", "").strip() or 0)
+                                    tod_v = float(str(row[5]).replace(",", "").strip() or 0)
+                                    if "融資(交易單位)" in item_name:
+                                        m_yes, m_today = yes_v, tod_v
+                                    elif "融券(交易單位)" in item_name:
+                                        s_yes, s_today = yes_v, tod_v
+                        if m_today > 0 or s_today > 0:
+                            rec_map[latest_d_str] = (
+                                latest_d_str,
+                                m_today - m_yes,
+                                s_today - s_yes,
+                                m_today,
+                                s_today
+                            )
+            except Exception:
+                pass
+
+    return [rec_map[k] for k in sorted(rec_map.keys())]
 
 
 def fetch_margin_short_data(pure_code: str, df_dates: pd.DatetimeIndex, start_date_exclusive: str = None) -> list:
