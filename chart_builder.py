@@ -1,6 +1,6 @@
 """
-chart_builder.py - Plotly 圖表建置模組 (主圖1/2緊緻化、指標頁籤乖離率、籌碼分頁標準字典防快取遺失與副圖Y軸標籤防裁切版)
-版本: 202611202021
+chart_builder.py - Plotly 圖表建置模組 (主圖1/2緊緻化、指標頁籤乖離率、籌碼分頁標準字典防快取遺失、副圖Y軸標籤防裁切與主標題藍色加大版)
+版本: 202611202030
 """
 
 from typing import Tuple, Optional, Dict
@@ -10,7 +10,7 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
 MODULE_NAME = "chart_builder"
-MODULE_VERSION = "202611202021"
+MODULE_VERSION = "202611202030"
 
 from data_fetcher import fetch_stock_daily_k, fetch_stock_name
 from indicators import calculate_all_indicators
@@ -230,13 +230,16 @@ def build_split_figures(
         ), row=2, col=1)
 
     # 【修訂說明 2026-11-20】【修改目的與防呆防錯原因】：
-    # 修改目的：將左邊距 margin.l 統一由 80 調整為 90（與 fig_tech / fig_chip 對齊），維持上下圖表時間軸精準對齊。
-    # 防呆防錯原因：固定左邊距並關閉 autoexpand，避免窄螢幕或大位數刻度將 Y 軸標題推出可視範圍外。
+    # 1. 修改目的：將主圖上方「股票名稱 (代號) (市/櫃)」標題字級由 12 放大為 16、顏色改為藍色（#1d4ed8）並加粗，與頁面下方標的列視覺一致。
+    # 2. 防呆防錯原因：上邊距 margin.t 由 28 微調至 34，避免 16px 大字體在頂部遭裁切；左邊距維持 margin.l=90 確保上下圖表時間軸對齊。
     fig_top.update_layout(
-        title=dict(text=f'{c_name or raw_ticker} ({raw_ticker}) ({market_label})', font=dict(size=12)),
+        title=dict(
+            text=f'<b>{c_name or raw_ticker} ({raw_ticker}) ({market_label})</b>',
+            font=dict(size=16, color='#1d4ed8')
+        ),
         font=dict(size=12), template='plotly_white', hovermode=False, dragmode='pan',
         showlegend=False, height=top_height,
-        margin=dict(l=90, r=15, t=28, b=18, autoexpand=False),
+        margin=dict(l=90, r=15, t=34, b=18, autoexpand=False),
         xaxis_rangeslider_visible=False
     )
     fig_top.update_xaxes(
