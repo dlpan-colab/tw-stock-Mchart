@@ -1,13 +1,12 @@
 """
-indicators.py - 技術指標與籌碼計算模組 (新增 20/120/240/1200 日乖離率計算版) 
-版本: 202611132020
+indicators.py - 技術指標與籌碼計算模組 (新增 20/120/240/1200 日乖離率與大盤加權^TWII融資/融券維持率計算版)
+版本: 202611202115
 """
-
 import numpy as np
 import pandas as pd
 
 MODULE_NAME = "indicators"
-MODULE_VERSION = "202611132020"
+MODULE_VERSION = "202611202115"
 
 HOLDING_LEVEL_MAP = {
     100: [8, 9, 10, 11, 12, 13, 14, 15],
@@ -95,6 +94,7 @@ def calculate_all_indicators(
     total_rows = len(df)
     is_head, is_bottom = [False] * total_rows, [False] * total_rows
     valid_idx = [i for i in range(total_rows) if not pd.isna(df['MA5'].iloc[i])]
+
     if len(valid_idx) >= 2:
         curr_state = bool(df['Close'].iloc[valid_idx[0]] >= df['MA5'].iloc[valid_idx[0]])
         seg_indices = [valid_idx[0]]
@@ -112,6 +112,7 @@ def calculate_all_indicators(
                     is_bottom[best_bottom] = True
                 curr_state = new_state
                 seg_indices = [idx]
+
     df['Is_Head'], df['Is_Bottom'] = is_head, is_bottom
 
     # 7. 籌碼同步與對齊
@@ -169,6 +170,9 @@ def calculate_all_indicators(
     df['Margin_Bal'] = 0.0
     df['Short_Bal'] = 0.0
     df['Short_Margin_Ratio'] = np.nan
+    df['Margin_Maint_Pct'] = np.nan
+    df['Short_Maint_Pct'] = np.nan
+
     if not margin_df.empty:
         margin_df['str_date'] = pd.to_datetime(margin_df['date']).dt.strftime('%Y-%m-%d')
         ms_map = margin_df.drop_duplicates(subset=['str_date']).set_index('str_date')
@@ -177,6 +181,15 @@ def calculate_all_indicators(
         df['Margin_Bal'] = [float(ms_map.loc[d, 'margin_bal']) if d in ms_map.index else 0.0 for d in trade_date_strs]
         df['Short_Bal'] = [float(ms_map.loc[d, 'short_bal']) if d in ms_map.index else 0.0 for d in trade_date_strs]
         df['Short_Margin_Ratio'] = (df['Short_Bal'] / df['Margin_Bal'].replace(0, np.nan)) * 100.0
+
+    # 【修訂說明 2026-11-20】【修改目的與防呆防錯原因】：
+    # 修改目的：大盤加權指數（^TWII）新增上市「融資維持率（Margin_Maint_Pct）」與「融券維持率（Short_Maint_Pct）」計算，
+    # 以 20 日滾動成本基準（166.67% / 190.0%）推算整戶維持率折線，供籌碼頁籤資券副圖雙折線繪製。
+    if str(pure_code or "").strip().upper() == "^TWII":
+        rolling_cost = df['Close'].rolling(20, min_periods=1).mean().replace(0, np.nan)
+        close_safe = df['Close'].replace(0, np.nan)
+        df['Margin_Maint_Pct'] = (close_safe / rolling_cost) * 166.67
+        df['Short_Maint_Pct'] = (rolling_cost / close_safe) * 190.0
 
     # 大戶持股門檻（嚴格同週對齊，當週全交易日共用該週最新公告值）
     if not holding_df.empty:
