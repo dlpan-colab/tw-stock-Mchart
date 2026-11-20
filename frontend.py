@@ -1,19 +1,19 @@
 """
 frontend.py - 前端 HTML/CSS 渲染模組
-(恢復 16 日正常版純淨 20 日初始可視視窗 + 分點買賣超紅綠對齊＋柱狀圖 staticPlot 徹底鎖死不可平移縮放版 + 分點統計與分點日況雙頁籤分離版 + 分點日況預設20日自動貼合容器寬度版 + 大盤加權^TWII上市資券千張＋融資金額(億)＋融資/融券維持率資訊列與主副圖同步版)
-版本: 202611202210
+(恢復 16 日正常版純淨 20 日初始可視視窗 + 分點買賣超紅綠對齊＋柱狀圖 staticPlot 徹底鎖死不可平移縮放版 + 分點統計與分點日況雙頁籤分離版 + 分點日況預設20日自動貼合容器寬度版 + 大盤加權^TWII上市資券千張＋融資金額(億)＋融資/融券維持率資訊列與主副圖即時同步版)
+版本: 202611202220
 """
 import json
 import pandas as pd
 
 MODULE_NAME = "frontend"
-MODULE_VERSION = "202611202210"
+MODULE_VERSION = "202611202220"
 
 
 # 【修訂說明 2026-11-18】【修改目的與防呆防錯原因】：
 # 修改目的：保留主圖上方圖例與互動操作說明列，並兼容未傳入 version_tag 之呼叫方式。
 # 防呆防錯原因：app.py 以 get_legend_html() 無參數呼叫，設定預設參數確保不觸發 TypeError。
-def get_legend_html(version_tag: str = "202611202210") -> str:
+def get_legend_html(version_tag: str = "202611202220") -> str:
     return """
     <div style="font-size:12px; color:#334155; background:#f1f5f9; padding:5px 8px; border-radius:5px; margin-bottom:4px; line-height:1.5;">
         <b>📌 圖例與互動操作說明：</b>
@@ -116,11 +116,11 @@ Plotly.newPlot(elTop,pTop.data,pTop.layout,{responsive:true,displayModeBar:false
         isUpdating=true;var span=r1-r0,maxB=(totalPoints-1)+0.5;
         if(r1>maxB){r1=maxB;r0=r1-span;}currentR0=r0;currentR1=r1;
         var vb=calcBounds(r0,r1);broadcastToSiblings({type:'MCHART_SYNC_XRANGE',r0:r0,r1:r1});
-        Plotly.relayout(elTop,{'xaxis.range':[r0,r1],'xaxis2.range':[r0,r1],'yaxis.range':vb.p,'yaxis2.range':vb.v}).finally(function(){setTimeout(function(){isUpdating=false;},20);});
+        Plotly.relayout(elTop,{'xaxis.range':[r0,r1],'xaxis2.range':[r0,r1],'yaxis.range':vb.p,'yaxis2.range':vb.v}).finally(function(){setTimeout(function(){isUpdating=false;},8);});
     });
     window.addEventListener('message',function(ev){var msg=ev.data||{};
         if(msg.type==='MCHART_SYNC_XRANGE'&&!isUpdating){isUpdating=true;currentR0=msg.r0;currentR1=msg.r1;var vb=calcBounds(currentR0,currentR1);
-            Plotly.relayout(elTop,{'xaxis.range':[currentR0,currentR1],'xaxis2.range':[currentR0,currentR1],'yaxis.range':vb.p,'yaxis2.range':vb.v}).finally(function(){setTimeout(function(){isUpdating=false;},20);});
+            Plotly.relayout(elTop,{'xaxis.range':[currentR0,currentR1],'xaxis2.range':[currentR0,currentR1],'yaxis.range':vb.p,'yaxis2.range':vb.v}).finally(function(){setTimeout(function(){isUpdating=false;},8);});
         }else if(msg.type==='MCHART_SYNC_FOCUS'&&msg.idx>=0)renderInfo(msg.idx);
     });
     function onMove(e){var cx=(e.touches&&e.touches.length>0)?e.touches[0].clientX:e.clientX;if(cx===undefined)return;
@@ -184,12 +184,12 @@ Plotly.newPlot(elTech,pTech.data,pTech.layout,{responsive:true,displayModeBar:fa
         if(r1>maxB){r1=maxB;r0=r1-span;}currentR0=r0;currentR1=r1;
         var upd={};for(var i=1;i<=4;i++)upd[(i===1?'xaxis':'xaxis'+i)+'.range']=[r0,r1];
         broadcastToSiblings({type:'MCHART_SYNC_XRANGE',r0:r0,r1:r1});
-        Plotly.relayout(elTech,upd).finally(function(){setTimeout(function(){isUpdating=false;},20);});
+        Plotly.relayout(elTech,upd).finally(function(){setTimeout(function(){isUpdating=false;},8);});
     });
     window.addEventListener('message',function(ev){var msg=ev.data||{};
         if(msg.type==='MCHART_SYNC_XRANGE'&&!isUpdating){isUpdating=true;currentR0=msg.r0;currentR1=msg.r1;
             var upd={};for(var i=1;i<=4;i++)upd[(i===1?'xaxis':'xaxis'+i)+'.range']=[currentR0,currentR1];
-            Plotly.relayout(elTech,upd).finally(function(){setTimeout(function(){isUpdating=false;},20);});
+            Plotly.relayout(elTech,upd).finally(function(){setTimeout(function(){isUpdating=false;},8);});
         }else if(msg.type==='MCHART_SYNC_FOCUS'){if(msg.showLine&&msg.idx>=0){renderInfo(msg.idx);var xa=elTech._fullLayout?elTech._fullLayout.xaxis:null;if(xa&&typeof xa.c2p==='function'){lineTech.style.left=(xa.c2p(msg.idx)+(xa._offset||80))+'px';lineTech.style.display='block';}}
             else lineTech.style.display='none';
         }
@@ -246,8 +246,6 @@ var totalPoints=dates.length,initEnd=__INIT_END__,targetDays=Number(__DISP_DAYS_
 var currentR0=Math.max(0,initEnd-targetDays+1)-0.5,currentR1=initEnd+0.5,isUpdating=false;
 var elChip=document.getElementById('__CID___chip'),infoMs=document.getElementById('__CID___info_ms'),infoChip=document.getElementById('__CID___info_chip'),lineChip=document.getElementById('__CID___line_chip');
 
-var xAxisKeys=['xaxis','xaxis2','xaxis3','xaxis4','xaxis5','xaxis6','xaxis7','xaxis8'];
-
 function renderInfo(idx){if(idx<0||idx>=totalPoints)return;
     var d=dates[idx],mT=mDiffs[idx]!=null?Number(mDiffs[idx])/1000.0:null,sT=sDiffs[idx]!=null?Number(sDiffs[idx])/1000.0:null;
     if(isTwii){
@@ -260,34 +258,44 @@ function renderInfo(idx){if(idx<0||idx>=totalPoints)return;
 }
 
 // 【修訂說明 2026-11-20】【修改目的與防呆防錯原因】：
-// 修正多副圖含雙次軸時（xaxis 至 xaxis8）左右拖曳平移 X 軸同步遺漏部分軸之問題，確保主圖與籌碼副圖同步捲動。
-function buildRangeUpdate(r0,r1){
-    var upd={};
-    for(var i=0;i<xAxisKeys.length;i++){
-        var k=xAxisKeys[i];
-        if(elChip._fullLayout&&elChip._fullLayout[k])upd[k+'.range']=[r0,r1];
-        else if(pChip.layout&&pChip.layout[k])upd[k+'.range']=[r0,r1];
+// 動態擷取 _fullLayout 與 layout 中所有以 xaxis 開頭之軸鍵名，確保雙次軸子圖於左右平移時主副圖 X 軸範圍完整同步。
+function getAllXAxisKeys(){
+    var keys=[];
+    if(elChip&&elChip._fullLayout){
+        Object.keys(elChip._fullLayout).forEach(function(k){if(/^xaxis\d*$/.test(k))keys.push(k);});
     }
+    if(keys.length===0&&pChip&&pChip.layout){
+        Object.keys(pChip.layout).forEach(function(k){if(/^xaxis\d*$/.test(k))keys.push(k);});
+    }
+    return keys.length>0?keys:['xaxis','xaxis2','xaxis3','xaxis4','xaxis5','xaxis6','xaxis7','xaxis8'];
+}
+
+function buildRangeUpdate(r0,r1){
+    var upd={},keys=getAllXAxisKeys();
+    for(var i=0;i<keys.length;i++){upd[keys[i]+'.range']=[r0,r1];}
     return upd;
 }
 
-for(var c=0;c<xAxisKeys.length;c++){var kc=xAxisKeys[c];if(pChip.layout&&pChip.layout[kc])pChip.layout[kc].range=[currentR0,currentR1];}
+var initKeys=getAllXAxisKeys();
+for(var c=0;c<initKeys.length;c++){if(pChip.layout&&pChip.layout[initKeys[c]])pChip.layout[initKeys[c]].range=[currentR0,currentR1];}
 Plotly.newPlot(elChip,pChip.data,pChip.layout,{responsive:true,displayModeBar:false,scrollZoom:false}).then(function(){renderInfo(initEnd);
-    elChip.on('plotly_relayout',function(ed){if(isUpdating)return;var r0=null,r1=null;
-        for(var k=0;k<xAxisKeys.length;k++){var p=xAxisKeys[k];
+    elChip.on('plotly_relayout',function(ed){if(isUpdating)return;var r0=null,r1=null,keys=getAllXAxisKeys();
+        for(var k=0;k<keys.length;k++){var p=keys[k];
             if(ed[p+'.range[0]']!==undefined)r0=ed[p+'.range[0]'];
             if(ed[p+'.range[1]']!==undefined)r1=ed[p+'.range[1]'];
             if(Array.isArray(ed[p+'.range'])&&ed[p+'.range'].length===2){r0=ed[p+'.range'][0];r1=ed[p+'.range'][1];}
         }
-        if(r0===null||r1===null||(Math.abs(r0-currentR0)<0.001&&Math.abs(r1-currentR1)<0.001))return;
+        if(r0===null||r1===null||(Math.abs(r0-currentR0)<0.0005&&Math.abs(r1-currentR1)<0.0005))return;
         isUpdating=true;var span=r1-r0,maxB=(totalPoints-1)+0.5;
         if(r1>maxB){r1=maxB;r0=r1-span;}currentR0=r0;currentR1=r1;
         broadcastToSiblings({type:'MCHART_SYNC_XRANGE',r0:r0,r1:r1});
-        Plotly.relayout(elChip,buildRangeUpdate(r0,r1)).finally(function(){setTimeout(function(){isUpdating=false;},20);});
+        Plotly.relayout(elChip,buildRangeUpdate(r0,r1)).finally(function(){setTimeout(function(){isUpdating=false;},5);});
     });
     window.addEventListener('message',function(ev){var msg=ev.data||{};
-        if(msg.type==='MCHART_SYNC_XRANGE'&&!isUpdating){isUpdating=true;currentR0=msg.r0;currentR1=msg.r1;
-            Plotly.relayout(elChip,buildRangeUpdate(currentR0,currentR1)).finally(function(){setTimeout(function(){isUpdating=false;},20);});
+        if(msg.type==='MCHART_SYNC_XRANGE'&&!isUpdating){
+            if(Math.abs(msg.r0-currentR0)<0.0005&&Math.abs(msg.r1-currentR1)<0.0005)return;
+            isUpdating=true;currentR0=msg.r0;currentR1=msg.r1;
+            Plotly.relayout(elChip,buildRangeUpdate(currentR0,currentR1)).finally(function(){setTimeout(function(){isUpdating=false;},5);});
         }else if(msg.type==='MCHART_SYNC_FOCUS'){if(msg.showLine&&msg.idx>=0){renderInfo(msg.idx);var xa=elChip._fullLayout?elChip._fullLayout.xaxis:null;if(xa&&typeof xa.c2p==='function'){lineChip.style.left=(xa.c2p(msg.idx)+(xa._offset||80))+'px';lineChip.style.display='block';}}
             else lineChip.style.display='none';
         }
