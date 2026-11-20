@@ -1,19 +1,19 @@
 """
 frontend.py - 前端 HTML/CSS 渲染模組
-(恢復 16 日正常版純淨 20 日初始可視視窗 + 分點買賣超紅綠對齊＋柱狀圖 staticPlot 徹底鎖死不可平移縮放版 + 分點統計與分點日況雙頁籤分離版 + 分點日況預設20日自動貼合容器寬度版 + 大盤加權^TWII與櫃買^TWOII資券千張＋融資金額(億)＋融資/融券維持率資訊列與主副圖即時同步版)
-版本: 202611202340
+(恢復 16 日正常版純淨 20 日初始可視視窗 + 分點買賣超紅綠對齊＋柱狀圖 staticPlot 徹底鎖死不可平移縮放版 + 分點統計與分點日況雙頁籤分離版 + 分點日況預設20日自動貼合容器寬度版 + 大盤加權^TWII與櫃買^TWOII緊緻雙列資券千張＋融資金額(億)＋融資/融券維持率消除空白版)
+版本: 202611202355
 """
 import json
 import pandas as pd
 
 MODULE_NAME = "frontend"
-MODULE_VERSION = "202611202340"
+MODULE_VERSION = "202611202355"
 
 
 # 【修訂說明 2026-11-18】【修改目的與防呆防錯原因】：
 # 修改目的：保留主圖上方圖例與互動操作說明列，並兼容未傳入 version_tag 之呼叫方式。
 # 防呆防錯原因：app.py 以 get_legend_html() 無參數呼叫，設定預設參數確保不觸發 TypeError。
-def get_legend_html(version_tag: str = "202611202340") -> str:
+def get_legend_html(version_tag: str = "202611202355") -> str:
     return """
     <div style="font-size:12px; color:#334155; background:#f1f5f9; padding:5px 8px; border-radius:5px; margin-bottom:4px; line-height:1.5;">
         <b>📌 圖例與互動操作說明：</b>
@@ -227,11 +227,21 @@ def get_chip_tab_html(fig_btm, df: pd.DataFrame, chart_id: str, chip_height: int
     end_idx = n_pts - 1 if initial_end_idx is None else initial_end_idx
     dates_list = _extract_dates_list(df)
     fig_chip = fig_btm["chip"] if isinstance(fig_btm, dict) and "chip" in fig_btm else getattr(fig_btm, "_fig_chip", fig_btm)
+
+    # 【修訂說明 2026-11-20】【修改目的與防呆防錯原因】：
+    # 1. 修改目的：
+    #    - 優先採用 fig_chip.layout.height（指數緊緻雙列 380/420px），避免外框 div 仍以 780px 撐出底部大片空白；
+    #    - 依 df 資料特徵精準辨識上櫃指數（^TWOII，Margin_Bal 全為 0 且有 Margin_Money_Bal）與上市加權指數（^TWII），
+    #      解決動態流水號 chart_id 不含代號字串導致上櫃指數誤顯示「上市資券」的問題。
+    fig_h = getattr(getattr(fig_chip, "layout", None), "height", None)
+    resolved_chip_h = int(fig_h) if fig_h else int(chip_height)
+
     cid_upper = str(chart_id).upper()
-    is_twoii = ("^TWOII" in cid_upper)
-    is_tw_index = ("^TWII" in cid_upper) or is_twoii or (
-        'Margin_Maint_Pct' in df.columns and not df['Margin_Maint_Pct'].dropna().empty
-    )
+    has_maint = ('Margin_Maint_Pct' in df.columns and not df['Margin_Maint_Pct'].dropna().empty)
+    has_money_bal = ('Margin_Money_Bal' in df.columns and (df['Margin_Money_Bal'].fillna(0) != 0).any())
+    zero_margin_bal = ('Margin_Bal' not in df.columns or (df['Margin_Bal'].fillna(0) == 0).all())
+    is_twoii = ("^TWOII" in cid_upper) or (has_maint and has_money_bal and zero_margin_bal)
+    is_tw_index = ("^TWII" in cid_upper) or is_twoii or has_maint
 
     tpl = COMMON_CSS + """
 <div class="frame-root" id="__CID___chip_root">
@@ -316,7 +326,7 @@ Plotly.newPlot(elChip,pChip.data,pChip.layout,{responsive:true,displayModeBar:fa
     elChip.addEventListener('touchstart',onMove,{passive:true});elChip.addEventListener('mouseleave',onLeave);
 });
 })();</script>"""
-    return (tpl.replace("__CID__", chart_id).replace("__HELPERS__", SHARED_JS_HELPERS).replace("__CHIP_H__", str(chip_height))
+    return (tpl.replace("__CID__", chart_id).replace("__HELPERS__", SHARED_JS_HELPERS).replace("__CHIP_H__", str(resolved_chip_h))
             .replace("__P_CHIP__", fig_chip.to_json()).replace("__DATES__", json.dumps(dates_list))
             .replace("__FOREIGNS__", json.dumps(df['Foreign_Net'].fillna(0).tolist() if 'Foreign_Net' in df.columns else [0] * n_pts))
             .replace("__TRUSTS__", json.dumps(df['Trust_Net'].fillna(0).tolist() if 'Trust_Net' in df.columns else [0] * n_pts))
