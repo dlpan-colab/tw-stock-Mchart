@@ -1,12 +1,12 @@
 """
-indicators.py - 技術指標與籌碼計算模組 (新增 20/120/240/1200 日乖離率與大盤加權^TWII融資/融券維持率計算版)
-版本: 202611202115
+indicators.py - 技術指標與籌碼計算模組 (新增 20/120/240/1200 日乖離率、大盤加權^TWII上市融資金額(億)與融資/融券維持率計算版)
+版本: 202611202145
 """
 import numpy as np
 import pandas as pd
 
 MODULE_NAME = "indicators"
-MODULE_VERSION = "202611202115"
+MODULE_VERSION = "202611202145"
 
 HOLDING_LEVEL_MAP = {
     100: [8, 9, 10, 11, 12, 13, 14, 15],
@@ -169,6 +169,8 @@ def calculate_all_indicators(
     df['Short_Diff'] = 0.0
     df['Margin_Bal'] = 0.0
     df['Short_Bal'] = 0.0
+    df['Margin_Money_Diff'] = 0.0
+    df['Margin_Money_Bal'] = 0.0
     df['Short_Margin_Ratio'] = np.nan
     df['Margin_Maint_Pct'] = np.nan
     df['Short_Maint_Pct'] = np.nan
@@ -180,6 +182,20 @@ def calculate_all_indicators(
         df['Short_Diff'] = [float(ms_map.loc[d, 'short_diff']) if d in ms_map.index else 0.0 for d in trade_date_strs]
         df['Margin_Bal'] = [float(ms_map.loc[d, 'margin_bal']) if d in ms_map.index else 0.0 for d in trade_date_strs]
         df['Short_Bal'] = [float(ms_map.loc[d, 'short_bal']) if d in ms_map.index else 0.0 for d in trade_date_strs]
+        # 【修訂說明 2026-11-20】【修改目的與防呆防錯原因】：
+        # 同步對齊上市融資金額增減（Margin_Money_Diff，億元）與餘額（Margin_Money_Bal，億元）。
+        if 'margin_money_diff' in ms_map.columns:
+            df['Margin_Money_Diff'] = [
+                float(ms_map.loc[d, 'margin_money_diff'])
+                if d in ms_map.index and pd.notna(ms_map.loc[d, 'margin_money_diff']) else 0.0
+                for d in trade_date_strs
+            ]
+        if 'margin_money_bal' in ms_map.columns:
+            df['Margin_Money_Bal'] = [
+                float(ms_map.loc[d, 'margin_money_bal'])
+                if d in ms_map.index and pd.notna(ms_map.loc[d, 'margin_money_bal']) else 0.0
+                for d in trade_date_strs
+            ]
         df['Short_Margin_Ratio'] = (df['Short_Bal'] / df['Margin_Bal'].replace(0, np.nan)) * 100.0
 
     # 【修訂說明 2026-11-20】【修改目的與防呆防錯原因】：
