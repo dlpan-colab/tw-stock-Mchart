@@ -1,6 +1,6 @@
 """
-chart_builder.py - Plotly 圖表建置模組 (主圖1/2緊緻化、指標頁籤乖離率、籌碼分頁標準字典防快取遺失、主標題藍色加大與副圖左上角內嵌標籤防裁切版)
-版本: 202611202040
+chart_builder.py - Plotly 圖表建置模組 (主圖1/2緊緻化、指標頁籤乖離率、籌碼分頁標準字典防快取遺失、主標題藍色加大、副圖左上角內嵌標籤與大盤加權^TWII上市資券＋雙維持率折線版)
+版本: 202611202115
 """
 
 from typing import Tuple, Optional, Dict
@@ -10,7 +10,7 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
 MODULE_NAME = "chart_builder"
-MODULE_VERSION = "202611202040"
+MODULE_VERSION = "202611202115"
 
 from data_fetcher import fetch_stock_daily_k, fetch_stock_name
 from indicators import calculate_all_indicators
@@ -146,11 +146,22 @@ def build_split_figures(
     m1_range = calc_holding_range(sub_df['Major1_Pct'])
     m2_range = calc_holding_range(sub_df['Major2_Pct'])
 
-    ratio_clean = sub_df['Short_Margin_Ratio'].dropna()
-    r_min = float(ratio_clean.min()) if not ratio_clean.empty else 0
-    r_max = float(ratio_clean.max()) if not ratio_clean.empty else 10
-    r_pad = max(0.5, (r_max - r_min) * 0.15) if r_max > r_min else 1.0
-    ratio_range = [max(0, r_min - r_pad), r_max + r_pad]
+    is_twii = (str(raw_ticker).strip().upper() == "^TWII")
+    if is_twii:
+        maint_vals = pd.concat([
+            sub_df['Margin_Maint_Pct'].dropna() if 'Margin_Maint_Pct' in sub_df.columns else pd.Series(dtype=float),
+            sub_df['Short_Maint_Pct'].dropna() if 'Short_Maint_Pct' in sub_df.columns else pd.Series(dtype=float)
+        ])
+        r_min = float(maint_vals.min()) if not maint_vals.empty else 120.0
+        r_max = float(maint_vals.max()) if not maint_vals.empty else 230.0
+        r_pad = max(2.0, (r_max - r_min) * 0.15) if r_max > r_min else 5.0
+        ratio_range = [max(0, r_min - r_pad), r_max + r_pad]
+    else:
+        ratio_clean = sub_df['Short_Margin_Ratio'].dropna()
+        r_min = float(ratio_clean.min()) if not ratio_clean.empty else 0
+        r_max = float(ratio_clean.max()) if not ratio_clean.empty else 10
+        r_pad = max(0.5, (r_max - r_min) * 0.15) if r_max > r_min else 1.0
+        ratio_range = [max(0, r_min - r_pad), r_max + r_pad]
 
     top_height = 270 if is_mobile else 310
     tech_height = 540 if is_mobile else 580
@@ -363,6 +374,28 @@ def build_split_figures(
             x=date_str_list, y=df['Major2_Pct'], line=dict(color='#3498db', width=1.5),
             connectgaps=True, hoverinfo='none'
         ), row=6, col=1)
+    elif is_twii:
+        # 【修訂說明 2026-11-20】【修改目的與防呆防錯原因】：
+        # 修改目的：大盤加權指數（^TWII）於籌碼頁籤第 4 列顯示上市全市場資券變化柱狀圖（融資/融券增減），
+        # 並於次軸繪製兩條維持率折線——「融資維持率（#e67e22）」與「融券維持率（#8e44ad）」。
+        fig_chip.add_trace(go.Bar(
+            x=date_str_list, y=df['Margin_Diff'], marker_color=m_colors,
+            name='上市融資', width=0.4, offset=-0.4, hoverinfo='none'
+        ), secondary_y=False, row=4, col=1)
+        fig_chip.add_trace(go.Bar(
+            x=date_str_list, y=df['Short_Diff'], marker_color=s_colors,
+            name='上市融券', width=0.4, offset=0.0, hoverinfo='none'
+        ), secondary_y=False, row=4, col=1)
+        fig_chip.add_hline(y=0, line_color='rgba(150,150,150,0.7)', line_width=1, secondary_y=False, row=4, col=1)
+
+        fig_chip.add_trace(go.Scatter(
+            x=date_str_list, y=df['Margin_Maint_Pct'], line=dict(color='#e67e22', width=1.6),
+            connectgaps=True, hoverinfo='none', name='融資維持率%'
+        ), secondary_y=True, row=4, col=1)
+        fig_chip.add_trace(go.Scatter(
+            x=date_str_list, y=df['Short_Maint_Pct'], line=dict(color='#8e44ad', width=1.6),
+            connectgaps=True, hoverinfo='none', name='融券維持率%'
+        ), secondary_y=True, row=4, col=1)
 
     fig_chip.update_layout(
         font=dict(size=12), template='plotly_white', hovermode=False, dragmode='pan',
@@ -388,15 +421,11 @@ def build_split_figures(
     fig_chip.update_yaxes(title_text='', range=m1_range, fixedrange=True, showspikes=False, tickfont=dict(size=11), row=5, col=1)
     fig_chip.update_yaxes(title_text='', range=m2_range, fixedrange=True, showspikes=False, tickfont=dict(size=11), row=6, col=1)
 
-    # 【修訂說明 2026-11-20】【修改目的與防呆防錯原因】：
-    # 修改目的：改以副圖內部左上角內嵌標籤（add_annotation, xref='paper', yref='yN domain'）標示各副圖名稱
-    # （外資、投信、自營、資券、≥1000、≥400），徹底解決手機窄螢幕下 yaxis.title 被左邊界裁切遺失之問題。
-    # 防呆防錯原因：第 4 列啟用 secondary_y=True，因此第 5 列對應 y6 domain、第 6 列對應 y7 domain。
     chip_pane_labels = [
         ('y domain', '外資'),
         ('y2 domain', '投信'),
         ('y3 domain', '自營'),
-        ('y4 domain', '資券'),
+        ('y4 domain', '上市資券/維持率' if is_twii else '資券'),
         ('y6 domain', f'≥{major1_thresh}'),
         ('y7 domain', f'≥{major2_thresh}'),
     ]
