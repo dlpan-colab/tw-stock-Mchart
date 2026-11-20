@@ -1,7 +1,7 @@
 """ 
 data_fetcher.py - 整合技術與籌碼資料擷取模組
-(支援含英文後綴台股ETF + TWSE/TPEx官方日K即時補齊 + 大盤加權^TWII上市資券增減擷取 + 雲端增量累積分點引擎 + 集保官網qryStock動態Token多週歷史查詢與id=1-5批次分離 + 賣超負值正規化 + 操作儀錶板盤中報價版 + 富邦10欄並排表格與精準單日分點統計/明細穩定版)
-版本: 202611202100
+(支援含英文後綴台股ETF + TWSE/TPEx官方日K即時補齊 + 大盤加權^TWII上市資券與融資金額(億)擷取 + 雲端增量累積分點引擎 + 集保官網qryStock動態Token多週歷史查詢與id=1-5批次分離 + 賣超負值正規化 + 操作儀錶板盤中報價版 + 富邦10欄並排表格與精準單日分點統計/明細穩定版)
+版本: 202611202145
 """
 import os
 import re
@@ -17,7 +17,7 @@ from datetime import datetime, timedelta
 from urllib.parse import urljoin, urlparse, parse_qs, urlencode, urlunparse
 
 MODULE_NAME = "data_fetcher"
-MODULE_VERSION = "202611202100"
+MODULE_VERSION = "202611202145"
 
 from storage import (
     StockChipStorage,
@@ -256,14 +256,14 @@ def sync_chip_data(
     full_ticker: str = None
 ):
     """
-    智慧增量同步三大法人、資券與集保大戶（支援台股個股、含英文後綴之 ETF，以及大盤加權指數 ^TWII 上市資券）。
+    智慧增量同步三大法人、資券與集保大戶（支援台股個股、含英文後綴之 ETF，以及大盤加權指數 ^TWII 上市資券與融資金額）。
     """
     pure_code = str(pure_code).strip().upper()
     storage = StockChipStorage(pure_code)
 
     # 【修訂說明 2026-11-20】【修改目的與防呆防錯原因】：
-    # 修改目的：開放大盤加權指數 ^TWII 同步上市全市場每日融資與融券增減/餘額（存入 data_^TWII.db margin_short 資料表）。
-    # 防呆防錯原因：^TWII 僅同步資券並回傳空法人與空集保 DataFrame，其餘非台股標的維持直接返回空值。
+    # 修改目的：開放大盤加權指數 ^TWII 同步上市全市場每日融資/融券張數與融資金額（億元）（存入 data_^TWII.db margin_short 資料表）。
+    # 防呆防錯原因：若舊版資料庫尚無 margin_money_bal 數值（全為 0），自動全段重抓補齊融資金額歷史。
     if pure_code == "^TWII":
         if len(df_dates) == 0:
             return (pd.DataFrame(), pd.DataFrame(), pd.DataFrame())
@@ -272,7 +272,14 @@ def sync_chip_data(
         now_tw = datetime.utcnow() + timedelta(hours=8)
         now_tw_date_str = now_tw.strftime('%Y-%m-%d')
 
-        should_fetch_margin = force_refresh
+        existing_ms_df = storage.load_margin_df()
+        missing_money_col = (
+            existing_ms_df.empty
+            or "margin_money_bal" not in existing_ms_df.columns
+            or (existing_ms_df["margin_money_bal"].fillna(0) == 0).all()
+        )
+
+        should_fetch_margin = force_refresh or missing_money_col
         if not should_fetch_margin:
             if not last_margin_date:
                 should_fetch_margin = True
@@ -283,7 +290,7 @@ def sync_chip_data(
                     should_fetch_margin = True
 
         if should_fetch_margin:
-            start_filter = None if force_refresh else last_margin_date
+            start_filter = None if (force_refresh or missing_money_col) else last_margin_date
             margin_records = fetch_twse_total_margin_data(df_dates, start_date_exclusive=start_filter)
             if margin_records:
                 storage.save_margin_data(margin_records)
@@ -503,10 +510,9 @@ def fetch_institutional_investors(
 def fetch_twse_total_margin_data(df_dates: pd.DatetimeIndex, start_date_exclusive: str = None) -> list:
     """
     【修訂說明 2026-11-20】【修改目的與防呆防錯原因】：
-    1. 修改目的：擷取上市大盤（^TWII）全市場每日融資、融券增減張數與餘額
+    1. 修改目的：擷取上市大盤（^TWII）全市場每日融資/融券增減張數與餘額，以及上市融資金額增減與餘額（換算為億元）
        （主資料源：FinMind TaiwanStockTotalMarginPurchaseShortSale；備援補齊最新交易日：證交所 MI_MARGN）。
-    2. 防呆防錯原因：回傳格式嚴格對齊 storage.save_margin_data 之 5 元組
-       (date_str, m_diff, s_diff, m_bal, s_bal)，直接複用既有 margin_short 資料表免改資料庫結構。
+    2. 防呆防錯原因：FinMind MarginPurchaseMoney 單位為「元」（除以 1e8 轉為億元），證交所 MI_MARGN 融資金額(千元)單位為「千元」（除以 1e5 轉為億元），統一以「億元」存入 margin_short 資料表。
     """
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36"
@@ -539,12 +545,16 @@ def fetch_twse_total_margin_data(df_dates: pd.DatetimeIndex, start_date_exclusiv
                     m_yes = float(piv_yes.loc[d_str, "MarginPurchase"]) if "MarginPurchase" in piv_yes.columns and pd.notna(piv_yes.loc[d_str, "MarginPurchase"]) else m_today
                     s_today = float(piv_today.loc[d_str, "ShortSale"]) if "ShortSale" in piv_today.columns and pd.notna(piv_today.loc[d_str, "ShortSale"]) else 0.0
                     s_yes = float(piv_yes.loc[d_str, "ShortSale"]) if "ShortSale" in piv_yes.columns and pd.notna(piv_yes.loc[d_str, "ShortSale"]) else s_today
+                    mm_today = (float(piv_today.loc[d_str, "MarginPurchaseMoney"]) / 1e8) if "MarginPurchaseMoney" in piv_today.columns and pd.notna(piv_today.loc[d_str, "MarginPurchaseMoney"]) else 0.0
+                    mm_yes = (float(piv_yes.loc[d_str, "MarginPurchaseMoney"]) / 1e8) if "MarginPurchaseMoney" in piv_yes.columns and pd.notna(piv_yes.loc[d_str, "MarginPurchaseMoney"]) else mm_today
                     rec_map[str(d_str)] = (
                         str(d_str),
                         m_today - m_yes,
                         s_today - s_yes,
                         m_today,
-                        s_today
+                        s_today,
+                        mm_today - mm_yes,
+                        mm_today
                     )
     except Exception:
         pass
@@ -561,6 +571,7 @@ def fetch_twse_total_margin_data(df_dates: pd.DatetimeIndex, start_date_exclusiv
                     js_t = res_t.json()
                     if js_t.get("stat") == "OK":
                         m_yes, m_today, s_yes, s_today = 0.0, 0.0, 0.0, 0.0
+                        mm_yes_yi, mm_today_yi = 0.0, 0.0
                         for tbl in js_t.get("tables", []):
                             for row in tbl.get("data", []):
                                 if len(row) >= 6:
@@ -571,13 +582,17 @@ def fetch_twse_total_margin_data(df_dates: pd.DatetimeIndex, start_date_exclusiv
                                         m_yes, m_today = yes_v, tod_v
                                     elif "融券(交易單位)" in item_name:
                                         s_yes, s_today = yes_v, tod_v
+                                    elif "融資金額(千元)" in item_name:
+                                        mm_yes_yi, mm_today_yi = yes_v / 1e5, tod_v / 1e5
                         if m_today > 0 or s_today > 0:
                             rec_map[latest_d_str] = (
                                 latest_d_str,
                                 m_today - m_yes,
                                 s_today - s_yes,
                                 m_today,
-                                s_today
+                                s_today,
+                                mm_today_yi - mm_yes_yi,
+                                mm_today_yi
                             )
             except Exception:
                 pass
