@@ -1,6 +1,6 @@
 """
-storage.py - 本地 SQLite 資料庫與股票歷史紀錄管理器 (支援含英文後綴台股ETF與雲端分點增量累積與批次清除分點版)
-版本: 202611180826
+storage.py - 本地 SQLite 資料庫與股票歷史紀錄管理器 (支援含英文後綴台股ETF與雲端分點增量累積與批次清除分點與大盤融資金額欄位向後相容版)
+版本: 202611202145
 """
 
 import os
@@ -17,7 +17,7 @@ from datetime import datetime, timedelta
 import pandas as pd
 
 MODULE_NAME = "storage"
-MODULE_VERSION = "202611180826"
+MODULE_VERSION = "202611202145"
 
 STORAGE_DIR = "."
 HISTORY_FILE = os.path.join(STORAGE_DIR, "stock_history.json")
@@ -523,9 +523,20 @@ class StockChipStorage:
                     margin_diff REAL,
                     short_diff REAL,
                     margin_bal REAL,
-                    short_bal REAL
+                    short_bal REAL,
+                    margin_money_diff REAL DEFAULT 0,
+                    margin_money_bal REAL DEFAULT 0
                 )
             """)
+            # 【修訂說明 2026-11-20】【修改目的與防呆防錯原因】：
+            # 向後相容升級既有資料庫之 margin_short 資料表，補齊融資金額增減（margin_money_diff）與餘額（margin_money_bal）欄位。
+            cur.execute("PRAGMA table_info(margin_short)")
+            ms_cols = {row[1] for row in cur.fetchall()}
+            if "margin_money_diff" not in ms_cols:
+                cur.execute("ALTER TABLE margin_short ADD COLUMN margin_money_diff REAL DEFAULT 0")
+            if "margin_money_bal" not in ms_cols:
+                cur.execute("ALTER TABLE margin_short ADD COLUMN margin_money_bal REAL DEFAULT 0")
+
             cur.execute("""
                 CREATE TABLE IF NOT EXISTS broker_range_rank (
                     base_date TEXT PRIMARY KEY,
@@ -660,12 +671,20 @@ class StockChipStorage:
     def save_margin_data(self, records: list):
         if not records:
             return
+        norm_recs = []
+        for r in records:
+            if len(r) >= 7:
+                norm_recs.append((r[0], r[1], r[2], r[3], r[4], r[5], r[6]))
+            elif len(r) >= 5:
+                norm_recs.append((r[0], r[1], r[2], r[3], r[4], 0.0, 0.0))
+        if not norm_recs:
+            return
         with sqlite3.connect(self.db_path) as conn:
             cur = conn.cursor()
             cur.executemany("""
-                INSERT OR REPLACE INTO margin_short (date, margin_diff, short_diff, margin_bal, short_bal)
-                VALUES (?, ?, ?, ?, ?)
-            """, records)
+                INSERT OR REPLACE INTO margin_short (date, margin_diff, short_diff, margin_bal, short_bal, margin_money_diff, margin_money_bal)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+            """, norm_recs)
             conn.commit()
         sync_db_push(self.pure_code)
 
@@ -674,7 +693,7 @@ class StockChipStorage:
             return pd.DataFrame()
         with sqlite3.connect(self.db_path) as conn:
             df = pd.read_sql_query(
-                "SELECT date, margin_diff, short_diff, margin_bal, short_bal FROM margin_short ORDER BY date ASC",
+                "SELECT date, margin_diff, short_diff, margin_bal, short_bal, margin_money_diff, margin_money_bal FROM margin_short ORDER BY date ASC",
                 conn
             )
         if not df.empty:
