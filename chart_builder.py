@@ -1,6 +1,6 @@
 """
-chart_builder.py - Plotly 圖表建置模組 (主圖1/2緊緻化、指標頁籤乖離率與籌碼分頁標準字典防快取遺失版)
-版本: 202611132225
+chart_builder.py - Plotly 圖表建置模組 (主圖1/2緊緻化、指標頁籤乖離率、籌碼分頁標準字典防快取遺失與副圖Y軸標籤防裁切版)
+版本: 202611202021
 """
 
 from typing import Tuple, Optional, Dict
@@ -10,7 +10,7 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
 MODULE_NAME = "chart_builder"
-MODULE_VERSION = "202611132225"
+MODULE_VERSION = "202611202021"
 
 from data_fetcher import fetch_stock_daily_k, fetch_stock_name
 from indicators import calculate_all_indicators
@@ -229,11 +229,14 @@ def build_split_figures(
             showlegend=False, hoverinfo='none'
         ), row=2, col=1)
 
+    # 【修訂說明 2026-11-20】【修改目的與防呆防錯原因】：
+    # 修改目的：將左邊距 margin.l 統一由 80 調整為 90（與 fig_tech / fig_chip 對齊），維持上下圖表時間軸精準對齊。
+    # 防呆防錯原因：固定左邊距並關閉 autoexpand，避免窄螢幕或大位數刻度將 Y 軸標題推出可視範圍外。
     fig_top.update_layout(
         title=dict(text=f'{c_name or raw_ticker} ({raw_ticker}) ({market_label})', font=dict(size=12)),
         font=dict(size=12), template='plotly_white', hovermode=False, dragmode='pan',
         showlegend=False, height=top_height,
-        margin=dict(l=80, r=15, t=28, b=18, autoexpand=False),
+        margin=dict(l=90, r=15, t=28, b=18, autoexpand=False),
         xaxis_rangeslider_visible=False
     )
     fig_top.update_xaxes(
@@ -283,7 +286,7 @@ def build_split_figures(
     fig_tech.update_layout(
         font=dict(size=12), template='plotly_white', hovermode=False, dragmode='pan',
         showlegend=False, height=tech_height,
-        margin=dict(l=80, r=15, t=8, b=24, autoexpand=False),
+        margin=dict(l=90, r=15, t=8, b=24, autoexpand=False),
         xaxis_rangeslider_visible=False
     )
     for r in range(1, 5):
@@ -296,10 +299,10 @@ def build_split_figures(
         showticklabels=True, tickvals=month_ticks_vals, ticktext=month_ticks_text,
         tickfont=dict(size=11), row=4, col=1
     )
-    fig_tech.update_yaxes(title_text='KD', range=[0, 100], fixedrange=True, showspikes=False, tickfont=dict(size=11), row=1, col=1)
-    fig_tech.update_yaxes(title_text='MACD', range=[macd_min - macd_pad, macd_max + macd_pad], fixedrange=True, showspikes=False, tickfont=dict(size=11), row=2, col=1)
-    fig_tech.update_yaxes(title_text='OBV', range=[obv_min - obv_pad, obv_max + obv_pad], fixedrange=True, showspikes=False, tickfont=dict(size=11), row=3, col=1)
-    fig_tech.update_yaxes(title_text='乖離%', range=[bias_min - bias_pad, bias_max + bias_pad], fixedrange=True, showspikes=False, tickfont=dict(size=11), row=4, col=1)
+    fig_tech.update_yaxes(title_text='KD', title_standoff=6, title_font=dict(size=11), range=[0, 100], fixedrange=True, showspikes=False, tickfont=dict(size=11), row=1, col=1)
+    fig_tech.update_yaxes(title_text='MACD', title_standoff=6, title_font=dict(size=11), range=[macd_min - macd_pad, macd_max + macd_pad], fixedrange=True, showspikes=False, tickfont=dict(size=11), row=2, col=1)
+    fig_tech.update_yaxes(title_text='OBV', title_standoff=6, title_font=dict(size=11), range=[obv_min - obv_pad, obv_max + obv_pad], fixedrange=True, showspikes=False, tickfont=dict(size=11), row=3, col=1)
+    fig_tech.update_yaxes(title_text='乖離%', title_standoff=6, title_font=dict(size=11), range=[bias_min - bias_pad, bias_max + bias_pad], fixedrange=True, showspikes=False, tickfont=dict(size=11), row=4, col=1)
 
     # =====================================================================
     # 3. 頁籤 2【籌碼】副圖：外資、投信、自營、資券、大戶1、大戶2
@@ -352,7 +355,7 @@ def build_split_figures(
     fig_chip.update_layout(
         font=dict(size=12), template='plotly_white', hovermode=False, dragmode='pan',
         showlegend=False, height=chip_height,
-        margin=dict(l=80, r=15, t=8, b=24, autoexpand=False),
+        margin=dict(l=90, r=15, t=8, b=24, autoexpand=False),
         xaxis_rangeslider_visible=False
     )
     for r in range(1, 7):
@@ -365,13 +368,16 @@ def build_split_figures(
         showticklabels=True, tickvals=month_ticks_vals, ticktext=month_ticks_text,
         tickfont=dict(size=11), row=6, col=1
     )
-    fig_chip.update_yaxes(title_text='外資', range=fn_range, fixedrange=True, showspikes=False, tickfont=dict(size=11), row=1, col=1)
-    fig_chip.update_yaxes(title_text='投信', range=tn_range, fixedrange=True, showspikes=False, tickfont=dict(size=11), row=2, col=1)
-    fig_chip.update_yaxes(title_text='自營', range=dn_range, fixedrange=True, showspikes=False, tickfont=dict(size=11), row=3, col=1)
-    fig_chip.update_yaxes(title_text='資券', range=ms_range, fixedrange=True, showspikes=False, tickfont=dict(size=11), secondary_y=False, row=4, col=1)
+    # 【修訂說明 2026-11-20】【修改目的與防呆防錯原因】：
+    # 修改目的：為籌碼頁籤各副圖 Y 軸標題明確指定 title_standoff=6 與 title_font(size=11)，搭配 margin.l=90，
+    # 確保「外資、投信、自營、資券、≥1000、≥400」在手機與窄螢幕下完整顯示不被裁切。
+    fig_chip.update_yaxes(title_text='外資', title_standoff=6, title_font=dict(size=11), range=fn_range, fixedrange=True, showspikes=False, tickfont=dict(size=11), row=1, col=1)
+    fig_chip.update_yaxes(title_text='投信', title_standoff=6, title_font=dict(size=11), range=tn_range, fixedrange=True, showspikes=False, tickfont=dict(size=11), row=2, col=1)
+    fig_chip.update_yaxes(title_text='自營', title_standoff=6, title_font=dict(size=11), range=dn_range, fixedrange=True, showspikes=False, tickfont=dict(size=11), row=3, col=1)
+    fig_chip.update_yaxes(title_text='資券', title_standoff=6, title_font=dict(size=11), range=ms_range, fixedrange=True, showspikes=False, tickfont=dict(size=11), secondary_y=False, row=4, col=1)
     fig_chip.update_yaxes(title_text='', range=ratio_range, showgrid=False, showticklabels=False, fixedrange=True, showspikes=False, tickfont=dict(size=11), secondary_y=True, row=4, col=1)
-    fig_chip.update_yaxes(title_text=f'≥{major1_thresh}', range=m1_range, fixedrange=True, showspikes=False, tickfont=dict(size=11), row=5, col=1)
-    fig_chip.update_yaxes(title_text=f'≥{major2_thresh}', range=m2_range, fixedrange=True, showspikes=False, tickfont=dict(size=11), row=6, col=1)
+    fig_chip.update_yaxes(title_text=f'≥{major1_thresh}', title_standoff=6, title_font=dict(size=11), range=m1_range, fixedrange=True, showspikes=False, tickfont=dict(size=11), row=5, col=1)
+    fig_chip.update_yaxes(title_text=f'≥{major2_thresh}', title_standoff=6, title_font=dict(size=11), range=m2_range, fixedrange=True, showspikes=False, tickfont=dict(size=11), row=6, col=1)
 
     # 【防呆防錯備註 2026-11-13】：
     # 改以標準 Python 字典包裝 fig_tech 與 fig_chip，避免 @st.cache_data 序列化時剝除自訂屬性導致籌碼圖遺失。
