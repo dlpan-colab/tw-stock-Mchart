@@ -1,9 +1,10 @@
 """
 data_fetcher.py - 整合技術與籌碼資料擷取模組
-(支援含英文後綴台股ETF + TWSE/TPEx官方日K即時補齊 + 大盤加權^TWII與櫃買^TWOII資券與融資金額(億)擷取 + 雲端增量累積分點引擎 + 集保官網qryStock動態Token多週歷史查詢與id=1-5批次分離 + 賣超負值正規化 + 操作儀錶板盤中報價版 + 富邦10欄並排表格與精準單日分點統計/明細穩定版)
-版本: 202611202315
+(支援含英文後綴台股ETF + TWSE/TPEx官方日K即時補齊 + 大盤加權^TWII與櫃買^TWOII資券與融資金額(億)擷取 + 雲端增量累積分點引擎 + 集保官網qryStock動態Token多週歷史查詢與id=1-5批次分離 + 賣超負值正規化 + 操作儀錶板盤中報價版 + 富邦10欄並排表格與精準單日分點統計/明細穩定版 + 全市場歷史分點批次增補引擎版)
+版本: 202611211015
 """
 import os
+import io
 import re
 import glob
 import json
@@ -17,11 +18,12 @@ from datetime import datetime, timedelta
 from urllib.parse import urljoin, urlparse, parse_qs, urlencode, urlunparse
 
 MODULE_NAME = "data_fetcher"
-MODULE_VERSION = "202611202315"
+MODULE_VERSION = "202611211015"
 
 from storage import (
     StockChipStorage, COMMON_STOCK_NAMES, load_stock_names_dict,
-    load_stock_history, get_stock_chinese_name, is_tw_stock_or_etf
+    load_stock_history, get_stock_chinese_name, is_tw_stock_or_etf,
+    sync_db_push
 )
 
 FINMIND_TOKEN = ""
@@ -1342,4 +1344,162 @@ def fetch_single_broker_daily_series(detail_url: str, start_date: str, end_date:
 
     df_res = pd.DataFrame(daily_records).drop_duplicates(subset=["日期"]).sort_values("日期").reset_index(drop=True)
     return df_res
+
+
+def batch_sync_all_stocks_brokers(
+    base_date_str: str,
+    lookback_days: int = 1,
+    progress_callback=None
+) -> str:
+    """
+    【修訂說明 2026-11-21】【修改目的與防呆防錯原因】：
+    1. 修改目的：供「⚙️ 參數設定」執行全市場查詢歷史清單之歷史分點批次增補，
+       針對每檔台股個股/ETF，從指定基準日（base_date_str）往前追溯 lookback_days 個有效交易日，
+       逐日補齊 1 / 10 / 20 日買賣超前 10 名統計（broker_range_rank）與前 5 名分點逐日進出明細（broker_daily_trades），
+       寫入本地 SQLite 並同步上傳至 Google Drive 雲端硬碟。
+    2. 防呆防錯原因：
+       - 自動過濾排除 ^ 開頭指數；
+       - 若該基準日已存在完整 w1 / w10 / w20 分點統計快照則直接跳過（增量增補不重複爬蟲）；
+       - 同一檔個股之多個交易日明細合併後僅於該檔結束時執行一次 sync_db_push(code)，降低 Google Drive API 寫入頻率與網路延遲。
+    """
+    hist_list = load_stock_history()
+    stock_items = []
+    seen_codes = set()
+    for item in hist_list:
+        code = str(item.get("code", "")).strip().upper()
+        if not code or code.startswith("^") or not is_tw_stock_or_etf(code) or code in seen_codes:
+            continue
+        seen_codes.add(code)
+        c_name = str(item.get("name", "")).strip() or get_stock_chinese_name(code)
+        stock_items.append((code, c_name))
+
+    if not stock_items:
+        return "目前查詢歷史清單無可增補之台股個股或 ETF。"
+
+    tot_n = len(stock_items)
+    n_days = max(1, int(lookback_days or 1))
+    b_norm = _normalize_mdj_date(base_date_str) or str(base_date_str).strip()[:10]
+
+    def _df_to_rank_recs(df_rank):
+        if df_rank is None or df_rank.empty:
+            return []
+        recs = []
+        for _, r in df_rank.head(10).iterrows():
+            recs.append({
+                "name": str(r.get("分點名稱", "")),
+                "sys": str(r.get("體系", "")),
+                "buy": int(r.get("買進(張)", 0)),
+                "sell": int(r.get("賣出(張)", 0)),
+                "net": int(r.get("買賣超(張)", 0)),
+                "ratio": str(r.get("佔比", "-")),
+            })
+        return recs
+
+    updated_stocks = 0
+    updated_days_total = 0
+    skipped_days_total = 0
+
+    for idx_s, (code, c_name) in enumerate(stock_items, start=1):
+        if progress_callback:
+            progress_callback(idx_s, tot_n, code, c_name, "檢查交易日序列與既有分點資料...")
+
+        storage = StockChipStorage(code)
+        df_k = storage.load_daily_k_df()
+        if df_k is None or df_k.empty:
+            k_res = fetch_stock_daily_k(code, period="1y", force_refresh=False)
+            if k_res and k_res[0] is not None:
+                df_k = k_res[0]
+
+        if df_k is None or df_k.empty:
+            if progress_callback:
+                progress_callback(idx_s, tot_n, code, c_name, "無日K資料，略過")
+            continue
+
+        trade_dates = [d.strftime("%Y-%m-%d") for d in df_k.index]
+        valid_pos = [i for i, d_s in enumerate(trade_dates) if d_s <= b_norm]
+        if not valid_pos:
+            if progress_callback:
+                progress_callback(idx_s, tot_n, code, c_name, f"無 <= {b_norm} 之交易日，略過")
+            continue
+
+        anchor_pos = valid_pos[-1]
+        start_pos = max(0, anchor_pos - n_days + 1)
+        target_indices = list(range(anchor_pos, start_pos - 1, -1))
+
+        stock_changed = False
+        for t_idx in target_indices:
+            end_d_str = trade_dates[t_idx]
+            existing_bundle = storage.load_broker_range_rank(end_d_str)
+            if isinstance(existing_bundle, dict) and all(
+                isinstance(existing_bundle.get(f"w{w}"), dict)
+                and (existing_bundle[f"w{w}"].get("buy") or existing_bundle[f"w{w}"].get("sell"))
+                for w in (1, 10, 20)
+            ):
+                skipped_days_total += 1
+                continue
+
+            if progress_callback:
+                progress_callback(idx_s, tot_n, code, c_name, f"補抓 {end_d_str}（1/10/20日分點與明細）...")
+
+            win_starts = {
+                1: end_d_str,
+                10: trade_dates[max(0, t_idx - 10 + 1)],
+                20: trade_dates[max(0, t_idx - 20 + 1)],
+            }
+            earliest_s = win_starts[20]
+            rank_dfs = {}
+            for w in (1, 10, 20):
+                df_b, df_s = fetch_stock_broker_range_ranking(code, win_starts[w], end_d_str)
+                if (df_b is None or df_b.empty) and (df_s is None or df_s.empty):
+                    time.sleep(0.3)
+                    df_b, df_s = fetch_stock_broker_range_ranking(code, win_starts[w], end_d_str)
+                rank_dfs[w] = (df_b, df_s)
+                time.sleep(0.12)
+
+            broker_url_map = {}
+            for w in (10, 20):
+                df_b, df_s = rank_dfs.get(w, (None, None))
+                for df_side in (df_b, df_s):
+                    if df_side is not None and not df_side.empty:
+                        for _, row in df_side.head(5).iterrows():
+                            b_name = str(row.get("分點名稱", "")).strip()
+                            d_url = str(row.get("明細網址", "")).strip()
+                            if b_name and d_url and b_name not in broker_url_map:
+                                broker_url_map[b_name] = d_url
+
+            for b_name, d_url in broker_url_map.items():
+                df_fresh = fetch_single_broker_daily_series(d_url, earliest_s, end_d_str)
+                if df_fresh is not None and not df_fresh.empty:
+                    storage.save_broker_daily_trades(b_name, df_fresh, sync_cloud=False)
+                time.sleep(0.08)
+
+            day_bundle = dict(existing_bundle) if isinstance(existing_bundle, dict) else {}
+            has_any = False
+            for w in (1, 10, 20):
+                df_b, df_s = rank_dfs.get(w, (None, None))
+                b_recs = _df_to_rank_recs(df_b)
+                s_recs = _df_to_rank_recs(df_s)
+                if b_recs or s_recs:
+                    has_any = True
+                    lbl = end_d_str if w == 1 else f"{win_starts[w]} ~ {end_d_str}"
+                    day_bundle[f"w{w}"] = {
+                        "range_label": lbl,
+                        "buy": b_recs,
+                        "sell": s_recs,
+                    }
+
+            if has_any:
+                storage.save_broker_range_rank(end_d_str, day_bundle, sync_cloud=False)
+                stock_changed = True
+                updated_days_total += 1
+
+        if stock_changed:
+            sync_db_push(code)
+            updated_stocks += 1
+
+    return (
+        f"批次分點增補完成（基準日 {b_norm} 往前 {n_days} 個交易日）："
+        f"共檢查 {tot_n} 檔個股，實際補齊 {updated_stocks} 檔（新增 {updated_days_total} 筆交易日快照），"
+        f"略過已存在完整快照 {skipped_days_total} 筆。"
+    )
 # EOF data_fetcher.py
