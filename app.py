@@ -1,7 +1,7 @@
 """
 app.py - 主應用程式介面與生命週期控制
-(三主頁籤架構：操作儀錶板 / 個股 / 參數設定 + 自選與查詢歷史同步 + 盤中均線多空燈號 + 動態chart_id杜絕跨頁籤殘留 + 批次增補指定基準日起往前N日分點統計與明細版 + 分點15:00前對齊前一交易日與分點統計/分點日況雙頁籤版 + 上下雙複合選單自由輸入置頂/下拉選取不改順序及初始K線30根版)
-版本: 202611211505
+(三主頁籤架構：操作儀錶板 / 個股 / 參數設定 + 自選與查詢歷史同步 + 盤中均線多空燈號 + 動態chart_id杜絕跨頁籤殘留 + 批次增補指定基準日起往前N日分點統計與明細版 + 分點15:00前對齊前一交易日與分點統計/分點日況雙頁籤版 + 上下雙複合選單自由輸入置頂/下拉選取不改順序及初始K線30根 + 全市含上櫃籌碼指定基準日區間批次增補與清除版)
+版本: 202611212025
 """
 
 import os
@@ -13,7 +13,7 @@ import streamlit.components.v1 as components
 import cloud_sync
 
 MODULE_NAME = "app"
-MODULE_VERSION = "202611211505"
+MODULE_VERSION = "202611212025"
 
 
 # 【防呆防錯備註 2026-11-07】：版本控制權由 app.py 作為唯一權威源，動態掃描所有模組最大版本號，杜絕多頭覆寫與重工
@@ -50,6 +50,7 @@ from storage import (
     get_stock_chinese_name,
     clear_recent_margin_data,
     clear_recent_institutional_data,
+    clear_all_stocks_chip_range,
     clear_all_broker_data,
     is_tw_stock_or_etf
 )
@@ -66,7 +67,8 @@ from data_fetcher import (
     fetch_stock_broker_range_ranking,
     fetch_single_broker_daily_series,
     fetch_dashboard_watchlist_rows,
-    get_default_broker_backfill_base_date
+    get_default_broker_backfill_base_date,
+    get_default_chip_backfill_base_date
 )
 
 INDEX_MAP = {
@@ -508,6 +510,8 @@ if "confirm_clear_all" not in st.session_state:
     st.session_state.confirm_clear_all = False
 if "confirm_clear_brokers" not in st.session_state:
     st.session_state.confirm_clear_brokers = False
+if "confirm_clear_chip_type" not in st.session_state:
+    st.session_state.confirm_clear_chip_type = ""
 if "index_select_box" not in st.session_state:
     st.session_state.index_select_box = "選擇主要市場指數..."
 if "ms_counter" not in st.session_state:
@@ -869,20 +873,138 @@ elif selected_main_tab == "⚙️ 參數設定":
         get_cached_dashboard_rows.clear()
         st.success("快取已清除，切換回「📈 個股」頁籤即會重新抓取最新資料。")
 
+    # 【修訂說明 2026-11-21】【修改目的與防呆防錯原因】：
+    # 1. 修改目的：將原單一個股「籌碼資料庫維護」升級為「全市(含上櫃)籌碼資料庫維護」，
+    #    統一依據「籌碼增補基準日」與「往前增補交易籌碼日數」執行資券、法人、大戶三類籌碼之區間批次增補與區間清除。
+    # 2. 防呆防錯原因：清除按鈕皆附二段式確認，僅刪除 [start_date, base_date] 區間內之目標籌碼表紀錄，完整保留區間外歷史資料與其他資料表。
     st.markdown("---")
-    st.markdown("**籌碼資料庫維護**")
-    cur_code_clean = str(st.session_state.stock_id).strip().upper()
-    if st.button(f"🧹 清除 {cur_code_clean} 近 2 週資券並重抓", use_container_width=True):
-        msg_ms = clear_recent_margin_data(cur_code_clean, weeks=2)
-        st.session_state.force_refresh = True
-        get_cached_figures.clear()
-        st.info(msg_ms)
+    st.markdown("**全市(含上櫃)籌碼資料庫維護**")
+    default_chip_date = get_default_chip_backfill_base_date()
+    if isinstance(default_chip_date, str):
+        parsed_chip_date = datetime.strptime(default_chip_date[:10], "%Y-%m-%d").date()
+    elif hasattr(default_chip_date, "date"):
+        parsed_chip_date = default_chip_date.date()
+    else:
+        parsed_chip_date = default_chip_date
 
-    if st.button(f"🧹 清除 {cur_code_clean} 近 6 週法人並重抓", use_container_width=True):
-        msg_inst = clear_recent_institutional_data(cur_code_clean, weeks=6)
-        st.session_state.force_refresh = True
+    chip_base_dt = st.date_input(
+        "籌碼增補基準日（預設16:30前為前一交易日）",
+        value=parsed_chip_date,
+        key="chip_backfill_base_date_input"
+    )
+    chip_days_opt = int(st.number_input(
+        "往前增補交易籌碼日數",
+        min_value=1,
+        max_value=365,
+        value=1,
+        step=1,
+        key="chip_backfill_days_input"
+    ))
+    chip_base_str = chip_base_dt.strftime("%Y-%m-%d")
+
+    # ① 資券籌碼：批次增補 + 區間清除
+    if st.button("📥 批次增補歷史資券籌碼", use_container_width=True):
+        from data_fetcher import batch_sync_all_stocks_margin
+        prog_bar = st.progress(0, text="準備檢查歷史紀錄與增補資券籌碼...")
+        status_txt = st.empty()
+
+        def _on_margin_progress(cur_i, tot_n, c_code, c_name, st_msg):
+            pct = int(cur_i / max(1, tot_n) * 100)
+            prog_bar.progress(min(100, pct), text=f"[{cur_i}/{tot_n}] {c_code} {c_name} - {st_msg}")
+            status_txt.caption(f"目前處理：{c_code} {c_name}（基準日 {chip_base_str} 往前 {chip_days_opt} 日）")
+
+        summary_ms = batch_sync_all_stocks_margin(
+            base_date_str=chip_base_str,
+            lookback_days=int(chip_days_opt),
+            progress_callback=_on_margin_progress
+        )
+        prog_bar.progress(100, text="批次資券籌碼增補完成！")
+        status_txt.empty()
         get_cached_figures.clear()
-        st.info(msg_inst)
+        st.success(summary_ms)
+
+    if st.button("🗑️ 清除資券籌碼資料", use_container_width=True):
+        st.session_state.confirm_clear_chip_type = "margin"
+        st.rerun()
+
+    # ② 法人籌碼：批次增補 + 區間清除
+    if st.button("📥 批次增補歷史法人籌碼", use_container_width=True):
+        from data_fetcher import batch_sync_all_stocks_institutional
+        prog_bar = st.progress(0, text="準備檢查歷史紀錄與增補法人籌碼...")
+        status_txt = st.empty()
+
+        def _on_inst_progress(cur_i, tot_n, c_code, c_name, st_msg):
+            pct = int(cur_i / max(1, tot_n) * 100)
+            prog_bar.progress(min(100, pct), text=f"[{cur_i}/{tot_n}] {c_code} {c_name} - {st_msg}")
+            status_txt.caption(f"目前處理：{c_code} {c_name}（基準日 {chip_base_str} 往前 {chip_days_opt} 日）")
+
+        summary_inst = batch_sync_all_stocks_institutional(
+            base_date_str=chip_base_str,
+            lookback_days=int(chip_days_opt),
+            progress_callback=_on_inst_progress
+        )
+        prog_bar.progress(100, text="批次法人籌碼增補完成！")
+        status_txt.empty()
+        get_cached_figures.clear()
+        st.success(summary_inst)
+
+    if st.button("🗑️ 清除法人籌碼資料", use_container_width=True):
+        st.session_state.confirm_clear_chip_type = "institutional"
+        st.rerun()
+
+    # ③ 大戶籌碼：批次增補 + 區間清除
+    if st.button("📥 批次增補歷史大戶籌碼", use_container_width=True):
+        from data_fetcher import batch_sync_all_stocks_holding
+        prog_bar = st.progress(0, text="準備檢查歷史紀錄與增補大戶籌碼...")
+        status_txt = st.empty()
+
+        def _on_hold_progress(cur_i, tot_n, c_code, c_name, st_msg):
+            pct = int(cur_i / max(1, tot_n) * 100)
+            prog_bar.progress(min(100, pct), text=f"[{cur_i}/{tot_n}] {c_code} {c_name} - {st_msg}")
+            status_txt.caption(f"目前處理：{c_code} {c_name}（基準日 {chip_base_str} 往前 {chip_days_opt} 日）")
+
+        summary_hold = batch_sync_all_stocks_holding(
+            base_date_str=chip_base_str,
+            lookback_days=int(chip_days_opt),
+            progress_callback=_on_hold_progress
+        )
+        prog_bar.progress(100, text="批次大戶籌碼增補完成！")
+        status_txt.empty()
+        get_cached_figures.clear()
+        st.success(summary_hold)
+
+    if st.button("🗑️ 清除大戶籌碼資料", use_container_width=True):
+        st.session_state.confirm_clear_chip_type = "holding"
+        st.rerun()
+
+    # 二段式確認清除（依籌碼增補基準日＋往前增補交易籌碼日數）
+    pending_chip_clr = st.session_state.get("confirm_clear_chip_type", "")
+    if pending_chip_clr in ("margin", "institutional", "holding"):
+        chip_label_map = {
+            "margin": "資券籌碼資料",
+            "institutional": "法人籌碼資料",
+            "holding": "大戶籌碼資料",
+        }
+        cur_lbl = chip_label_map[pending_chip_clr]
+        st.warning(
+            f"⚠️ 確定要清除所有上市／上櫃個股於基準日 **{chip_base_str}** 往前 **{chip_days_opt}** 個交易日區間內之「**{cur_lbl}**」嗎？（區間外更早歷史資料與其他資料表將完整保留）"
+        )
+        cc_yes, cc_no = st.columns(2)
+        with cc_yes:
+            if st.button(f"確定清除{cur_lbl}", key="btn_confirm_clear_chip_yes", use_container_width=True):
+                with st.spinner(f"正在清除基準日 {chip_base_str} 往前 {chip_days_opt} 日之{cur_lbl}..."):
+                    res_chip_msg = clear_all_stocks_chip_range(
+                        chip_type=pending_chip_clr,
+                        base_date_str=chip_base_str,
+                        lookback_days=int(chip_days_opt)
+                    )
+                st.session_state.confirm_clear_chip_type = ""
+                get_cached_figures.clear()
+                st.success(res_chip_msg)
+        with cc_no:
+            if st.button("取消清除", key="btn_confirm_clear_chip_no", use_container_width=True):
+                st.session_state.confirm_clear_chip_type = ""
+                st.rerun()
 
     st.markdown("---")
     st.markdown("**全市場分點批次增補與維護**")
