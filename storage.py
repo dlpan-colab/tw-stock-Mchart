@@ -1,6 +1,7 @@
 """
-storage.py - 本地 SQLite 資料庫與股票歷史紀錄管理器 (支援含英文後綴台股ETF與雲端分點增量累積與批次清除分點與大盤融資金額欄位向後相容版)
-版本: 202611202145
+storage.py - 本地 SQLite 資料庫與股票歷史紀錄管理器
+(支援含英文後綴台股ETF與雲端分點增量累積與批次清除分點與大盤融資金額欄位向後相容與多日歷史分點統計全載入版)
+版本: 202611210850
 """
 
 import os
@@ -17,7 +18,7 @@ from datetime import datetime, timedelta
 import pandas as pd
 
 MODULE_NAME = "storage"
-MODULE_VERSION = "202611202145"
+MODULE_VERSION = "202611210850"
 
 STORAGE_DIR = "."
 HISTORY_FILE = os.path.join(STORAGE_DIR, "stock_history.json")
@@ -35,8 +36,8 @@ def is_tw_stock_or_etf(code: str) -> bool:
 COMMON_STOCK_NAMES = {
     # 主要市場指數
     "^TWII": "加權指數", "^TWOII": "櫃買指數",
-    "^DJI": "道瓊指數", "^IXIC": "那斯達克", "^SOX": "費城半導體",
-    "^GSPC": "標普500", "^N225": "日經225", "^KS11": "韓國綜合",
+    "^DJI": "道瓊指數", "^IXIC": "那斯達克", "^SOX": "費城半導體", "^GSPC": "標普500",
+    "^N225": "日經225", "^KS11": "韓國綜合",
     "^FTSE": "英國富時100", "^GDAXI": "德國DAX", "^FCHI": "法國CAC40",
     # 常用台股 ETF（含反向與槓桿型）
     "0050": "元大台灣50", "0056": "元大高股息", "00878": "國泰永續高股息",
@@ -90,8 +91,8 @@ def _do_sync_cloud_push(allow_empty_history: bool = False):
                 try:
                     with open(HISTORY_FILE, "r", encoding="utf-8") as f:
                         chk_data = json.load(f)
-                        if not chk_data or len(chk_data) == 0:
-                            can_push = False
+                    if not chk_data or len(chk_data) == 0:
+                        can_push = False
                 except Exception:
                     can_push = False
             if can_push:
@@ -189,6 +190,7 @@ def get_stock_chinese_name(pure_code: str) -> str:
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
     }
+
     url_twse = f"https://isin.twse.com.tw/isin/single_main.jsp?owncode={pure_code}&stockname="
     for attempt in range(2):
         try:
@@ -265,10 +267,7 @@ def _recover_history_from_databases() -> list:
         if sync_client.service and sync_client.folder_id:
             q = f"'{sync_client.folder_id}' in parents and name contains 'data_' and name contains '.db' and trashed = false"
             res = sync_client.service.files().list(
-                q=q,
-                fields="files(id, name, modifiedTime)",
-                orderBy="modifiedTime desc",
-                pageSize=50
+                q=q, fields="files(id, name, modifiedTime)", orderBy="modifiedTime desc", pageSize=50
             ).execute()
             files = res.get("files", [])
             for f in files:
@@ -443,9 +442,7 @@ def clear_all_broker_data() -> str:
         if sync_client.service and sync_client.folder_id:
             q = f"'{sync_client.folder_id}' in parents and name contains 'data_' and name contains '.db' and trashed = false"
             res = sync_client.service.files().list(
-                q=q,
-                fields="files(id, name)",
-                pageSize=200
+                q=q, fields="files(id, name)", pageSize=200
             ).execute()
             for f in res.get("files", []):
                 fname = f.get("name", "")
@@ -476,13 +473,12 @@ def clear_all_broker_data() -> str:
         except Exception as e:
             print(f"[Storage] 清除 {pure_code} 分點資料失敗: {e}")
 
-    return f"已成功清除 {cleared_count} 檔個股之所有分點統計與逐日明細（日線、法人、資券與集保大戶資料完整保留）。"
+    return f"已成功清除 {cleared_count} 檔個股之分點統計與分點日況明細（日線、法人、資券與集保大戶資料完整保留）。"
 
 
 class StockChipStorage:
     def __init__(self, pure_code: str):
         self.pure_code = str(pure_code).strip().upper()
-        self.is_index = self.pure_code.startswith("^")
         self.db_name = f"data_{self.pure_code}.db"
         self.db_path = os.path.join(STORAGE_DIR, self.db_name)
         sync_db_pull(self.pure_code)
@@ -490,8 +486,8 @@ class StockChipStorage:
 
     def _init_db(self):
         with sqlite3.connect(self.db_path) as conn:
-            cur = conn.cursor()
-            cur.execute("""
+            cursor = conn.cursor()
+            cursor.execute('''
                 CREATE TABLE IF NOT EXISTS daily_k (
                     date TEXT PRIMARY KEY,
                     open REAL,
@@ -500,305 +496,354 @@ class StockChipStorage:
                     close REAL,
                     volume REAL
                 )
-            """)
-            cur.execute("""
+            ''')
+            cursor.execute('''
                 CREATE TABLE IF NOT EXISTS institutional_investors (
                     date TEXT PRIMARY KEY,
                     foreign_net REAL,
                     trust_net REAL,
                     dealer_net REAL
                 )
-            """)
-            cur.execute("""
-                CREATE TABLE IF NOT EXISTS shareholding_distribution (
-                    date TEXT,
-                    level INTEGER,
-                    percent REAL,
-                    PRIMARY KEY (date, level)
-                )
-            """)
-            cur.execute("""
+            ''')
+            # 【修訂說明 2026-11-20】【修改目的與防呆防錯原因】：
+            # 新增 margin_money_diff（融資金額增減，億元）與 margin_money_bal（融資金額餘額，億元）兩欄位，
+            # 供上市加權指數（^TWII）與櫃買指數（^TWOII）儲存融資金額變動，並自動為舊資料庫執行 ALTER TABLE 補欄。
+            cursor.execute('''
                 CREATE TABLE IF NOT EXISTS margin_short (
                     date TEXT PRIMARY KEY,
                     margin_diff REAL,
                     short_diff REAL,
                     margin_bal REAL,
                     short_bal REAL,
-                    margin_money_diff REAL DEFAULT 0,
-                    margin_money_bal REAL DEFAULT 0
+                    margin_money_diff REAL DEFAULT 0.0,
+                    margin_money_bal REAL DEFAULT 0.0
                 )
-            """)
-            # 【修訂說明 2026-11-20】【修改目的與防呆防錯原因】：
-            # 向後相容升級既有資料庫之 margin_short 資料表，補齊融資金額增減（margin_money_diff）與餘額（margin_money_bal）欄位。
-            cur.execute("PRAGMA table_info(margin_short)")
-            ms_cols = {row[1] for row in cur.fetchall()}
+            ''')
+            cursor.execute("PRAGMA table_info(margin_short)")
+            ms_cols = {row[1] for row in cursor.fetchall()}
             if "margin_money_diff" not in ms_cols:
-                cur.execute("ALTER TABLE margin_short ADD COLUMN margin_money_diff REAL DEFAULT 0")
+                cursor.execute("ALTER TABLE margin_short ADD COLUMN margin_money_diff REAL DEFAULT 0.0")
             if "margin_money_bal" not in ms_cols:
-                cur.execute("ALTER TABLE margin_short ADD COLUMN margin_money_bal REAL DEFAULT 0")
+                cursor.execute("ALTER TABLE margin_short ADD COLUMN margin_money_bal REAL DEFAULT 0.0")
 
-            cur.execute("""
-                CREATE TABLE IF NOT EXISTS broker_range_rank (
-                    base_date TEXT PRIMARY KEY,
-                    rank_json TEXT,
-                    updated_at TEXT
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS shareholding_distribution (
+                    date TEXT,
+                    level INTEGER,
+                    holders INTEGER,
+                    shares INTEGER,
+                    percent REAL,
+                    PRIMARY KEY (date, level)
                 )
-            """)
-            cur.execute("""
+            ''')
+            cursor.execute('''
                 CREATE TABLE IF NOT EXISTS broker_daily_trades (
                     broker_name TEXT,
-                    date TEXT,
-                    buy_vol INTEGER,
-                    sell_vol INTEGER,
-                    net_vol INTEGER,
-                    PRIMARY KEY (broker_name, date)
+                    trade_date TEXT,
+                    buy_sheets INTEGER DEFAULT 0,
+                    sell_sheets INTEGER DEFAULT 0,
+                    net_sheets INTEGER DEFAULT 0,
+                    PRIMARY KEY (broker_name, trade_date)
                 )
-            """)
+            ''')
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS broker_range_rank (
+                    range_date TEXT,
+                    win_days INTEGER,
+                    side TEXT,
+                    rank INTEGER,
+                    broker_name TEXT,
+                    broker_sys TEXT,
+                    buy_sheets INTEGER DEFAULT 0,
+                    sell_sheets INTEGER DEFAULT 0,
+                    net_sheets INTEGER DEFAULT 0,
+                    ratio_str TEXT,
+                    range_label TEXT,
+                    PRIMARY KEY (range_date, win_days, side, rank)
+                )
+            ''')
+            cursor.execute("DELETE FROM shareholding_distribution WHERE level > 15 OR level < 1")
             conn.commit()
 
-    def get_latest_daily_k_date(self):
+    def get_latest_daily_k_date(self) -> str:
         with sqlite3.connect(self.db_path) as conn:
-            cur = conn.cursor()
-            if self.is_index:
-                cur.execute("SELECT MAX(date) FROM daily_k WHERE open IS NOT NULL")
-            else:
-                cur.execute("SELECT MAX(date) FROM daily_k WHERE volume > 0")
-            row = cur.fetchone()
-            return row[0] if row and row[0] else None
-
-    def get_latest_inst_date(self):
-        with sqlite3.connect(self.db_path) as conn:
-            cur = conn.cursor()
-            cur.execute("SELECT MAX(date) FROM institutional_investors")
-            row = cur.fetchone()
-            return row[0] if row and row[0] else None
-
-    def get_latest_margin_date(self):
-        with sqlite3.connect(self.db_path) as conn:
-            cur = conn.cursor()
-            cur.execute("SELECT MAX(date) FROM margin_short")
-            row = cur.fetchone()
-            return row[0] if row and row[0] else None
-
-    def get_latest_holding_date(self):
-        with sqlite3.connect(self.db_path) as conn:
-            cur = conn.cursor()
-            cur.execute("SELECT MAX(date) FROM shareholding_distribution")
-            row = cur.fetchone()
-            return row[0] if row and row[0] else None
+            res = conn.execute("SELECT MAX(date) FROM daily_k").fetchone()
+            return res[0] if res and res[0] else ""
 
     def save_daily_k_df(self, df: pd.DataFrame):
         if df is None or df.empty:
             return
         records = []
-        for d, row in df.iterrows():
-            d_str = d.strftime('%Y-%m-%d') if hasattr(d, 'strftime') else str(d)[:10]
-            vol_val = float(row['Volume']) if not pd.isna(row['Volume']) else 0.0
-            if not self.is_index and vol_val <= 0:
-                continue
-            if pd.isna(row['Open']) or pd.isna(row['Close']):
-                continue
+        for idx, row in df.iterrows():
+            d_str = idx.strftime('%Y-%m-%d') if hasattr(idx, 'strftime') else str(idx)[:10]
             records.append((
                 d_str,
                 float(row['Open']),
                 float(row['High']),
                 float(row['Low']),
                 float(row['Close']),
-                vol_val
+                float(row['Volume'])
             ))
-        if records:
-            with sqlite3.connect(self.db_path) as conn:
-                cur = conn.cursor()
-                cur.executemany("""
-                    INSERT OR REPLACE INTO daily_k (date, open, high, low, close, volume)
-                    VALUES (?, ?, ?, ?, ?, ?)
-                """, records)
-                conn.commit()
-            sync_db_push(self.pure_code)
+        with sqlite3.connect(self.db_path) as conn:
+            conn.executemany('''
+                INSERT OR REPLACE INTO daily_k (date, open, high, low, close, volume)
+                VALUES (?, ?, ?, ?, ?, ?)
+            ''', records)
+            conn.commit()
+        sync_db_push(self.pure_code)
 
     def load_daily_k_df(self) -> pd.DataFrame:
-        if not os.path.exists(self.db_path):
-            return pd.DataFrame()
         with sqlite3.connect(self.db_path) as conn:
-            if self.is_index:
-                df = pd.read_sql_query(
-                    "SELECT date, open, high, low, close, volume FROM daily_k WHERE open IS NOT NULL ORDER BY date ASC",
-                    conn
-                )
-            else:
-                df = pd.read_sql_query(
-                    "SELECT date, open, high, low, close, volume FROM daily_k WHERE volume > 0 ORDER BY date ASC",
-                    conn
-                )
+            df = pd.read_sql_query("SELECT * FROM daily_k ORDER BY date ASC", conn)
         if df.empty:
             return pd.DataFrame()
-        df['date'] = pd.to_datetime(df['date'])
-        df.set_index('date', inplace=True)
-        df.index.name = 'Date'
+        df['Date'] = pd.to_datetime(df['date'])
+        df.set_index('Date', inplace=True)
         df.rename(columns={
-            'open': 'Open',
-            'high': 'High',
-            'low': 'Low',
-            'close': 'Close',
-            'volume': 'Volume'
+            'open': 'Open', 'high': 'High', 'low': 'Low',
+            'close': 'Close', 'volume': 'Volume'
         }, inplace=True)
-        return df
+        return df[['Open', 'High', 'Low', 'Close', 'Volume']]
+
+    def get_latest_institutional_date(self) -> str:
+        with sqlite3.connect(self.db_path) as conn:
+            res = conn.execute("SELECT MAX(date) FROM institutional_investors").fetchone()
+            return res[0] if res and res[0] else ""
+
+    def get_latest_margin_date(self) -> str:
+        with sqlite3.connect(self.db_path) as conn:
+            res = conn.execute("SELECT MAX(date) FROM margin_short").fetchone()
+            return res[0] if res and res[0] else ""
+
+    def get_latest_holding_date(self) -> str:
+        with sqlite3.connect(self.db_path) as conn:
+            res = conn.execute("SELECT MAX(date) FROM shareholding_distribution").fetchone()
+            return res[0] if res and res[0] else ""
 
     def save_institutional_data(self, records: list):
         if not records:
             return
         with sqlite3.connect(self.db_path) as conn:
-            cur = conn.cursor()
-            cur.executemany("""
+            conn.executemany('''
                 INSERT OR REPLACE INTO institutional_investors (date, foreign_net, trust_net, dealer_net)
                 VALUES (?, ?, ?, ?)
-            """, records)
+            ''', records)
             conn.commit()
         sync_db_push(self.pure_code)
-
-    def load_institutional_df(self) -> pd.DataFrame:
-        if not os.path.exists(self.db_path):
-            return pd.DataFrame()
-        with sqlite3.connect(self.db_path) as conn:
-            df = pd.read_sql_query(
-                "SELECT date, foreign_net, trust_net, dealer_net FROM institutional_investors ORDER BY date ASC",
-                conn
-            )
-        if not df.empty:
-            df['date'] = pd.to_datetime(df['date'])
-        return df
 
     def save_margin_data(self, records: list):
+        """
+        【修訂說明 2026-11-20】【修改目的與防呆防錯原因】：
+        同時支援 5 欄（個股：date, margin_diff, short_diff, margin_bal, short_bal）
+        與 7 欄（大盤/櫃買：含 margin_money_diff, margin_money_bal 億元）寫入格式，維持向後相容。
+        """
         if not records:
             return
-        norm_recs = []
+        norm_records = []
         for r in records:
             if len(r) >= 7:
-                norm_recs.append((r[0], r[1], r[2], r[3], r[4], r[5], r[6]))
-            elif len(r) >= 5:
-                norm_recs.append((r[0], r[1], r[2], r[3], r[4], 0.0, 0.0))
-        if not norm_recs:
-            return
+                norm_records.append((r[0], r[1], r[2], r[3], r[4], r[5], r[6]))
+            else:
+                norm_records.append((r[0], r[1], r[2], r[3], r[4], 0.0, 0.0))
         with sqlite3.connect(self.db_path) as conn:
-            cur = conn.cursor()
-            cur.executemany("""
-                INSERT OR REPLACE INTO margin_short (date, margin_diff, short_diff, margin_bal, short_bal, margin_money_diff, margin_money_bal)
+            conn.executemany('''
+                INSERT OR REPLACE INTO margin_short
+                (date, margin_diff, short_diff, margin_bal, short_bal, margin_money_diff, margin_money_bal)
                 VALUES (?, ?, ?, ?, ?, ?, ?)
-            """, norm_recs)
+            ''', norm_records)
             conn.commit()
         sync_db_push(self.pure_code)
-
-    def load_margin_df(self) -> pd.DataFrame:
-        if not os.path.exists(self.db_path):
-            return pd.DataFrame()
-        with sqlite3.connect(self.db_path) as conn:
-            df = pd.read_sql_query(
-                "SELECT date, margin_diff, short_diff, margin_bal, short_bal, margin_money_diff, margin_money_bal FROM margin_short ORDER BY date ASC",
-                conn
-            )
-        if not df.empty:
-            df['date'] = pd.to_datetime(df['date'])
-        return df
 
     def save_holding_data(self, records: list):
         if not records:
             return
+        valid_records = [r for r in records if 1 <= int(r[1]) <= 15]
+        if not valid_records:
+            return
         with sqlite3.connect(self.db_path) as conn:
-            cur = conn.cursor()
-            cur.executemany("""
-                INSERT OR REPLACE INTO shareholding_distribution (date, level, percent)
-                VALUES (?, ?, ?)
-            """, records)
+            conn.executemany('''
+                INSERT OR REPLACE INTO shareholding_distribution (date, level, holders, shares, percent)
+                VALUES (?, ?, ?, ?, ?)
+            ''', valid_records)
             conn.commit()
         sync_db_push(self.pure_code)
 
+    def load_institutional_df(self) -> pd.DataFrame:
+        with sqlite3.connect(self.db_path) as conn:
+            df = pd.read_sql_query("SELECT * FROM institutional_investors ORDER BY date ASC", conn)
+        if not df.empty:
+            df['date'] = pd.to_datetime(df['date'])
+        return df
+
+    def load_margin_df(self) -> pd.DataFrame:
+        with sqlite3.connect(self.db_path) as conn:
+            df = pd.read_sql_query("SELECT * FROM margin_short ORDER BY date ASC", conn)
+        if not df.empty:
+            df['date'] = pd.to_datetime(df['date'])
+            if 'margin_money_diff' not in df.columns:
+                df['margin_money_diff'] = 0.0
+            if 'margin_money_bal' not in df.columns:
+                df['margin_money_bal'] = 0.0
+        return df
+
     def load_holding_df(self) -> pd.DataFrame:
-        if not os.path.exists(self.db_path):
-            return pd.DataFrame()
         with sqlite3.connect(self.db_path) as conn:
             df = pd.read_sql_query(
-                "SELECT date, level, percent FROM shareholding_distribution ORDER BY date ASC",
+                "SELECT * FROM shareholding_distribution WHERE level >= 1 AND level <= 15 ORDER BY date ASC, level ASC",
                 conn
             )
         if not df.empty:
             df['date'] = pd.to_datetime(df['date'])
         return df
 
-    def save_broker_range_rank(self, base_date: str, rank_bundle: dict, sync_cloud: bool = True):
-        if not base_date or not isinstance(rank_bundle, dict):
-            return
-        now_str = (datetime.utcnow() + timedelta(hours=8)).strftime("%Y-%m-%d %H:%M:%S")
-        payload_str = json.dumps(rank_bundle, ensure_ascii=False)
-        with sqlite3.connect(self.db_path) as conn:
-            cur = conn.cursor()
-            cur.execute("""
-                INSERT OR REPLACE INTO broker_range_rank (base_date, rank_json, updated_at)
-                VALUES (?, ?, ?)
-            """, (str(base_date)[:10], payload_str, now_str))
-            conn.commit()
-        if sync_cloud:
-            sync_db_push(self.pure_code)
-
-    def load_broker_range_rank(self, base_date: str):
-        if not base_date or not os.path.exists(self.db_path):
-            return None
-        with sqlite3.connect(self.db_path) as conn:
-            cur = conn.cursor()
-            cur.execute(
-                "SELECT rank_json FROM broker_range_rank WHERE base_date = ?",
-                (str(base_date)[:10],)
-            )
-            row = cur.fetchone()
-        if not row or not row[0]:
-            return None
-        try:
-            parsed = json.loads(row[0])
-            if isinstance(parsed, dict) and all(k in parsed for k in ("w1", "w10", "w20", "w60")):
-                return parsed
-        except Exception:
-            pass
-        return None
-
-    def save_broker_daily_trades(self, broker_name: str, df_daily: pd.DataFrame, sync_cloud: bool = True):
+    # =====================================================================
+    # 雲端分點資料增量累積與讀取 API
+    # =====================================================================
+    def save_broker_daily_trades(self, broker_name: str, df_trades: pd.DataFrame, sync_cloud: bool = True):
+        """增量寫入單一券商分點逐日買賣超張數明細"""
         b_name = str(broker_name or "").strip()
-        if not b_name or df_daily is None or df_daily.empty:
+        if not b_name or df_trades is None or df_trades.empty:
             return
         records = []
-        for _, r in df_daily.iterrows():
+        for _, r in df_trades.iterrows():
             d_str = str(r.get("日期", "")).strip()[:10]
             if not d_str:
                 continue
-            buy_v = int(r.get("買進(張)", 0) or 0)
-            sell_v = int(r.get("賣出(張)", 0) or 0)
-            # 【修訂說明 2026-11-18】【修改目的與防呆防錯原因】：
-            # 修改目的：寫入資料庫時強制以 buy_v - sell_v 計算真實淨買賣超，確保買超為正、賣超為負。
-            # 防呆防錯原因：防止任何呼叫端傳入未帶負號之單邊買賣超數值污染資料庫。
-            net_v = buy_v - sell_v
-            records.append((b_name, d_str, buy_v, sell_v, net_v))
+            b_val = int(r.get("買進(張)", 0) or 0)
+            s_val = int(r.get("賣出(張)", 0) or 0)
+            n_val = int(r.get("買賣超(張)", b_val - s_val) or 0)
+            records.append((b_name, d_str, b_val, s_val, n_val))
         if not records:
             return
         with sqlite3.connect(self.db_path) as conn:
-            cur = conn.cursor()
-            cur.executemany("""
-                INSERT OR REPLACE INTO broker_daily_trades (broker_name, date, buy_vol, sell_vol, net_vol)
+            conn.executemany('''
+                INSERT OR REPLACE INTO broker_daily_trades
+                (broker_name, trade_date, buy_sheets, sell_sheets, net_sheets)
                 VALUES (?, ?, ?, ?, ?)
-            """, records)
+            ''', records)
             conn.commit()
         if sync_cloud:
             sync_db_push(self.pure_code)
 
     def load_broker_daily_series(self, broker_name: str, start_date: str, end_date: str) -> pd.DataFrame:
+        """從本地/雲端資料庫讀取指定分點於起訖日期區間內之逐日買賣超序列"""
         b_name = str(broker_name or "").strip()
-        if not b_name or not os.path.exists(self.db_path):
-            return pd.DataFrame()
-        s_iso = str(start_date)[:10]
-        e_iso = str(end_date)[:10]
+        if not b_name:
+            return pd.DataFrame(columns=["日期", "買進(張)", "賣出(張)", "買賣超(張)"])
         with sqlite3.connect(self.db_path) as conn:
-            df = pd.read_sql_query("""
-                SELECT date AS "日期", buy_vol AS "買進(張)", sell_vol AS "賣出(張)", net_vol AS "買賣超(張)"
+            df = pd.read_sql_query('''
+                SELECT trade_date AS 日期, buy_sheets AS "買進(張)", sell_sheets AS "賣出(張)", net_sheets AS "買賣超(張)"
                 FROM broker_daily_trades
-                WHERE broker_name = ? AND date >= ? AND date <= ?
-                ORDER BY date ASC
-            """, conn, params=(b_name, s_iso, e_iso))
+                WHERE broker_name = ? AND trade_date >= ? AND trade_date <= ?
+                ORDER BY trade_date ASC
+            ''', conn, params=(b_name, start_date, end_date))
         return df
+
+    def save_broker_range_rank(self, range_date: str, bundle_dict: dict, sync_cloud: bool = True):
+        """儲存指定基準日之 1/10/20/60 日買賣超前 10 名統計快照"""
+        r_date = str(range_date or "").strip()[:10]
+        if not r_date or not isinstance(bundle_dict, dict):
+            return
+        records = []
+        for win_days in (1, 10, 20, 60):
+            w_obj = bundle_dict.get(f"w{win_days}")
+            if not isinstance(w_obj, dict):
+                continue
+            r_label = str(w_obj.get("range_label", ""))
+            for side in ("buy", "sell"):
+                rows = w_obj.get(side, [])
+                for idx, item in enumerate(rows[:10], start=1):
+                    records.append((
+                        r_date,
+                        int(win_days),
+                        side,
+                        int(idx),
+                        str(item.get("name", "")),
+                        str(item.get("sys", "")),
+                        int(item.get("buy", 0)),
+                        int(item.get("sell", 0)),
+                        int(item.get("net", 0)),
+                        str(item.get("ratio", "-")),
+                        r_label
+                    ))
+        if not records:
+            return
+        with sqlite3.connect(self.db_path) as conn:
+            conn.execute("DELETE FROM broker_range_rank WHERE range_date = ?", (r_date,))
+            conn.executemany('''
+                INSERT OR REPLACE INTO broker_range_rank
+                (range_date, win_days, side, rank, broker_name, broker_sys, buy_sheets, sell_sheets, net_sheets, ratio_str, range_label)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ''', records)
+            conn.commit()
+        if sync_cloud:
+            sync_db_push(self.pure_code)
+
+    def load_broker_range_rank(self, range_date: str) -> dict:
+        """讀取指定基準日之分點區間統計快照，若無資料回傳 None"""
+        r_date = str(range_date or "").strip()[:10]
+        if not r_date:
+            return None
+        with sqlite3.connect(self.db_path) as conn:
+            rows = conn.execute('''
+                SELECT win_days, side, rank, broker_name, broker_sys, buy_sheets, sell_sheets, net_sheets, ratio_str, range_label
+                FROM broker_range_rank
+                WHERE range_date = ?
+                ORDER BY win_days ASC, side ASC, rank ASC
+            ''', (r_date,)).fetchall()
+        if not rows:
+            return None
+        result = {}
+        for win_days, side, rank, b_name, b_sys, b_sh, s_sh, n_sh, r_str, r_lbl in rows:
+            w_key = f"w{int(win_days)}"
+            if w_key not in result:
+                result[w_key] = {"range_label": r_lbl or "", "buy": [], "sell": []}
+            if r_lbl and not result[w_key]["range_label"]:
+                result[w_key]["range_label"] = r_lbl
+            result[w_key][side].append({
+                "name": b_name,
+                "sys": b_sys,
+                "buy": int(b_sh or 0),
+                "sell": int(s_sh or 0),
+                "net": int(n_sh or 0),
+                "ratio": r_str or "-"
+            })
+        return result
+
+    def load_all_broker_range_ranks(self) -> dict:
+        """
+        【修訂說明 2026-11-21】【修改目的與防呆防錯原因】：
+        修改目的：一次性讀取本地已下載 SQLite 資料庫（broker_range_rank）中所有已累積之歷史基準日分點統計快照，
+        回傳 {range_date: bundle_dict}，供主圖十字線切換至前一日（如 11/19）時即時呈現，避免隔日基準日推進後看不到前一日紀錄。
+        防呆防錯原因：僅查詢本地已存在之 data_{code}.db（耗時 < 3ms，零額外雲端或網站網路請求），不影響既有單日查詢介面。
+        """
+        with sqlite3.connect(self.db_path) as conn:
+            rows = conn.execute('''
+                SELECT range_date, win_days, side, rank, broker_name, broker_sys, buy_sheets, sell_sheets, net_sheets, ratio_str, range_label
+                FROM broker_range_rank
+                ORDER BY range_date ASC, win_days ASC, side ASC, rank ASC
+            ''').fetchall()
+        if not rows:
+            return {}
+        by_date = {}
+        for r_date, win_days, side, rank, b_name, b_sys, b_sh, s_sh, n_sh, r_str, r_lbl in rows:
+            d_key = str(r_date or "").strip()[:10]
+            if not d_key:
+                continue
+            if d_key not in by_date:
+                by_date[d_key] = {}
+            w_key = f"w{int(win_days)}"
+            if w_key not in by_date[d_key]:
+                by_date[d_key][w_key] = {"range_label": r_lbl or "", "buy": [], "sell": []}
+            if r_lbl and not by_date[d_key][w_key]["range_label"]:
+                by_date[d_key][w_key]["range_label"] = r_lbl
+            by_date[d_key][w_key][side].append({
+                "name": b_name,
+                "sys": b_sys,
+                "buy": int(b_sh or 0),
+                "sell": int(s_sh or 0),
+                "net": int(n_sh or 0),
+                "ratio": r_str or "-"
+            })
+        return by_date
 # EOF storage.py
