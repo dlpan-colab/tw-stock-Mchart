@@ -1,6 +1,6 @@
 """
-chart_builder.py - Plotly 圖表建置模組 (主圖1/2緊緻化、指標頁籤乖離率、籌碼分頁標準字典防快取遺失、主標題藍色加大、副圖左上角內嵌標籤與加權^TWII/櫃買^TWOII緊緻雙列資券千張＋融資金額(億)副圖消除空白版)
-版本: 202611202350
+chart_builder.py - Plotly 圖表建置模組 (主圖1/2緊緻化、指標頁籤乖離率、籌碼分頁標準字典防快取遺失、主標題藍色加大、副圖左上角內嵌標籤與加權^TWII/櫃買^TWOII緊緻雙列資券千張＋融資金額(億)副圖消除空白及大戶線1%約當張數註明版)
+版本: 202611212120
 """
 
 from typing import Tuple, Optional, Dict
@@ -10,7 +10,7 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
 MODULE_NAME = "chart_builder"
-MODULE_VERSION = "202611202350"
+MODULE_VERSION = "202611212120"
 
 from data_fetcher import fetch_stock_daily_k, fetch_stock_name
 from indicators import calculate_all_indicators
@@ -480,12 +480,21 @@ def build_split_figures(
         fig_chip.update_yaxes(title_text='', range=[0, 100], showgrid=False, showticklabels=False, fixedrange=True, showspikes=False, tickfont=dict(size=11), secondary_y=True, row=5, col=1)
         fig_chip.update_yaxes(title_text='', range=m2_range, fixedrange=True, showspikes=False, tickfont=dict(size=11), row=6, col=1)
 
+        # 【修訂說明 2026-11-21】【修改目的與防呆防錯原因】：
+        # 修改目的：在「≥{major1_thresh}」大戶線 1 左上角標籤後方加上 1% 持股對應約當張數註明：(1%約=xxxx張)。
+        # 防呆防錯原因：以 shares_outstanding / 1000.0 * 0.01（即 shares_outstanding / 100000.0）四捨五入計算，若缺值或小於 1 張則維持原標籤。
+        m1_pane_label = f'≥{major1_thresh}'
+        if shares_outstanding and shares_outstanding > 0:
+            one_pct_sheets = int(round((float(shares_outstanding) / 1000.0) * 0.01))
+            if one_pct_sheets >= 1:
+                m1_pane_label = f'≥{major1_thresh}(1%約={one_pct_sheets:,}張)'
+
         chip_pane_labels = [
             ('y domain', '外資'),
             ('y2 domain', '投信'),
             ('y3 domain', '自營'),
             ('y4 domain', '資券'),
-            ('y6 domain', f'≥{major1_thresh}'),
+            ('y6 domain', m1_pane_label),
             ('y8 domain', f'≥{major2_thresh}'),
         ]
 
