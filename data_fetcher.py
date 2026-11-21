@@ -1,7 +1,7 @@
 """
 data_fetcher.py - 整合技術與籌碼資料擷取模組
-(支援含英文後綴台股ETF + TWSE/TPEx官方日K即時補齊 + 大盤加權^TWII與櫃買^TWOII資券與融資金額(億)擷取 + 雲端增量累積分點引擎 + 集保官網qryStock動態Token多週歷史查詢與id=1-5批次分離 + 賣超負值正規化 + 操作儀錶板盤中報價版 + 富邦10欄並排表格與精準單日分點統計/明細5欄修正版 + 全市場歷史分點跨日去重加速批次增補引擎 + 全市含上櫃資券/法人/大戶指定基準日區間批次增補引擎版)
-版本: 202611220045
+(支援含英文後綴台股ETF + TWSE/TPEx官方日K即時補齊 + 大盤加權^TWII與櫃買^TWOII資券與融資金額(億)擷取 + 雲端增量累積分點引擎 + 集保官網qryStock動態Token多週歷史查詢與id=1-5批次分離含真實股數儲存 + 賣超負值正規化 + 操作儀錶板盤中報價版 + 富邦10欄並排表格與精準單日分點統計/明細5欄修正版 + 全市場歷史分點跨日去重加速批次增補引擎 + 全市含上櫃資券/法人/大戶指定基準日區間批次增補引擎版)
+版本: 202611220115
 """
 import os
 import io
@@ -18,7 +18,7 @@ from datetime import datetime, timedelta
 from urllib.parse import urljoin, urlparse, parse_qs, urlencode, urlunparse
 
 MODULE_NAME = "data_fetcher"
-MODULE_VERSION = "202611220045"
+MODULE_VERSION = "202611220115"
 
 from storage import (
     StockChipStorage, COMMON_STOCK_NAMES, load_stock_names_dict,
@@ -140,6 +140,11 @@ def fetch_stock_daily_k(raw_ticker: str, period: str = "1y", base_date: str = No
     """
     自本地 SQLite 或官方 API / Yahoo Finance 擷取歷史日 K 線資料。
     支援台股個股及含英文後綴之 ETF（如 00632R、00664R、00676R、00631L），並以證交所/櫃買官方日K補齊延遲資料。
+    【修訂說明 2026-11-22】【修改目的與防呆防錯原因】：
+    1. 修改目的：台股個股/ETF 之總發行股數（shares_outstanding）優先讀取本地集保資料庫最新週真實 1～15 級股數加總
+       （storage.get_latest_tdcc_total_shares()），不受面額變更影響且隨每週集保自動反映增資/減資/庫藏股；
+       僅當本地集保尚無股數紀錄時，才以 Yahoo Finance ticker.info.get("sharesOutstanding") 備援。
+    2. 防呆防錯原因：避免 Yahoo Finance 偶發逾時回傳空值導致週轉率歸零及大戶線（1%約=xxxx張）消失。
     """
     raw_str = str(raw_ticker).strip()
     if not raw_str:
@@ -169,8 +174,13 @@ def fetch_stock_daily_k(raw_ticker: str, period: str = "1y", base_date: str = No
     last_k_date = storage.get_latest_daily_k_date()
     shares_outstanding = None
 
-    ticker = yf.Ticker(target_ticker)
     if is_tw_etf_or_stk:
+        tdcc_tot = storage.get_latest_tdcc_total_shares()
+        if tdcc_tot and tdcc_tot > 0:
+            shares_outstanding = tdcc_tot
+
+    ticker = yf.Ticker(target_ticker)
+    if is_tw_etf_or_stk and not shares_outstanding:
         try:
             shares_outstanding = ticker.info.get("sharesOutstanding")
         except Exception:
@@ -193,7 +203,8 @@ def fetch_stock_daily_k(raw_ticker: str, period: str = "1y", base_date: str = No
             alt_ticker = f"{pure_code}.TWO"
             try:
                 t_alt = yf.Ticker(alt_ticker)
-                shares_outstanding = t_alt.info.get("sharesOutstanding")
+                if not shares_outstanding:
+                    shares_outstanding = t_alt.info.get("sharesOutstanding")
                 df_new = t_alt.history(period=fetch_period)
                 if df_new is not None and not df_new.empty:
                     full_ticker = alt_ticker
@@ -734,16 +745,14 @@ def fetch_margin_short_data(pure_code: str, df_dates: pd.DatetimeIndex, start_da
 
 def fetch_tdcc_holding_history(pure_code: str, weeks: int = 15) -> list:
     """
-    【修訂說明 2026-11-19】【修改目的與防呆防錯原因】：
+    【修訂說明 2026-11-22】【修改目的與防呆防錯原因】：
     1. 修改目的：
-       - 捨棄免費版無授權之 FinMind TaiwanStockHoldingSharesPer，改採集保官網歷史查詢介面
-         （https://www.tdcc.com.tw/portal/zh/smWeb/qryStock），一次比對本地資料庫缺失週別並補齊約 15 週
-         （官方下拉選單提供之所有可用公告週別）1～15 級股權分散表歷史資料。
-       - 因應集保官網 Struts SYNCHRONIZER_TOKEN 單次防重送驗證機制，每次 POST 回應後立即從回應頁面
-         重新擷取最新核發之表單隱藏欄位（SYNCHRONIZER_TOKEN）供下一週查詢使用，解決第 2 週起被擋下之問題。
+       - 自集保官網歷史查詢介面（https://www.tdcc.com.tw/portal/zh/smWeb/qryStock）擷取 1～15 級股權分散表時，
+         一併解析並回傳 5 欄 tuple `(iso_d, lvl, holders, shares, pct)`（包含人數 cols[2] 與真實股數 cols[3]），
+         供本地 SQLite 動態加總最新週真實總發行股數（不受面額變更影響，且隨每週集保自動更新增資/減資/庫藏股）。
+       - 若本地已有該週別但舊紀錄 `shares == 0`，亦自動納入重抓補齊股數欄位。
     2. 防呆防錯原因：
-       - 若任一週 POST 回應未包含有效之 SYNCHRONIZER_TOKEN 或連線異常，下一輪自動執行 GET 重新取得最新權杖，
-         確保連續多週歷史查詢不中斷。
+       - 若任一週 POST 回應未包含有效之 SYNCHRONIZER_TOKEN 或連線異常，下一輪自動執行 GET 重新取得最新權杖；
        - 嚴格限定表格首欄為純數字 1 <= level <= 15（排除第 16 差異數與第 17 合計列）。
     """
     code = str(pure_code or "").strip().upper()
@@ -765,12 +774,17 @@ def fetch_tdcc_holding_history(pure_code: str, weeks: int = 15) -> list:
                 fields[name] = inp.get("value", "")
         return fields
 
-    existing_weeks = set()
+    existing_weeks_with_shares = set()
     try:
         storage = StockChipStorage(code)
         df_exist = storage.load_holding_df()
         if df_exist is not None and not df_exist.empty and "date" in df_exist.columns:
-            existing_weeks = set(pd.to_datetime(df_exist["date"]).dt.strftime("%Y%m%d").tolist())
+            if "shares" in df_exist.columns:
+                valid_sh = df_exist[pd.to_numeric(df_exist["shares"], errors="coerce").fillna(0) > 0]
+                if not valid_sh.empty:
+                    existing_weeks_with_shares = set(pd.to_datetime(valid_sh["date"]).dt.strftime("%Y%m%d").tolist())
+            else:
+                existing_weeks_with_shares = set(pd.to_datetime(df_exist["date"]).dt.strftime("%Y%m%d").tolist())
     except Exception:
         pass
 
@@ -795,7 +809,7 @@ def fetch_tdcc_holding_history(pure_code: str, weeks: int = 15) -> list:
 
         max_w = max(1, int(weeks or 15))
         target_dates = avail_dates[:max_w]
-        missing_dates = [d for d in target_dates if d not in existing_weeks]
+        missing_dates = [d for d in target_dates if d not in existing_weeks_with_shares]
         if not missing_dates:
             return []
 
@@ -838,8 +852,10 @@ def fetch_tdcc_holding_history(pure_code: str, weeks: int = 15) -> list:
                             lvl = int(cols[0])
                             if 1 <= lvl <= 15:
                                 try:
+                                    holders_v = int(float(cols[2].strip() or 0))
+                                    shares_v = int(float(cols[3].strip() or 0))
                                     pct = float(cols[4].replace("%", "").strip())
-                                    records_h.append((iso_d, lvl, pct))
+                                    records_h.append((iso_d, lvl, holders_v, shares_v, pct))
                                 except Exception:
                                     continue
                     break
@@ -854,22 +870,22 @@ def fetch_tdcc_holding_history(pure_code: str, weeks: int = 15) -> list:
 
 def fetch_tdcc_holding_data(pure_code: str) -> list:
     """
-    【修訂說明 2026-11-19】【修改目的與防呆防錯原因】：
+    【修訂說明 2026-11-22】【修改目的與防呆防錯原因】：
     1. 修改目的：單一個股查詢時直接呼叫集保官網歷史查詢（fetch_tdcc_holding_history），
-       一次補齊該個股所有缺失之歷史週別（約 15 週）1～15 級股權分散表比例。
-    2. 防呆防錯原因：嚴格過濾 1 <= level <= 15，排除第 16（差異數）與第 17（合計）列，防止比例重複加總。
+       回傳完整 5 欄 `(date, level, holders, shares, percent)` 供寫入本地資料庫，一併保存每週真實股數。
+    2. 防呆防錯原因：嚴格過濾 1 <= level <= 15，排除第 16（差異數）與第 17（合計）列，防止比例或股數重複加總。
     """
     hist_recs = fetch_tdcc_holding_history(pure_code, weeks=15)
     if not hist_recs:
         return []
-    return [(d, lvl, pct) for (d, lvl, pct) in hist_recs if 1 <= lvl <= 15]
+    return [r for r in hist_recs if len(r) >= 5 and 1 <= int(r[1]) <= 15]
 
 
 def batch_fetch_and_save_latest_tdcc_holding(target_codes: list = None) -> dict:
     """
-    【修訂說明 2026-11-19】【修改目的與防呆防錯原因】：
+    【修訂說明 2026-11-22】【修改目的與防呆防錯原因】：
     1. 修改目的：提供【上市/上櫃】批次作業，下載集保官方開放資料網最新單週全市場總表（id=1-5），
-       寫入已收錄個股之 data_{code}.db（shareholding_distribution 資料表）並同步雲端。
+       一併擷取 `人數` 與 `股數` 寫入 5 欄 `(date, level, holders, shares, percent)` 至 data_{code}.db（shareholding_distribution 資料表）並同步雲端。
     2. 防呆防錯原因：
        - 移除無效之 FinMind 免費版集保備援迴圈，避免連線失敗時逐檔空轉等待。
        - 僅保留 1 <= level <= 15 級距，嚴格排除第 16（其他）、17（合計）列。
@@ -920,6 +936,8 @@ def batch_fetch_and_save_latest_tdcc_holding(target_codes: list = None) -> dict:
     date_col = next((c for c in cols if "日期" in c or "Date" in c), cols[0])
     code_col = next((c for c in cols if "代號" in c or "Code" in c), cols[1])
     lvl_col = next((c for c in cols if "持股分級" in c or "Level" in c), cols[2])
+    holders_col = next((c for c in cols if "人數" in c or "Holder" in c), cols[3] if len(cols) > 3 else cols[2])
+    shares_col = next((c for c in cols if "股數" in c or "Share" in c), cols[4] if len(cols) > 4 else cols[3])
     pct_col = next((c for c in cols if "占集保庫存數比例" in c or "比例" in c or "Percent" in c), cols[-1])
 
     df_od[code_col] = df_od[code_col].astype(str).str.strip().str.upper()
@@ -941,10 +959,12 @@ def batch_fetch_and_save_latest_tdcc_holding(target_codes: list = None) -> dict:
             lvl = int(float(str(row[lvl_col]).strip()))
             if not (1 <= lvl <= 15):
                 continue
+            holders_v = int(float(str(row[holders_col]).replace(",", "").strip() or 0))
+            shares_v = int(float(str(row[shares_col]).replace(",", "").strip() or 0))
             pct = float(str(row[pct_col]).replace(",", "").replace("%", "").strip())
         except Exception:
             continue
-        grouped_records.setdefault(c_code, []).append((iso_d, lvl, pct))
+        grouped_records.setdefault(c_code, []).append((iso_d, lvl, holders_v, shares_v, pct))
 
     updated_stocks = 0
     for c_code, recs in grouped_records.items():
@@ -1296,7 +1316,7 @@ def fetch_single_broker_daily_series(detail_url: str, start_date: str, end_date:
     1. 修改目的：依富邦單一分點歷史明細網頁（zco0.djhtm）實測固定 5 欄結構
        ['日期', '買進(張)', '賣出(張)', '買賣總額(張)', '買賣超(張)']（索引 0 至 4），
        修正為讀取第 5 欄（cells[4]）作為「買賣超(張)」，通案解決所有個股與日期之分點逐日明細正負號與數值解析。
-    2. 防呆防錯原因：嚴格限定 len(cells) >= 5 且首欄為有效日期才解析，排除合併多欄之外層容器列（如 106 欄）與底部「期間累計買賣超張數」單欄合計列，避免將第 4 欄恆正之「買賣總額(張)」誤當成買賣超。
+    2. 防呆防錯原因：嚴格限定 len(cells) == 5 且首欄為有效日期才解析，排除合併多欄之外層容器列（如 106 欄）與底部「期間累計買賣超張數」單欄合計列，避免將第 4 欄恆正之「買賣總額(張)」誤當成買賣超。
     """
     empty_df = pd.DataFrame(columns=["日期", "買進(張)", "賣出(張)", "買賣超(張)"])
     if not detail_url:
@@ -1710,10 +1730,10 @@ def batch_sync_all_stocks_holding(
     progress_callback=None
 ) -> str:
     """
-    【修訂說明 2026-11-21】【修改目的與防呆防錯原因】：
+    【修訂說明 2026-11-22】【修改目的與防呆防錯原因】：
     1. 修改目的：依據「籌碼增補基準日（base_date_str）」與「往前增補交易籌碼日數（lookback_days）」所涵蓋之區間 [start_date, base_date_str]，
-       針對所有上市／上櫃個股（含 ETF）補齊落於該區間內之集保大戶股權分散表（1～15 級）並同步雲端。
-    2. 防呆防錯原因：沿用已驗證資料源（集保官網 qryStock 動態 Token 多週歷史查詢），僅寫入區間內週別並嚴格限制 1 <= level <= 15。
+       針對所有上市／上櫃個股（含 ETF）補齊落於該區間內之集保大戶股權分散表（1～15 級，含人數與真實股數）並同步雲端。
+    2. 防呆防錯原因：沿用已驗證資料源（集保官網 qryStock 動態 Token 多週歷史查詢），保留完整 5 欄 `(d, lvl, holders, shares, pct)` 寫入資料庫，並嚴格限制 1 <= level <= 15。
     """
     stock_items = _get_hist_tw_stock_items()
     if not stock_items:
@@ -1754,8 +1774,8 @@ def batch_sync_all_stocks_holding(
 
         hist_recs = fetch_tdcc_holding_history(code, weeks=needed_weeks)
         filtered_recs = [
-            (d, lvl, pct) for (d, lvl, pct) in hist_recs
-            if start_date_str <= str(d)[:10] <= b_norm and 1 <= int(lvl) <= 15
+            r for r in hist_recs
+            if len(r) >= 5 and start_date_str <= str(r[0])[:10] <= b_norm and 1 <= int(r[1]) <= 15
         ]
         if filtered_recs:
             storage.save_holding_data(filtered_recs)
