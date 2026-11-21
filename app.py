@@ -1,7 +1,7 @@
 """
 app.py - 主應用程式介面與生命週期控制
 (三主頁籤架構：操作儀錶板 / 個股 / 參數設定 + 自選與查詢歷史同步 + 盤中均線多空燈號 + 動態chart_id杜絕跨頁籤殘留 + 批次增補指定基準日起往前N日分點統計與明細版 + 分點15:00前對齊前一交易日與分點統計/分點日況雙頁籤版 + 多日歷史分點統計與日況全載入版)
-版本: 202611210855
+版本: 202611210912
 """
 
 import os
@@ -13,7 +13,7 @@ import streamlit.components.v1 as components
 import cloud_sync
 
 MODULE_NAME = "app"
-MODULE_VERSION = "202611210855"
+MODULE_VERSION = "202611210912"
 
 
 # 【防呆防錯備註 2026-11-07】：版本控制權由 app.py 作為唯一權威源，動態掃描所有模組最大版本號，杜絕多頭覆寫與重工
@@ -1033,13 +1033,16 @@ else:
         else:
             broker_payload = {"by_date": {}}
 
+        # 【修訂說明 2026-11-21】【修改目的與防呆防錯原因】：
+        # 修改目的：對齊 frontend.py get_broker_stats_tab_html 與 get_broker_daily_tab_html 函式簽章（參數名為 is_index 而非 is_tw_stock）。
+        # 防呆防錯原因：修正傳參後消除 TypeError: got an unexpected keyword argument 'is_tw_stock'。
         with tab_broker_stats:
             broker_stats_html = get_broker_stats_tab_html(
                 df=df_res,
                 chart_id=chart_id,
                 broker_payload=broker_payload,
                 initial_end_idx=safe_end_idx,
-                is_tw_stock=is_tw_stk
+                is_index=(not is_tw_stk)
             )
             components.html(broker_stats_html, height=580, scrolling=True)
 
@@ -1049,7 +1052,7 @@ else:
                 chart_id=chart_id,
                 broker_payload=broker_payload,
                 initial_end_idx=safe_end_idx,
-                is_tw_stock=is_tw_stk
+                is_index=(not is_tw_stk)
             )
             components.html(broker_daily_html, height=1320, scrolling=True)
     else:
