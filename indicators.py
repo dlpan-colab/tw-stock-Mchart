@@ -1,13 +1,13 @@
 """
 indicators.py - 技術指標與籌碼計算模組
-(新增 20/120/240/1200 日乖離率、大盤加權^TWII與櫃買^TWOII融資金額(億)與融資/融券維持率計算版)
-版本: 202611202320
+(新增 20/120/240/1200 日乖離率、大盤加權^TWII與櫃買^TWOII融資金額(億)與融資/融券維持率及扣除近15週1000張以上大於0最小持股比例之實際流通張數週轉率計算版)
+版本: 202611212115
 """
 import numpy as np
 import pandas as pd
 
 MODULE_NAME = "indicators"
-MODULE_VERSION = "202611202320"
+MODULE_VERSION = "202611212115"
 
 HOLDING_LEVEL_MAP = {
     100: [8, 9, 10, 11, 12, 13, 14, 15],
@@ -232,8 +232,34 @@ def calculate_all_indicators(
         df['Major2_Pct'] = np.nan
 
     # 8. 週轉率 (%)
+    # 【修訂說明 2026-11-21】【修改目的與防呆防錯原因】：
+    # 修改目的：分母採「總發行張數（shares_outstanding / 1000.0）扣除近 15 週 1,000 張以上大戶（level == 15）大於 0 之最小持股比例」之有效流通張數，
+    # 分子採當日成交張數（df['Volume_Sheets']），兩者單位統一為「張」計算實際可交易籌碼週轉率。
+    # 防呆防錯原因：先過濾 percent > 0 且非 NaN 之有效週別再取最近 15 週最小值，避免中間缺值週（0 或 NaN）佔用名額或誤以 0 作為最小持股比例；
+    # 若無大於 0 之 1,000 張以上大戶資料則扣除比例為 0%，且設定上限 99.0% 防止分母為零。
     if shares_outstanding and shares_outstanding > 0:
-        df['Turnover_Rate'] = (df['Volume'] / shares_outstanding) * 100.0
+        total_sheets = float(shares_outstanding) / 1000.0
+        min_major1000_pct = 0.0
+        if not holding_df.empty and 'level' in holding_df.columns and 'percent' in holding_df.columns:
+            pct_series = pd.to_numeric(holding_df['percent'], errors='coerce')
+            sub_1000 = holding_df[(holding_df['level'] == 15) & pct_series.notna() & (pct_series > 0)].copy()
+            if not sub_1000.empty:
+                sub_1000['percent'] = pd.to_numeric(sub_1000['percent'], errors='coerce')
+                sub_1000['norm_date'] = pd.to_datetime(sub_1000['date']).dt.normalize()
+                weekly_1000 = (
+                    sub_1000.sort_values('norm_date')
+                    .groupby('norm_date')['percent']
+                    .sum()
+                )
+                valid_1000 = weekly_1000[weekly_1000 > 0].tail(15)
+                if not valid_1000.empty:
+                    min_major1000_pct = min(99.0, max(0.0, float(valid_1000.min())))
+
+        effective_sheets = total_sheets * (1.0 - min_major1000_pct / 100.0)
+        if effective_sheets > 0:
+            df['Turnover_Rate'] = (df['Volume_Sheets'] / effective_sheets) * 100.0
+        else:
+            df['Turnover_Rate'] = 0.0
     else:
         df['Turnover_Rate'] = 0.0
 
