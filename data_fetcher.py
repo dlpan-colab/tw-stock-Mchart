@@ -1,7 +1,7 @@
 """
 data_fetcher.py - 整合技術與籌碼資料擷取模組
-(支援含英文後綴台股ETF + TWSE/TPEx官方日K即時補齊 + 大盤加權^TWII與櫃買^TWOII資券與融資金額(億)擷取 + 雲端增量累積分點引擎 + 集保官網qryStock動態Token多週歷史查詢與id=1-5批次分離 + 賣超負值正規化 + 操作儀錶板盤中報價版 + 富邦10欄並排表格與精準單日分點統計/明細穩定版 + 全市場歷史分點跨日去重加速批次增補引擎 + 全市含上櫃資券/法人/大戶指定基準日區間批次增補引擎版)
-版本: 202611212015
+(支援含英文後綴台股ETF + TWSE/TPEx官方日K即時補齊 + 大盤加權^TWII與櫃買^TWOII資券與融資金額(億)擷取 + 雲端增量累積分點引擎 + 集保官網qryStock動態Token多週歷史查詢與id=1-5批次分離 + 賣超負值正規化 + 操作儀錶板盤中報價版 + 富邦10欄並排表格與精準單日分點統計/明細5欄修正版 + 全市場歷史分點跨日去重加速批次增補引擎 + 全市含上櫃資券/法人/大戶指定基準日區間批次增補引擎版)
+版本: 202611220045
 """
 import os
 import io
@@ -18,7 +18,7 @@ from datetime import datetime, timedelta
 from urllib.parse import urljoin, urlparse, parse_qs, urlencode, urlunparse
 
 MODULE_NAME = "data_fetcher"
-MODULE_VERSION = "202611212015"
+MODULE_VERSION = "202611220045"
 
 from storage import (
     StockChipStorage, COMMON_STOCK_NAMES, load_stock_names_dict,
@@ -1292,7 +1292,11 @@ def fetch_stock_broker_range_ranking(pure_code: str, start_date: str, end_date: 
 
 def fetch_single_broker_daily_series(detail_url: str, start_date: str, end_date: str) -> pd.DataFrame:
     """
-    依據分點明細超連結，擷取單一分點於 [start_date, end_date] 區間之逐日買進、賣出與買賣超張數明細。
+    【修訂說明 2026-11-22】【修改目的與防呆防錯原因】：
+    1. 修改目的：依富邦單一分點歷史明細網頁（zco0.djhtm）實測固定 5 欄結構
+       ['日期', '買進(張)', '賣出(張)', '買賣總額(張)', '買賣超(張)']（索引 0 至 4），
+       修正為讀取第 5 欄（cells[4]）作為「買賣超(張)」，通案解決所有個股與日期之分點逐日明細正負號與數值解析。
+    2. 防呆防錯原因：嚴格限定 len(cells) >= 5 且首欄為有效日期才解析，排除合併多欄之外層容器列（如 106 欄）與底部「期間累計買賣超張數」單欄合計列，避免將第 4 欄恆正之「買賣總額(張)」誤當成買賣超。
     """
     empty_df = pd.DataFrame(columns=["日期", "買進(張)", "賣出(張)", "買賣超(張)"])
     if not detail_url:
@@ -1316,7 +1320,7 @@ def fetch_single_broker_daily_series(detail_url: str, start_date: str, end_date:
 
     for tr in soup.find_all("tr"):
         cells = [re.sub(r'\s+', ' ', td.get_text(strip=True)) for td in tr.find_all(["td", "th"])]
-        if len(cells) < 4:
+        if len(cells) != 5:
             continue
         d_iso = _normalize_mdj_date(cells[0])
         if not d_iso:
@@ -1328,7 +1332,8 @@ def fetch_single_broker_daily_series(detail_url: str, start_date: str, end_date:
 
         buy_v = _parse_int_sheets(cells[1])
         sell_v = _parse_int_sheets(cells[2])
-        net_v = _parse_int_sheets(cells[3])
+        # cells[3] 為「買賣總額(張)」，cells[4] 為「買賣超(張)」
+        net_v = _parse_int_sheets(cells[4])
         if net_v == 0 and (buy_v != 0 or sell_v != 0):
             net_v = buy_v - sell_v
 
