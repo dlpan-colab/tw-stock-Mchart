@@ -1,7 +1,7 @@
 """
 app.py - 主應用程式介面與生命週期控制
-(三主頁籤架構：操作儀錶板 / 個股 / 參數設定 + 自選與查詢歷史同步 + 盤中均線多空燈號 + 動態chart_id杜絕跨頁籤殘留 + 批次增補指定基準日起往前N日分點統計與明細版 + 分點15:00前對齊前一交易日與分點統計/分點日況雙頁籤版 + 多日歷史分點統計與日況全載入及初始K線30根/自由輸入增補日數版)
-版本: 202611210925
+(三主頁籤架構：操作儀錶板 / 個股 / 參數設定 + 自選與查詢歷史同步 + 盤中均線多空燈號 + 動態chart_id杜絕跨頁籤殘留 + 批次增補指定基準日起往前N日分點統計與明細版 + 分點15:00前對齊前一交易日與分點統計/分點日況雙頁籤版 + 多日歷史分點統計與日況全載入及初始K線30根/自由輸入增補日數/底部關注標的與上下一檔防重疊版)
+版本: 202611211120
 """
 
 import os
@@ -13,7 +13,7 @@ import streamlit.components.v1 as components
 import cloud_sync
 
 MODULE_NAME = "app"
-MODULE_VERSION = "202611210925"
+MODULE_VERSION = "202611211120"
 
 
 # 【防呆防錯備註 2026-11-07】：版本控制權由 app.py 作為唯一權威源，動態掃描所有模組最大版本號，杜絕多頭覆寫與重工
@@ -515,6 +515,18 @@ def on_history_select_change():
             st.session_state.promote_to_top = True
             st.session_state.confirm_clear_all = False
             st.session_state.active_main_tab = "📈 個股"
+
+
+def on_bottom_history_select_change():
+    """個股頁籤最下方「關注標的」下拉選單切換回呼"""
+    sel = st.session_state.get("bottom_history_selectbox", "選擇關注標的...")
+    if sel and sel != "選擇關注標的...":
+        target_code = sel.split()[0].strip().upper()
+        if target_code:
+            st.session_state.stock_id = target_code
+            st.session_state.pending_stock_input = target_code
+            st.session_state.promote_to_top = True
+            st.session_state.confirm_clear_all = False
 
 
 # ---------------------------------------------------------------------
@@ -1054,9 +1066,6 @@ else:
         else:
             broker_payload = {"by_date": {}}
 
-        # 【修訂說明 2026-11-21】【修改目的與防呆防錯原因】：
-        # 修改目的：對齊 frontend.py get_broker_stats_tab_html 與 get_broker_daily_tab_html 函式簽章（參數名為 is_index 而非 is_tw_stock）。
-        # 防呆防錯原因：修正傳參後消除 TypeError: got an unexpected keyword argument 'is_tw_stock'。
         with tab_broker_stats:
             broker_stats_html = get_broker_stats_tab_html(
                 df=df_res,
@@ -1076,6 +1085,52 @@ else:
                 is_index=(not is_tw_stk)
             )
             components.html(broker_daily_html, height=1320, scrolling=True)
+
+        # 【修訂說明 2026-11-21】【修改目的與防呆防錯原因】：
+        # 修改目的：
+        #   1. 在「📈 個股」頁籤最下方補回「關注標的」下拉選單與「◀ 上一檔 / 下一檔 ▶」快速切換列；
+        #   2. 於最下方加上空白緩衝區（54px），避免與 Streamlit Cloud 右下角懸浮 [Manage app] 按鈕重疊相爭。
+        # 防呆防錯原因：使用獨立 widget key（bottom_history_selectbox / btn_btm_prev / btn_btm_next）避免與頂部或參數頁籤元件 key 重複報錯。
+        st.markdown("---")
+        latest_hist_list = load_stock_history()
+        latest_hist_codes = [str(item.get("code")).strip().upper() for item in latest_hist_list if item.get("code")]
+        btm_options = ["選擇關注標的..."] + [
+            f"{h.get('code')} {h.get('name', '')}".strip() for h in latest_hist_list
+        ]
+
+        btm_prev, btm_sel, btm_next = st.columns([1.2, 4.6, 1.2])
+        with btm_prev:
+            if st.button("◀ 上一檔", key="btn_btm_prev", use_container_width=True):
+                if latest_hist_codes:
+                    cur_c = str(st.session_state.stock_id).strip().upper()
+                    idx = latest_hist_codes.index(cur_c) if cur_c in latest_hist_codes else 0
+                    prev_code = latest_hist_codes[(idx - 1) % len(latest_hist_codes)]
+                    st.session_state.stock_id = prev_code
+                    st.session_state.pending_stock_input = prev_code
+                    st.session_state.promote_to_top = False
+                    st.rerun()
+        with btm_sel:
+            st.selectbox(
+                "關注標的",
+                options=btm_options,
+                index=0,
+                key="bottom_history_selectbox",
+                on_change=on_bottom_history_select_change,
+                label_visibility="collapsed"
+            )
+        with btm_next:
+            if st.button("下一檔 ▶", key="btn_btm_next", use_container_width=True):
+                if latest_hist_codes:
+                    cur_c = str(st.session_state.stock_id).strip().upper()
+                    idx = latest_hist_codes.index(cur_c) if cur_c in latest_hist_codes else 0
+                    next_code = latest_hist_codes[(idx + 1) % len(latest_hist_codes)]
+                    st.session_state.stock_id = next_code
+                    st.session_state.pending_stock_input = next_code
+                    st.session_state.promote_to_top = False
+                    st.rerun()
+
+        # 底部保留一行空白緩衝區，避開右下角懸浮之 [Manage app] 按鈕
+        st.markdown("<div style='height: 54px;'></div>", unsafe_allow_html=True)
     else:
         st.error(f"無法取得 {st.session_state.stock_id} 的資料，請檢查代號是否正確或稍後再試。")
 # EOF app.py
