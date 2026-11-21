@@ -1,7 +1,7 @@
 """
 data_fetcher.py - 整合技術與籌碼資料擷取模組
-(支援含英文後綴台股ETF + TWSE/TPEx官方日K即時補齊 + 大盤加權^TWII與櫃買^TWOII資券與融資金額(億)擷取 + 雲端增量累積分點引擎 + 集保官網qryStock動態Token多週歷史查詢與id=1-5批次分離 + 賣超負值正規化 + 操作儀錶板盤中報價版 + 富邦10欄並排表格與精準單日分點統計/明細穩定版 + 全市場歷史分點批次增補引擎版)
-版本: 202611211015
+(支援含英文後綴台股ETF + TWSE/TPEx官方日K即時補齊 + 大盤加權^TWII與櫃買^TWOII資券與融資金額(億)擷取 + 雲端增量累積分點引擎 + 集保官網qryStock動態Token多週歷史查詢與id=1-5批次分離 + 賣超負值正規化 + 操作儀錶板盤中報價版 + 富邦10欄並排表格與精準單日分點統計/明細穩定版 + 全市場歷史分點跨日去重加速批次增補引擎版)
+版本: 202611211100
 """
 import os
 import io
@@ -18,7 +18,7 @@ from datetime import datetime, timedelta
 from urllib.parse import urljoin, urlparse, parse_qs, urlencode, urlunparse
 
 MODULE_NAME = "data_fetcher"
-MODULE_VERSION = "202611211015"
+MODULE_VERSION = "202611211100"
 
 from storage import (
     StockChipStorage, COMMON_STOCK_NAMES, load_stock_names_dict,
@@ -1353,14 +1353,14 @@ def batch_sync_all_stocks_brokers(
 ) -> str:
     """
     【修訂說明 2026-11-21】【修改目的與防呆防錯原因】：
-    1. 修改目的：供「⚙️ 參數設定」執行全市場查詢歷史清單之歷史分點批次增補，
-       針對每檔台股個股/ETF，從指定基準日（base_date_str）往前追溯 lookback_days 個有效交易日，
-       逐日補齊 1 / 10 / 20 日買賣超前 10 名統計（broker_range_rank）與前 5 名分點逐日進出明細（broker_daily_trades），
-       寫入本地 SQLite 並同步上傳至 Google Drive 雲端硬碟。
+    1. 修改目的：
+       - 供「⚙️ 參數設定」執行全市場查詢歷史清單之歷史分點批次增補，從指定基準日（base_date_str）往前追溯 lookback_days 個交易日，
+         補齊 1 / 10 / 20 日買賣超前 10 名統計（broker_range_rank）與各區間前 5 名分點逐日進出明細（broker_daily_trades）。
+       - 跨日分點去重加速：同一檔個股先蒐集所有缺漏交易日「近 10 日前 5 名」與「近 20 日前 5 名」買賣超分點聯集，
+         每家分點僅針對整段最長涵蓋區間抓取一次逐日明細，大幅減少重複 HTTP 請求並輸出 Console Log。
     2. 防呆防錯原因：
-       - 自動過濾排除 ^ 開頭指數；
-       - 若該基準日已存在完整 w1 / w10 / w20 分點統計快照則直接跳過（增量增補不重複爬蟲）；
-       - 同一檔個股之多個交易日明細合併後僅於該檔結束時執行一次 sync_db_push(code)，降低 Google Drive API 寫入頻率與網路延遲。
+       - 自動過濾排除 ^ 開頭指數；已具備完整 w1/w10/w20 快照之交易日直接跳過；
+       - 每檔個股完成所有交易日寫入後僅執行一次 sync_db_push(code)，降低 Google Drive API 寫入次數。
     """
     hist_list = load_stock_history()
     stock_items = []
@@ -1379,6 +1379,7 @@ def batch_sync_all_stocks_brokers(
     tot_n = len(stock_items)
     n_days = max(1, int(lookback_days or 1))
     b_norm = _normalize_mdj_date(base_date_str) or str(base_date_str).strip()[:10]
+    print(f"[BrokerBackfill] 啟動批次分點增補：基準日={b_norm}，往前={n_days}日，共={tot_n}檔")
 
     def _df_to_rank_recs(df_rank):
         if df_rank is None or df_rank.empty:
@@ -1411,22 +1412,25 @@ def batch_sync_all_stocks_brokers(
                 df_k = k_res[0]
 
         if df_k is None or df_k.empty:
-            if progress_callback:
-                progress_callback(idx_s, tot_n, code, c_name, "無日K資料，略過")
+            print(f"[BrokerBackfill] [{idx_s}/{tot_n}] {code} {c_name}: 無日K資料，略過")
             continue
 
         trade_dates = [d.strftime("%Y-%m-%d") for d in df_k.index]
         valid_pos = [i for i, d_s in enumerate(trade_dates) if d_s <= b_norm]
         if not valid_pos:
-            if progress_callback:
-                progress_callback(idx_s, tot_n, code, c_name, f"無 <= {b_norm} 之交易日，略過")
+            print(f"[BrokerBackfill] [{idx_s}/{tot_n}] {code} {c_name}: 無 <= {b_norm} 交易日，略過")
             continue
 
         anchor_pos = valid_pos[-1]
         start_pos = max(0, anchor_pos - n_days + 1)
         target_indices = list(range(anchor_pos, start_pos - 1, -1))
 
-        stock_changed = False
+        # 1. 篩選出尚未有完整 w1/w10/w20 的缺漏交易日，並蒐集各日統計榜單與所有需補抓逐日明細的分點聯集
+        pending_bundles = []
+        union_broker_urls = {}
+        earliest_all_s = None
+        latest_all_e = None
+
         for t_idx in target_indices:
             end_d_str = trade_dates[t_idx]
             existing_bundle = storage.load_broker_range_rank(end_d_str)
@@ -1439,24 +1443,28 @@ def batch_sync_all_stocks_brokers(
                 continue
 
             if progress_callback:
-                progress_callback(idx_s, tot_n, code, c_name, f"補抓 {end_d_str}（1/10/20日分點與明細）...")
+                progress_callback(idx_s, tot_n, code, c_name, f"擷取 {end_d_str}（1/10/20日分點統計）...")
 
             win_starts = {
                 1: end_d_str,
                 10: trade_dates[max(0, t_idx - 10 + 1)],
                 20: trade_dates[max(0, t_idx - 20 + 1)],
             }
-            earliest_s = win_starts[20]
+            if earliest_all_s is None or win_starts[20] < earliest_all_s:
+                earliest_all_s = win_starts[20]
+            if latest_all_e is None or end_d_str > latest_all_e:
+                latest_all_e = end_d_str
+
             rank_dfs = {}
             for w in (1, 10, 20):
                 df_b, df_s = fetch_stock_broker_range_ranking(code, win_starts[w], end_d_str)
                 if (df_b is None or df_b.empty) and (df_s is None or df_s.empty):
-                    time.sleep(0.3)
+                    time.sleep(0.25)
                     df_b, df_s = fetch_stock_broker_range_ranking(code, win_starts[w], end_d_str)
                 rank_dfs[w] = (df_b, df_s)
-                time.sleep(0.12)
+                time.sleep(0.08)
 
-            broker_url_map = {}
+            # 蒐集該交易日「近 10 日前 5 名」與「近 20 日前 5 名」買賣超分點（聯集不遺漏）
             for w in (10, 20):
                 df_b, df_s = rank_dfs.get(w, (None, None))
                 for df_side in (df_b, df_s):
@@ -1464,14 +1472,8 @@ def batch_sync_all_stocks_brokers(
                         for _, row in df_side.head(5).iterrows():
                             b_name = str(row.get("分點名稱", "")).strip()
                             d_url = str(row.get("明細網址", "")).strip()
-                            if b_name and d_url and b_name not in broker_url_map:
-                                broker_url_map[b_name] = d_url
-
-            for b_name, d_url in broker_url_map.items():
-                df_fresh = fetch_single_broker_daily_series(d_url, earliest_s, end_d_str)
-                if df_fresh is not None and not df_fresh.empty:
-                    storage.save_broker_daily_trades(b_name, df_fresh, sync_cloud=False)
-                time.sleep(0.08)
+                            if b_name and d_url and b_name not in union_broker_urls:
+                                union_broker_urls[b_name] = d_url
 
             day_bundle = dict(existing_bundle) if isinstance(existing_bundle, dict) else {}
             has_any = False
@@ -1487,19 +1489,36 @@ def batch_sync_all_stocks_brokers(
                         "buy": b_recs,
                         "sell": s_recs,
                     }
-
             if has_any:
-                storage.save_broker_range_rank(end_d_str, day_bundle, sync_cloud=False)
-                stock_changed = True
-                updated_days_total += 1
+                pending_bundles.append((end_d_str, day_bundle))
 
-        if stock_changed:
+        # 2. 針對聯集分點一次性抓取 [earliest_all_s, latest_all_e] 逐日明細，杜絕跨日重複查詢
+        if union_broker_urls and earliest_all_s and latest_all_e:
+            tot_b = len(union_broker_urls)
+            for b_i, (b_name, d_url) in enumerate(union_broker_urls.items(), start=1):
+                if progress_callback:
+                    progress_callback(idx_s, tot_n, code, c_name, f"補抓分點逐日明細 ({b_i}/{tot_b})：{b_name}...")
+                df_fresh = fetch_single_broker_daily_series(d_url, earliest_all_s, latest_all_e)
+                if df_fresh is not None and not df_fresh.empty:
+                    storage.save_broker_daily_trades(b_name, df_fresh, sync_cloud=False)
+                time.sleep(0.06)
+
+        # 3. 寫入該檔個股所有缺漏日統計快照並同步上傳雲端一次
+        if pending_bundles:
+            for end_d_str, day_bundle in pending_bundles:
+                storage.save_broker_range_rank(end_d_str, day_bundle, sync_cloud=False)
+                updated_days_total += 1
             sync_db_push(code)
             updated_stocks += 1
+            print(f"[BrokerBackfill] [{idx_s}/{tot_n}] {code} {c_name}: 補齊 {len(pending_bundles)} 日快照、{len(union_broker_urls)} 家分點明細並同步雲端")
+        else:
+            print(f"[BrokerBackfill] [{idx_s}/{tot_n}] {code} {c_name}: 目標區間已完整，略過")
 
-    return (
+    summary = (
         f"批次分點增補完成（基準日 {b_norm} 往前 {n_days} 個交易日）："
         f"共檢查 {tot_n} 檔個股，實際補齊 {updated_stocks} 檔（新增 {updated_days_total} 筆交易日快照），"
         f"略過已存在完整快照 {skipped_days_total} 筆。"
     )
+    print(f"[BrokerBackfill] {summary}")
+    return summary
 # EOF data_fetcher.py
