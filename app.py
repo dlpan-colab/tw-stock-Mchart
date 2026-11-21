@@ -1,7 +1,7 @@
 """
 app.py - 主應用程式介面與生命週期控制
-(三主頁籤架構：操作儀錶板 / 個股 / 參數設定 + 自選與查詢歷史同步 + 盤中均線多空燈號 + 動態chart_id杜絕跨頁籤殘留 + 批次增補指定基準日起往前N日分點統計與明細版 + 分點15:00前對齊前一交易日與分點統計/分點日況雙頁籤版 + 多日歷史分點統計與日況全載入版)
-版本: 202611210918
+(三主頁籤架構：操作儀錶板 / 個股 / 參數設定 + 自選與查詢歷史同步 + 盤中均線多空燈號 + 動態chart_id杜絕跨頁籤殘留 + 批次增補指定基準日起往前N日分點統計與明細版 + 分點15:00前對齊前一交易日與分點統計/分點日況雙頁籤版 + 多日歷史分點統計與日況全載入及初始K線30根/自由輸入增補日數版)
+版本: 202611210925
 """
 
 import os
@@ -13,7 +13,7 @@ import streamlit.components.v1 as components
 import cloud_sync
 
 MODULE_NAME = "app"
-MODULE_VERSION = "202611210918"
+MODULE_VERSION = "202611210925"
 
 
 # 【防呆防錯備註 2026-11-07】：版本控制權由 app.py 作為唯一權威源，動態掃描所有模組最大版本號，杜絕多頭覆寫與重工
@@ -457,7 +457,7 @@ if "stock_id" not in st.session_state:
 if "period" not in st.session_state:
     st.session_state.period = "1y"
 if "disp_days" not in st.session_state:
-    st.session_state.disp_days = 20
+    st.session_state.disp_days = 30
 if "is_mobile_mode" not in st.session_state:
     st.session_state.is_mobile_mode = True
 if "use_target_date" not in st.session_state:
@@ -778,8 +778,17 @@ elif selected_main_tab == "⚙️ 參數設定":
     sel_period_label = st.selectbox("K線歷史抓取範圍", list(period_options.keys()), index=list(period_options.keys()).index(current_period_label))
     st.session_state.period = period_options[sel_period_label]
 
-    disp_options = [15, 20, 30, 60, 90, 120]
-    st.session_state.disp_days = st.selectbox("初始顯示K線根數", disp_options, index=disp_options.index(st.session_state.disp_days))
+    # 【修訂說明 2026-11-21】【修改目的與防呆防錯原因】：
+    # 修改目的：初始顯示K線根數恢復 +/- 5 步進輸入框（預設 30 根），支援按鈕微調與自由輸入。
+    # 防呆防錯原因：設定 min_value=5, max_value=240, step=5 確保可視K線視窗範圍有效。
+    st.session_state.disp_days = int(st.number_input(
+        "初始顯示K線根數",
+        min_value=5,
+        max_value=240,
+        value=int(st.session_state.disp_days),
+        step=5,
+        key="disp_days_num_input"
+    ))
 
     st.markdown("---")
     st.session_state.use_target_date = st.checkbox("指定基準日", value=st.session_state.use_target_date)
@@ -821,8 +830,11 @@ elif selected_main_tab == "⚙️ 參數設定":
     st.markdown("---")
     st.markdown("**全市場分點批次增補與維護**")
     # 【修訂說明 2026-11-21】【修改目的與防呆防錯原因】：
-    # 修改目的：兼容 get_default_broker_backfill_base_date() 回傳 datetime.date 物件或字串，避免 datetime.strptime 觸發 TypeError。
-    # 防呆防錯原因：依實際型別轉換為 datetime.date，確保參數設定頁籤開啟時不報錯。
+    # 修改目的：
+    #   1. 兼容 get_default_broker_backfill_base_date() 回傳 datetime.date 物件或字串；
+    #   2. 改為上下滿版排列，避免手機窄螢幕下兩欄擠壓導致日期格子看不到內容；
+    #   3. 往前增補交易日數恢復 st.number_input（具 +/- 按鈕並支援自由輸入任意天數，移除 20 日上限）。
+    # 防呆防錯原因：設定 min_value=1, max_value=365, step=1 兼顧彈性與參數合法性。
     default_bf_date = get_default_broker_backfill_base_date()
     if isinstance(default_bf_date, str):
         parsed_bf_date = datetime.strptime(default_bf_date[:10], "%Y-%m-%d").date()
@@ -831,20 +843,19 @@ elif selected_main_tab == "⚙️ 參數設定":
     else:
         parsed_bf_date = default_bf_date
 
-    bf_col1, bf_col2 = st.columns([1.3, 1.0])
-    with bf_col1:
-        backfill_base_dt = st.date_input(
-            "增補基準日（預設15:00前為前一交易日）",
-            value=parsed_bf_date,
-            key="broker_backfill_base_date_input"
-        )
-    with bf_col2:
-        backfill_days_opt = st.selectbox(
-            "往前增補交易日數",
-            options=[1, 3, 5, 10, 20],
-            index=0,
-            key="broker_backfill_days_select"
-        )
+    backfill_base_dt = st.date_input(
+        "增補基準日（預設15:00前為前一交易日）",
+        value=parsed_bf_date,
+        key="broker_backfill_base_date_input"
+    )
+    backfill_days_opt = int(st.number_input(
+        "往前增補交易日數",
+        min_value=1,
+        max_value=365,
+        value=1,
+        step=1,
+        key="broker_backfill_days_input"
+    ))
 
     if st.button("📥 批次增補歷史分點（統計與明細）", use_container_width=True):
         from data_fetcher import batch_sync_all_stocks_brokers
