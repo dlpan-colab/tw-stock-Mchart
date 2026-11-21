@@ -1,7 +1,7 @@
 """
 app.py - 主應用程式介面與生命週期控制
-(三主頁籤架構：操作儀錶板 / 個股 / 參數設定 + 自選與查詢歷史同步 + 盤中均線多空燈號 + 動態chart_id杜絕跨頁籤殘留 + 批次增補指定基準日起往前N日分點統計與明細版 + 分點15:00前對齊前一交易日與分點統計/分點日況雙頁籤版 + 多日歷史分點統計與日況全載入及初始K線30根/自由輸入增補日數/底部關注標的與上下一檔防重疊版)
-版本: 202611211120
+(三主頁籤架構：操作儀錶板 / 個股 / 參數設定 + 自選與查詢歷史同步 + 盤中均線多空燈號 + 動態chart_id杜絕跨頁籤殘留 + 批次增補指定基準日起往前N日分點統計與明細版 + 分點15:00前對齊前一交易日與分點統計/分點日況雙頁籤版 + 上下雙複合選單自由輸入置頂/下拉選取不改順序及初始K線30根版)
+版本: 202611211145
 """
 
 import os
@@ -13,7 +13,7 @@ import streamlit.components.v1 as components
 import cloud_sync
 
 MODULE_NAME = "app"
-MODULE_VERSION = "202611211120"
+MODULE_VERSION = "202611211145"
 
 
 # 【防呆防錯備註 2026-11-07】：版本控制權由 app.py 作為唯一權威源，動態掃描所有模組最大版本號，杜絕多頭覆寫與重工
@@ -354,30 +354,36 @@ st.markdown("""
         display: none !important;
     }
 
-    /* 上一檔 / 下一檔按鈕列自適應寬度 */
+    /* 上一檔 / 中間複合選單 / 下一檔按鈕列自適應寬度（放寬中間下拉選單，避免窄螢幕收縮只剩箭頭） */
     [data-testid="stHorizontalBlock"] {
         display: flex !important;
         flex-direction: row !important;
         flex-wrap: nowrap !important;
         justify-content: center !important;
         align-items: center !important;
-        gap: 8px !important;
+        gap: 6px !important;
+        width: 100% !important;
     }
     [data-testid="stHorizontalBlock"] > div:has(button) {
-        flex: 0 0 68px !important;
-        width: 68px !important;
-        min-width: 68px !important;
-        max-width: 68px !important;
+        flex: 0 0 66px !important;
+        width: 66px !important;
+        min-width: 66px !important;
+        max-width: 66px !important;
     }
     [data-testid="stHorizontalBlock"] > div:not(:has(button)) {
         flex: 1 1 auto !important;
-        width: auto !important;
-        min-width: 0 !important;
+        width: 100% !important;
+        min-width: 140px !important;
         max-width: none !important;
+    }
+    [data-testid="stHorizontalBlock"] > div:not(:has(button)) [data-testid="stSelectbox"],
+    [data-testid="stHorizontalBlock"] > div:not(:has(button)) div[data-baseweb="select"] {
+        width: 100% !important;
+        min-width: 140px !important;
     }
     [data-testid="stHorizontalBlock"] button {
         width: 100% !important;
-        min-width: 64px !important;
+        min-width: 62px !important;
         padding: 3px 4px !important;
         font-size: 12px !important;
         white-space: nowrap !important;
@@ -484,12 +490,44 @@ if "broker_60d_requests" not in st.session_state:
     st.session_state.broker_60d_requests = set()
 
 
-def on_stock_input_change():
-    val = st.session_state.stock_input_box.strip()
-    if val:
-        resolved = resolve_ticker_code(val)
-        st.session_state.stock_id = resolved
-        st.session_state.promote_to_top = True
+def _apply_stock_selector_choice(widget_key: str):
+    """
+    【修訂說明 2026-11-21】【修改目的與防呆防錯原因】：
+    1. 修改目的：
+       - 處理「📈 個股」頁籤上下兩個可輸入＋下拉複合選單（accept_new_options=True）之變更事件：
+         (a) 若為「下拉點選既有查詢歷史項目」（格式為「代號 名稱」且存在於歷史清單），僅切換標的、設定 promote_to_top=False，絕不改變查詢歷史順序；
+         (b) 若為「手動輸入代號並按 Enter」，解析代號並設定 promote_to_top=True，將該標的置頂寫入查詢歷史清單。
+    2. 防呆防錯原因：相容帶名稱字串（如 "6669 緯穎"）或純輸入代號（如 "2330"、"^TWII"）。
+    """
+    raw_sel = str(st.session_state.get(widget_key, "") or "").strip()
+    if not raw_sel:
+        return
+    hist_now = load_stock_history()
+    existing_labels = {
+        f"{str(h.get('code', '')).strip().upper()} {str(h.get('name', '')).strip()}".strip()
+        for h in hist_now if h.get("code")
+    }
+    if raw_sel in existing_labels:
+        target_code = raw_sel.split()[0].strip().upper()
+        if target_code:
+            st.session_state.stock_id = target_code
+            st.session_state.promote_to_top = False
+            st.session_state.confirm_clear_all = False
+    else:
+        first_token = raw_sel.split()[0].strip()
+        resolved = resolve_ticker_code(first_token)
+        if resolved:
+            st.session_state.stock_id = resolved
+            st.session_state.promote_to_top = True
+            st.session_state.confirm_clear_all = False
+
+
+def on_top_stock_selector_change():
+    _apply_stock_selector_choice("top_stock_selector")
+
+
+def on_bottom_stock_selector_change():
+    _apply_stock_selector_choice("bottom_stock_selector")
 
 
 def on_index_select_change():
@@ -511,22 +549,9 @@ def on_history_select_change():
         target_code = sel.split()[0].strip().upper()
         if target_code:
             st.session_state.stock_id = target_code
-            st.session_state.pending_stock_input = target_code
             st.session_state.promote_to_top = True
             st.session_state.confirm_clear_all = False
             st.session_state.active_main_tab = "📈 個股"
-
-
-def on_bottom_history_select_change():
-    """個股頁籤最下方「關注標的」下拉選單切換回呼"""
-    sel = st.session_state.get("bottom_history_selectbox", "選擇關注標的...")
-    if sel and sel != "選擇關注標的...":
-        target_code = sel.split()[0].strip().upper()
-        if target_code:
-            st.session_state.stock_id = target_code
-            st.session_state.pending_stock_input = target_code
-            st.session_state.promote_to_top = True
-            st.session_state.confirm_clear_all = False
 
 
 # ---------------------------------------------------------------------
@@ -588,7 +613,6 @@ if selected_main_tab == "📊 操作儀錶板":
                 if str(st.session_state.stock_id).strip().upper() == resolved_c:
                     next_c = remained[0]["code"] if remained else "2330"
                     st.session_state.stock_id = next_c
-                    st.session_state.pending_stock_input = next_c
                     st.session_state.promote_to_top = False
                 get_cached_dashboard_rows.clear()
                 st.rerun()
@@ -687,7 +711,6 @@ if selected_main_tab == "📊 操作儀錶板":
             with row_cols[0]:
                 if st.button(r["name"], key=f"dash_name_jump_{r['code']}", use_container_width=True):
                     st.session_state.stock_id = r["code"]
-                    st.session_state.pending_stock_input = r["code"]
                     st.session_state.promote_to_top = False
                     st.session_state.pending_main_tab = "📈 個股"
                     st.rerun()
@@ -753,7 +776,6 @@ elif selected_main_tab == "⚙️ 參數設定":
                     if str(st.session_state.stock_id).strip().upper() == target_code:
                         next_code = remained[0]["code"] if remained else "2330"
                         st.session_state.stock_id = next_code
-                        st.session_state.pending_stock_input = next_code
                         st.session_state.promote_to_top = False
                     st.session_state.confirm_clear_all = False
                     st.session_state.ms_counter += 1
@@ -841,12 +863,6 @@ elif selected_main_tab == "⚙️ 參數設定":
 
     st.markdown("---")
     st.markdown("**全市場分點批次增補與維護**")
-    # 【修訂說明 2026-11-21】【修改目的與防呆防錯原因】：
-    # 修改目的：
-    #   1. 兼容 get_default_broker_backfill_base_date() 回傳 datetime.date 物件或字串；
-    #   2. 改為上下滿版排列，避免手機窄螢幕下兩欄擠壓導致日期格子看不到內容；
-    #   3. 往前增補交易日數恢復 st.number_input（具 +/- 按鈕並支援自由輸入任意天數，移除 20 日上限）。
-    # 防呆防錯原因：設定 min_value=1, max_value=365, step=1 兼顧彈性與參數合法性。
     default_bf_date = get_default_broker_backfill_base_date()
     if isinstance(default_bf_date, str):
         parsed_bf_date = datetime.strptime(default_bf_date[:10], "%Y-%m-%d").date()
@@ -911,7 +927,7 @@ elif selected_main_tab == "⚙️ 參數設定":
 
 
 # =====================================================================
-# 主頁籤 2：📈 個股（預設顯示，含代號切換、K線主圖及四大子頁籤）
+# 主頁籤 2：📈 個股（預設顯示，含上下雙複合選單、K線主圖及四大子頁籤）
 # =====================================================================
 else:
     auth_st = cloud_sync.get_auth_status()
@@ -922,41 +938,48 @@ else:
         unsafe_allow_html=True
     )
 
-    if "pending_stock_input" in st.session_state:
-        st.session_state.stock_input_box = st.session_state.pop("pending_stock_input")
-    if "stock_input_box" not in st.session_state:
-        st.session_state.stock_input_box = st.session_state.stock_id
-
     history_records = load_stock_history()
     history_codes = [str(item.get("code")).strip().upper() for item in history_records if item.get("code")]
+    selector_options = [
+        f"{str(h.get('code', '')).strip().upper()} {str(h.get('name', '')).strip()}".strip()
+        for h in history_records if h.get("code")
+    ]
+    cur_code_upper = str(st.session_state.stock_id).strip().upper()
+    cur_display_label = next(
+        (opt for opt in selector_options if opt.split()[0] == cur_code_upper),
+        f"{cur_code_upper} {get_stock_chinese_name(cur_code_upper)}".strip()
+    )
+    if cur_display_label not in selector_options:
+        selector_options = [cur_display_label] + selector_options
+    cur_sel_idx = selector_options.index(cur_display_label)
 
+    # 頂部：「◀ 上一檔」＋「可輸入＋下拉點選（代號 名稱）」＋「下一檔 ▶」
     col_prev, col_input, col_next = st.columns([1.2, 4.6, 1.2])
     with col_prev:
-        if st.button("◀ 上一檔", use_container_width=True):
+        if st.button("◀ 上一檔", key="btn_top_prev", use_container_width=True):
             if history_codes:
-                cur_c = str(st.session_state.stock_id).strip().upper()
-                idx = history_codes.index(cur_c) if cur_c in history_codes else 0
+                idx = history_codes.index(cur_code_upper) if cur_code_upper in history_codes else 0
                 prev_code = history_codes[(idx - 1) % len(history_codes)]
                 st.session_state.stock_id = prev_code
-                st.session_state.pending_stock_input = prev_code
                 st.session_state.promote_to_top = False
                 st.rerun()
     with col_input:
-        st.text_input(
+        st.selectbox(
             "股票代號或名稱",
-            key="stock_input_box",
-            on_change=on_stock_input_change,
-            placeholder="輸入代號/ETF/指數 (如 2330, 00632R, ^TWII, ^TWOII)",
+            options=selector_options,
+            index=cur_sel_idx,
+            accept_new_options=True,
+            key="top_stock_selector",
+            on_change=on_top_stock_selector_change,
+            placeholder="輸入代號或下拉選擇標的 (如 2330, 00632R, ^TWII)",
             label_visibility="collapsed"
         )
     with col_next:
-        if st.button("下一檔 ▶", use_container_width=True):
+        if st.button("下一檔 ▶", key="btn_top_next", use_container_width=True):
             if history_codes:
-                cur_c = str(st.session_state.stock_id).strip().upper()
-                idx = history_codes.index(cur_c) if cur_c in history_codes else 0
+                idx = history_codes.index(cur_code_upper) if cur_code_upper in history_codes else 0
                 next_code = history_codes[(idx + 1) % len(history_codes)]
                 st.session_state.stock_id = next_code
-                st.session_state.pending_stock_input = next_code
                 st.session_state.promote_to_top = False
                 st.rerun()
 
@@ -1086,46 +1109,48 @@ else:
             )
             components.html(broker_daily_html, height=1320, scrolling=True)
 
-        # 【修訂說明 2026-11-21】【修改目的與防呆防錯原因】：
-        # 修改目的：
-        #   1. 在「📈 個股」頁籤最下方補回「關注標的」下拉選單與「◀ 上一檔 / 下一檔 ▶」快速切換列；
-        #   2. 於最下方加上空白緩衝區（54px），避免與 Streamlit Cloud 右下角懸浮 [Manage app] 按鈕重疊相爭。
-        # 防呆防錯原因：使用獨立 widget key（bottom_history_selectbox / btn_btm_prev / btn_btm_next）避免與頂部或參數頁籤元件 key 重複報錯。
+        # 底部：「◀ 上一檔」＋「可輸入＋下拉點選（代號 名稱）」＋「下一檔 ▶」＋ 空白緩衝區避開 [Manage app]
         st.markdown("---")
         latest_hist_list = load_stock_history()
         latest_hist_codes = [str(item.get("code")).strip().upper() for item in latest_hist_list if item.get("code")]
-        btm_options = ["選擇關注標的..."] + [
-            f"{h.get('code')} {h.get('name', '')}".strip() for h in latest_hist_list
+        btm_options = [
+            f"{str(h.get('code', '')).strip().upper()} {str(h.get('name', '')).strip()}".strip()
+            for h in latest_hist_list if h.get("code")
         ]
+        btm_cur_label = next(
+            (opt for opt in btm_options if opt.split()[0] == pure_ticker),
+            f"{pure_ticker} {resolved_name or get_stock_chinese_name(pure_ticker)}".strip()
+        )
+        if btm_cur_label not in btm_options:
+            btm_options = [btm_cur_label] + btm_options
+        btm_sel_idx = btm_options.index(btm_cur_label)
 
         btm_prev, btm_sel, btm_next = st.columns([1.2, 4.6, 1.2])
         with btm_prev:
             if st.button("◀ 上一檔", key="btn_btm_prev", use_container_width=True):
                 if latest_hist_codes:
-                    cur_c = str(st.session_state.stock_id).strip().upper()
-                    idx = latest_hist_codes.index(cur_c) if cur_c in latest_hist_codes else 0
+                    idx = latest_hist_codes.index(pure_ticker) if pure_ticker in latest_hist_codes else 0
                     prev_code = latest_hist_codes[(idx - 1) % len(latest_hist_codes)]
                     st.session_state.stock_id = prev_code
-                    st.session_state.pending_stock_input = prev_code
                     st.session_state.promote_to_top = False
                     st.rerun()
         with btm_sel:
             st.selectbox(
                 "關注標的",
                 options=btm_options,
-                index=0,
-                key="bottom_history_selectbox",
-                on_change=on_bottom_history_select_change,
+                index=btm_sel_idx,
+                accept_new_options=True,
+                key="bottom_stock_selector",
+                on_change=on_bottom_stock_selector_change,
+                placeholder="輸入代號或下拉選擇標的 (如 2330, 00632R, ^TWII)",
                 label_visibility="collapsed"
             )
         with btm_next:
             if st.button("下一檔 ▶", key="btn_btm_next", use_container_width=True):
                 if latest_hist_codes:
-                    cur_c = str(st.session_state.stock_id).strip().upper()
-                    idx = latest_hist_codes.index(cur_c) if cur_c in latest_hist_codes else 0
+                    idx = latest_hist_codes.index(pure_ticker) if pure_ticker in latest_hist_codes else 0
                     next_code = latest_hist_codes[(idx + 1) % len(latest_hist_codes)]
                     st.session_state.stock_id = next_code
-                    st.session_state.pending_stock_input = next_code
                     st.session_state.promote_to_top = False
                     st.rerun()
 
