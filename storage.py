@@ -1,7 +1,7 @@
 """
 storage.py - 本地 SQLite 資料庫與股票歷史紀錄管理器
-(支援含英文後綴台股ETF與雲端分點增量累積與批次清除分點與大盤融資金額欄位向後相容與多日歷史分點統計全載入及分點統計/日況舊表自動遷移與全市籌碼指定基準日區間清除防呆與集保每週真實總股數動態加總版)
-版本: 202611220105
+(支援含英文後綴台股ETF與雲端分點增量累積與批次清除分點與大盤融資金額欄位向後相容與多日歷史分點統計全載入及分點統計/日況舊表自動遷移與全市籌碼指定基準日區間清除防呆與集保每週真實總股數動態加總及集保舊表補欄防呆版)
+版本: 202611220140
 """
 
 import os
@@ -18,7 +18,7 @@ from datetime import datetime, timedelta
 import pandas as pd
 
 MODULE_NAME = "storage"
-MODULE_VERSION = "202611220105"
+MODULE_VERSION = "202611220140"
 
 STORAGE_DIR = "."
 HISTORY_FILE = os.path.join(STORAGE_DIR, "stock_history.json")
@@ -635,6 +635,10 @@ class StockChipStorage:
             if "margin_money_bal" not in ms_cols:
                 cursor.execute("ALTER TABLE margin_short ADD COLUMN margin_money_bal REAL DEFAULT 0.0")
 
+            # 【修訂說明 2026-11-22】【修改目的與防呆防錯原因】：
+            # 修改目的：檢查既有資料庫之 shareholding_distribution 欄位結構，若缺少 holders 或 shares 欄位，
+            # 自動執行 ALTER TABLE 補欄，解決舊版 .db 寫入 5 欄時觸發 sqlite3.OperationalError 的問題。
+            # 防呆防錯原因：完整保留舊表既有日期與持股比例資料，僅補齊缺漏欄位。
             cursor.execute('''
                 CREATE TABLE IF NOT EXISTS shareholding_distribution (
                     date TEXT,
@@ -645,6 +649,14 @@ class StockChipStorage:
                     PRIMARY KEY (date, level)
                 )
             ''')
+            cursor.execute("PRAGMA table_info(shareholding_distribution)")
+            sh_cols = {row[1] for row in cursor.fetchall()}
+            if sh_cols:
+                if "holders" not in sh_cols:
+                    cursor.execute("ALTER TABLE shareholding_distribution ADD COLUMN holders INTEGER DEFAULT 0")
+                if "shares" not in sh_cols:
+                    cursor.execute("ALTER TABLE shareholding_distribution ADD COLUMN shares INTEGER DEFAULT 0")
+
             # 【修訂說明 2026-11-21】【修改目的與防呆防錯原因】：
             # 修改目的：檢查舊版資料庫（如 data_6669.db）之 broker_daily_trades 與 broker_range_rank 欄位結構，
             # 若缺少新版欄位，自動重建為最新資料表結構，避免寫入或查詢時觸發 OperationalError: table ... has no column named ...。
@@ -812,7 +824,8 @@ class StockChipStorage:
         【修訂說明 2026-11-22】【修改目的與防呆防錯原因】：
         1. 修改目的：向下相容 5 欄 (date, level, holders, shares, percent) 與舊版 3 欄 (date, level, percent) 寫入格式，
            將集保每週公告之真實股數（shares）存入 shareholding_distribution.shares，隨每週更新自動反映增資/減資/庫藏股異動。
-        2. 防呆防錯原因：嚴格限定 1 <= level <= 15（排除第 16 差異數與第 17 合計列）。
+        2. 防呆防錯原因：嚴格限定 1 <= level <= 15（排除第 16 差異數與第 17 合計列）；若遇舊資料庫缺欄觸發 OperationalError，
+           自動呼叫 self._init_db() 補欄並重試寫入一次。
         """
         if not records:
             return
@@ -833,12 +846,19 @@ class StockChipStorage:
                 norm_records.append((str(r[0])[:10], lvl, 0, 0, pct_v))
         if not norm_records:
             return
-        with sqlite3.connect(self.db_path) as conn:
-            conn.executemany('''
-                INSERT OR REPLACE INTO shareholding_distribution (date, level, holders, shares, percent)
-                VALUES (?, ?, ?, ?, ?)
-            ''', norm_records)
-            conn.commit()
+        sql_ins = '''
+            INSERT OR REPLACE INTO shareholding_distribution (date, level, holders, shares, percent)
+            VALUES (?, ?, ?, ?, ?)
+        '''
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                conn.executemany(sql_ins, norm_records)
+                conn.commit()
+        except sqlite3.OperationalError:
+            self._init_db()
+            with sqlite3.connect(self.db_path) as conn:
+                conn.executemany(sql_ins, norm_records)
+                conn.commit()
         sync_db_push(self.pure_code)
 
     def get_latest_tdcc_total_shares(self) -> float:
