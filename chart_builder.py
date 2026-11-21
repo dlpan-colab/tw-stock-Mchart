@@ -1,6 +1,6 @@
 """
-chart_builder.py - Plotly 圖表建置模組 (主圖1/2緊緻化、指標頁籤乖離率、籌碼分頁標準字典防快取遺失、主標題藍色加大、副圖左上角內嵌標籤與加權^TWII/櫃買^TWOII緊緻雙列資券千張＋融資金額(億)副圖消除空白及大戶線1%約當張數註明版)
-版本: 202611212120
+chart_builder.py - Plotly 圖表建置模組 (主圖1/2緊緻化、指標頁籤乖離率、籌碼分頁標準字典防快取遺失、主標題藍色加大、副圖左上角內嵌標籤與加權^TWII/櫃買^TWOII緊緻雙列資券千張＋融資金額(億)副圖消除空白及大戶線1%約當張數優先採用集保最新週總張數註明版)
+版本: 202611220135
 """
 
 from typing import Tuple, Optional, Dict
@@ -10,7 +10,7 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
 MODULE_NAME = "chart_builder"
-MODULE_VERSION = "202611212120"
+MODULE_VERSION = "202611220135"
 
 from data_fetcher import fetch_stock_daily_k, fetch_stock_name
 from indicators import calculate_all_indicators
@@ -480,12 +480,20 @@ def build_split_figures(
         fig_chip.update_yaxes(title_text='', range=[0, 100], showgrid=False, showticklabels=False, fixedrange=True, showspikes=False, tickfont=dict(size=11), secondary_y=True, row=5, col=1)
         fig_chip.update_yaxes(title_text='', range=m2_range, fixedrange=True, showspikes=False, tickfont=dict(size=11), row=6, col=1)
 
-        # 【修訂說明 2026-11-21】【修改目的與防呆防錯原因】：
-        # 修改目的：在「≥{major1_thresh}」大戶線 1 左上角標籤後方加上 1% 持股對應約當張數註明：(1%約=xxxx張)。
-        # 防呆防錯原因：以 shares_outstanding / 1000.0 * 0.01（即 shares_outstanding / 100000.0）四捨五入計算，若缺值或小於 1 張則維持原標籤。
+        # 【修訂說明 2026-11-22】【修改目的與防呆防錯原因】：
+        # 修改目的：在「≥{major1_thresh}」大戶線 1 左上角標籤後方加上 1% 持股對應約當張數註明：(1%約=xxxx張)，
+        # 優先採用 indicators.py 依最新週集保真實總股數算出的 df['Total_Shares']（單位：張），再備援 shares_outstanding / 1000.0。
+        # 防呆防錯原因：確保新查詢個股在第一次同步抓完集保資料當下即可直接顯示 (1%約=xxxx張)，不必等第二次重整。
         m1_pane_label = f'≥{major1_thresh}'
-        if shares_outstanding and shares_outstanding > 0:
-            one_pct_sheets = int(round((float(shares_outstanding) / 1000.0) * 0.01))
+        resolved_total_sheets = 0.0
+        if 'Total_Shares' in df.columns and not df['Total_Shares'].empty:
+            ts_val = float(df['Total_Shares'].iloc[-1] or 0.0)
+            if ts_val > 0:
+                resolved_total_sheets = ts_val
+        if resolved_total_sheets <= 0 and shares_outstanding and float(shares_outstanding) > 0:
+            resolved_total_sheets = float(shares_outstanding) / 1000.0
+        if resolved_total_sheets > 0:
+            one_pct_sheets = int(round(resolved_total_sheets * 0.01))
             if one_pct_sheets >= 1:
                 m1_pane_label = f'≥{major1_thresh}(1%約={one_pct_sheets:,}張)'
 
