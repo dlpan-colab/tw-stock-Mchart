@@ -1,7 +1,7 @@
 """
 app.py - 主應用程式介面與生命週期控制
-(三主頁籤架構：操作儀錶板 / 個股 / 參數設定 + 自選與查詢歷史同步 + 盤中均線多空燈號 + 動態chart_id杜絕跨頁籤殘留 + 批次增補指定基準日起往前N日分點統計與明細版 + 分點15:00前對齊前一交易日與分點統計/分點日況雙頁籤版 + 上下雙複合選單自由輸入置頂/下拉選取不改順序及初始K線30根 + 全市含上櫃籌碼指定基準日區間標題與雙鍵並列版)
-版本: 202611212035
+(三主頁籤架構：操作儀錶板 / 個股 / 參數設定 + 自選與查詢歷史同步 + 盤中均線多空燈號 + 動態chart_id杜絕跨頁籤殘留 + 批次增補指定基準日起往前N日分點統計與明細版 + 分點15:00前對齊前一交易日與分點統計/分點日況雙頁籤版 + 上下雙複合選單自由輸入置頂/下拉選取不改順序及初始K線30根 + 全市含上櫃籌碼指定基準日區間標題與雙鍵並列 + 大戶15週與全市場含上櫃標題及底部目前關注目標列版)
+版本: 202611212130
 """
 
 import os
@@ -13,7 +13,7 @@ import streamlit.components.v1 as components
 import cloud_sync
 
 MODULE_NAME = "app"
-MODULE_VERSION = "202611212035"
+MODULE_VERSION = "202611212130"
 
 
 # 【防呆防錯備註 2026-11-07】：版本控制權由 app.py 作為唯一權威源，動態掃描所有模組最大版本號，杜絕多頭覆寫與重工
@@ -875,7 +875,8 @@ elif selected_main_tab == "⚙️ 參數設定":
 
     # 【修訂說明 2026-11-21】【修改目的與防呆防錯原因】：
     # 1. 修改目的：全市(含上櫃)籌碼資料庫維護採用「第一列：類別標題；第二列：批次增補 / 清除 兩功能鍵並列」版面，
-    #    統一依據「籌碼增補基準日」與「往前增補交易籌碼日數」執行資券、法人、大戶三類籌碼之區間批次增補與區間清除。
+    #    統一依據「籌碼增補基準日」與「往前增補交易籌碼日數」執行資券、法人、大戶三類籌碼之區間批次增補與區間清除，
+    #    並明確標註「大戶籌碼維護（最多15週）」。
     # 2. 防呆防錯原因：進度條與二段式清除確認框皆渲染在並排按鈕列正下方全寬顯示，避免半欄寬度壓縮文字。
     st.markdown("---")
     st.markdown("**全市(含上櫃)籌碼資料庫維護**")
@@ -962,8 +963,8 @@ elif selected_main_tab == "⚙️ 參數設定":
         get_cached_figures.clear()
         st.success(summary_inst)
 
-    # ③ 第一列：大戶籌碼維護；第二列：批次增補 / 清除 並列
-    st.markdown("<div style='font-size:13px; font-weight:700; color:#334155; margin-top:6px; margin-bottom:2px;'>大戶籌碼維護</div>", unsafe_allow_html=True)
+    # ③ 第一列：大戶籌碼維護（最多15週）；第二列：批次增補 / 清除 並列
+    st.markdown("<div style='font-size:13px; font-weight:700; color:#334155; margin-top:6px; margin-bottom:2px;'>大戶籌碼維護（最多15週）</div>", unsafe_allow_html=True)
     col_hd_add, col_hd_clr = st.columns(2)
     with col_hd_add:
         run_hd_sync = st.button("📥 批次增補歷史大戶籌碼", key="btn_batch_sync_hold", use_container_width=True)
@@ -1022,7 +1023,7 @@ elif selected_main_tab == "⚙️ 參數設定":
                 st.rerun()
 
     st.markdown("---")
-    st.markdown("**全市場分點批次增補與維護**")
+    st.markdown("**全市場（含上櫃）分點批次增補與維護**")
     default_bf_date = get_default_broker_backfill_base_date()
     if isinstance(default_bf_date, str):
         parsed_bf_date = datetime.strptime(default_bf_date[:10], "%Y-%m-%d").date()
@@ -1274,7 +1275,7 @@ else:
             )
             components.html(broker_daily_html, height=1320, scrolling=True)
 
-        # 底部：「◀ 上一檔」＋「可輸入＋下拉點選（代號 名稱）」＋「下一檔 ▶」＋ 空白緩衝區避開 [Manage app]
+        # 底部：「目前關注目標」提示列 ＋「◀ 上一檔」＋「可輸入＋下拉點選（代號 名稱）」＋「下一檔 ▶」＋ 空白緩衝區避開 [Manage app]
         st.markdown("---")
         latest_hist_list = load_stock_history()
         latest_hist_codes = [str(item.get("code")).strip().upper() for item in latest_hist_list if item.get("code")]
@@ -1287,6 +1288,24 @@ else:
         if btm_cur_label not in btm_options:
             btm_options = [btm_cur_label] + btm_options
         btm_sel_idx = btm_options.index(btm_cur_label)
+
+        # 【修訂說明 2026-11-21】【修改目的與防呆防錯原因】：
+        # 修改目的：在底部上／下一檔導覽列正上方顯示「目前關注目標：股票名稱 代號 (市/櫃)」。
+        # 防呆防錯原因：從主圖標題 fig_top.layout.title.text 擷取已驗證之市場別（上市/上櫃/指數/海外），無則依代號前綴退回，避免重複發起網路查詢。
+        focus_mkt = "指數" if pure_ticker.startswith("^") else "上市"
+        try:
+            raw_title_txt = str(getattr(getattr(getattr(fig_top, "layout", None), "title", None), "text", "") or "")
+            mkt_matches = re.findall(r'\((上市|上櫃|指數|海外)\)', raw_title_txt)
+            if mkt_matches:
+                focus_mkt = mkt_matches[-1]
+        except Exception:
+            pass
+        focus_name_display = btm_name_res if (btm_name_res and btm_name_res != pure_ticker) else pure_ticker
+        st.markdown(
+            f"<div style='font-size:13.5px; font-weight:700; color:#1e3a8a; margin-bottom:6px;'>"
+            f"目前關注目標：{focus_name_display} {pure_ticker} ({focus_mkt})</div>",
+            unsafe_allow_html=True
+        )
 
         with st.container():
             st.markdown("<div class='stock-nav-anchor'></div>", unsafe_allow_html=True)
