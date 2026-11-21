@@ -1,7 +1,7 @@
 """
 app.py - 主應用程式介面與生命週期控制
 (三主頁籤架構：操作儀錶板 / 個股 / 參數設定 + 自選與查詢歷史同步 + 盤中均線多空燈號 + 動態chart_id杜絕跨頁籤殘留 + 批次增補指定基準日起往前N日分點統計與明細版 + 分點15:00前對齊前一交易日與分點統計/分點日況雙頁籤版 + 上下雙複合選單自由輸入置頂/下拉選取不改順序及初始K線30根版)
-版本: 202611211200
+版本: 202611211505
 """
 
 import os
@@ -13,7 +13,7 @@ import streamlit.components.v1 as components
 import cloud_sync
 
 MODULE_NAME = "app"
-MODULE_VERSION = "202611211200"
+MODULE_VERSION = "202611211505"
 
 
 # 【防呆防錯備註 2026-11-07】：版本控制權由 app.py 作為唯一權威源，動態掃描所有模組最大版本號，杜絕多頭覆寫與重工
@@ -371,41 +371,48 @@ st.markdown("""
         display: none !important;
     }
 
-    /* 上一檔 / 中間複合選單 / 下一檔按鈕列自適應寬度（同時鎖定 stColumn 與 div，防止上下選單收縮只剩箭頭） */
-    [data-testid="stHorizontalBlock"] {
+    /* 【修訂說明 2026-11-21】個股頁籤上／下「◀ 上一檔 / 中間複合選單 / 下一檔 ▶」專區強制放寬選單，穿透 BaseWeb 預設寬度限制 */
+    div[data-testid="stVerticalBlock"]:has(> div > .stock-nav-anchor) [data-testid="stHorizontalBlock"] {
         display: flex !important;
         flex-direction: row !important;
         flex-wrap: nowrap !important;
-        justify-content: space-between !important;
         align-items: center !important;
-        gap: 6px !important;
+        justify-content: space-between !important;
+        gap: 8px !important;
         width: 100% !important;
     }
-    [data-testid="stHorizontalBlock"] > [data-testid="stColumn"]:has(button),
-    [data-testid="stHorizontalBlock"] > div:has(button) {
-        flex: 0 0 68px !important;
-        width: 68px !important;
-        min-width: 68px !important;
-        max-width: 68px !important;
+    div[data-testid="stVerticalBlock"]:has(> div > .stock-nav-anchor) [data-testid="stHorizontalBlock"] > [data-testid="stColumn"]:nth-child(1),
+    div[data-testid="stVerticalBlock"]:has(> div > .stock-nav-anchor) [data-testid="stHorizontalBlock"] > [data-testid="stColumn"]:nth-child(3),
+    div[data-testid="stVerticalBlock"]:has(> div > .stock-nav-anchor) [data-testid="stHorizontalBlock"] > div:nth-child(1),
+    div[data-testid="stVerticalBlock"]:has(> div > .stock-nav-anchor) [data-testid="stHorizontalBlock"] > div:nth-child(3) {
+        flex: 0 0 76px !important;
+        width: 76px !important;
+        min-width: 76px !important;
+        max-width: 76px !important;
     }
-    [data-testid="stHorizontalBlock"] > [data-testid="stColumn"]:not(:has(button)),
-    [data-testid="stHorizontalBlock"] > div:not(:has(button)) {
+    div[data-testid="stVerticalBlock"]:has(> div > .stock-nav-anchor) [data-testid="stHorizontalBlock"] > [data-testid="stColumn"]:nth-child(2),
+    div[data-testid="stVerticalBlock"]:has(> div > .stock-nav-anchor) [data-testid="stHorizontalBlock"] > div:nth-child(2) {
         flex: 1 1 auto !important;
-        width: calc(100% - 150px) !important;
-        min-width: 160px !important;
+        width: auto !important;
+        min-width: 180px !important;
         max-width: none !important;
     }
-    [data-testid="stHorizontalBlock"] > [data-testid="stColumn"]:not(:has(button)) [data-testid="stSelectbox"],
-    [data-testid="stHorizontalBlock"] > [data-testid="stColumn"]:not(:has(button)) div[data-baseweb="select"],
-    [data-testid="stHorizontalBlock"] > div:not(:has(button)) [data-testid="stSelectbox"],
-    [data-testid="stHorizontalBlock"] > div:not(:has(button)) div[data-baseweb="select"] {
+    div[data-testid="stVerticalBlock"]:has(> div > .stock-nav-anchor) [data-testid="stHorizontalBlock"] > [data-testid="stColumn"]:nth-child(2) > div,
+    div[data-testid="stVerticalBlock"]:has(> div > .stock-nav-anchor) [data-testid="stHorizontalBlock"] > [data-testid="stColumn"]:nth-child(2) [data-testid="stSelectbox"],
+    div[data-testid="stVerticalBlock"]:has(> div > .stock-nav-anchor) [data-testid="stHorizontalBlock"] > [data-testid="stColumn"]:nth-child(2) div[data-baseweb="select"],
+    div[data-testid="stVerticalBlock"]:has(> div > .stock-nav-anchor) [data-testid="stHorizontalBlock"] > [data-testid="stColumn"]:nth-child(2) div[data-baseweb="select"] > div,
+    div[data-testid="stVerticalBlock"]:has(> div > .stock-nav-anchor) [data-testid="stHorizontalBlock"] > div:nth-child(2) > div,
+    div[data-testid="stVerticalBlock"]:has(> div > .stock-nav-anchor) [data-testid="stHorizontalBlock"] > div:nth-child(2) [data-testid="stSelectbox"],
+    div[data-testid="stVerticalBlock"]:has(> div > .stock-nav-anchor) [data-testid="stHorizontalBlock"] > div:nth-child(2) div[data-baseweb="select"],
+    div[data-testid="stVerticalBlock"]:has(> div > .stock-nav-anchor) [data-testid="stHorizontalBlock"] > div:nth-child(2) div[data-baseweb="select"] > div {
         width: 100% !important;
-        min-width: 160px !important;
+        min-width: 180px !important;
+        max-width: 100% !important;
     }
-    [data-testid="stHorizontalBlock"] button {
+    div[data-testid="stVerticalBlock"]:has(> div > .stock-nav-anchor) [data-testid="stHorizontalBlock"] button {
         width: 100% !important;
-        min-width: 64px !important;
-        padding: 3px 4px !important;
+        min-width: 72px !important;
+        padding: 4px 4px !important;
         font-size: 12px !important;
         white-space: nowrap !important;
     }
@@ -968,34 +975,36 @@ else:
     cur_sel_idx = selector_options.index(cur_display_label)
 
     # 頂部：「◀ 上一檔」＋「可輸入＋下拉點選（代號 名稱）」＋「下一檔 ▶」
-    col_prev, col_input, col_next = st.columns([1.2, 4.6, 1.2])
-    with col_prev:
-        if st.button("◀ 上一檔", key="btn_top_prev", use_container_width=True):
-            if history_codes:
-                idx = history_codes.index(cur_code_upper) if cur_code_upper in history_codes else 0
-                prev_code = history_codes[(idx - 1) % len(history_codes)]
-                st.session_state.stock_id = prev_code
-                st.session_state.promote_to_top = False
-                st.rerun()
-    with col_input:
-        st.selectbox(
-            "股票代號或名稱",
-            options=selector_options,
-            index=cur_sel_idx,
-            accept_new_options=True,
-            key="top_stock_selector",
-            on_change=on_top_stock_selector_change,
-            placeholder="輸入代號或下拉選擇標的 (如 2330, 00632R, ^TWII)",
-            label_visibility="collapsed"
-        )
-    with col_next:
-        if st.button("下一檔 ▶", key="btn_top_next", use_container_width=True):
-            if history_codes:
-                idx = history_codes.index(cur_code_upper) if cur_code_upper in history_codes else 0
-                next_code = history_codes[(idx + 1) % len(history_codes)]
-                st.session_state.stock_id = next_code
-                st.session_state.promote_to_top = False
-                st.rerun()
+    with st.container():
+        st.markdown("<div class='stock-nav-anchor'></div>", unsafe_allow_html=True)
+        col_prev, col_input, col_next = st.columns([1, 6, 1])
+        with col_prev:
+            if st.button("◀ 上一檔", key="btn_top_prev", use_container_width=True):
+                if history_codes:
+                    idx = history_codes.index(cur_code_upper) if cur_code_upper in history_codes else 0
+                    prev_code = history_codes[(idx - 1) % len(history_codes)]
+                    st.session_state.stock_id = prev_code
+                    st.session_state.promote_to_top = False
+                    st.rerun()
+        with col_input:
+            st.selectbox(
+                "股票代號或名稱",
+                options=selector_options,
+                index=cur_sel_idx,
+                accept_new_options=True,
+                key="top_stock_selector",
+                on_change=on_top_stock_selector_change,
+                placeholder="輸入代號或下拉選擇標的 (如 2330, 00632R, ^TWII)",
+                label_visibility="collapsed"
+            )
+        with col_next:
+            if st.button("下一檔 ▶", key="btn_top_next", use_container_width=True):
+                if history_codes:
+                    idx = history_codes.index(cur_code_upper) if cur_code_upper in history_codes else 0
+                    next_code = history_codes[(idx + 1) % len(history_codes)]
+                    st.session_state.stock_id = next_code
+                    st.session_state.promote_to_top = False
+                    st.rerun()
 
     st.markdown(get_legend_html(), unsafe_allow_html=True)
 
@@ -1137,34 +1146,36 @@ else:
             btm_options = [btm_cur_label] + btm_options
         btm_sel_idx = btm_options.index(btm_cur_label)
 
-        btm_prev, btm_sel, btm_next = st.columns([1.2, 4.6, 1.2])
-        with btm_prev:
-            if st.button("◀ 上一檔", key="btn_btm_prev", use_container_width=True):
-                if latest_hist_codes:
-                    idx = latest_hist_codes.index(pure_ticker) if pure_ticker in latest_hist_codes else 0
-                    prev_code = latest_hist_codes[(idx - 1) % len(latest_hist_codes)]
-                    st.session_state.stock_id = prev_code
-                    st.session_state.promote_to_top = False
-                    st.rerun()
-        with btm_sel:
-            st.selectbox(
-                "關注標的",
-                options=btm_options,
-                index=btm_sel_idx,
-                accept_new_options=True,
-                key="bottom_stock_selector",
-                on_change=on_bottom_stock_selector_change,
-                placeholder="輸入代號或下拉選擇標的 (如 2330, 00632R, ^TWII)",
-                label_visibility="collapsed"
-            )
-        with btm_next:
-            if st.button("下一檔 ▶", key="btn_btm_next", use_container_width=True):
-                if latest_hist_codes:
-                    idx = latest_hist_codes.index(pure_ticker) if pure_ticker in latest_hist_codes else 0
-                    next_code = latest_hist_codes[(idx + 1) % len(latest_hist_codes)]
-                    st.session_state.stock_id = next_code
-                    st.session_state.promote_to_top = False
-                    st.rerun()
+        with st.container():
+            st.markdown("<div class='stock-nav-anchor'></div>", unsafe_allow_html=True)
+            btm_prev, btm_sel, btm_next = st.columns([1, 6, 1])
+            with btm_prev:
+                if st.button("◀ 上一檔", key="btn_btm_prev", use_container_width=True):
+                    if latest_hist_codes:
+                        idx = latest_hist_codes.index(pure_ticker) if pure_ticker in latest_hist_codes else 0
+                        prev_code = latest_hist_codes[(idx - 1) % len(latest_hist_codes)]
+                        st.session_state.stock_id = prev_code
+                        st.session_state.promote_to_top = False
+                        st.rerun()
+            with btm_sel:
+                st.selectbox(
+                    "關注標的",
+                    options=btm_options,
+                    index=btm_sel_idx,
+                    accept_new_options=True,
+                    key="bottom_stock_selector",
+                    on_change=on_bottom_stock_selector_change,
+                    placeholder="輸入代號或下拉選擇標的 (如 2330, 00632R, ^TWII)",
+                    label_visibility="collapsed"
+                )
+            with btm_next:
+                if st.button("下一檔 ▶", key="btn_btm_next", use_container_width=True):
+                    if latest_hist_codes:
+                        idx = latest_hist_codes.index(pure_ticker) if pure_ticker in latest_hist_codes else 0
+                        next_code = latest_hist_codes[(idx + 1) % len(latest_hist_codes)]
+                        st.session_state.stock_id = next_code
+                        st.session_state.promote_to_top = False
+                        st.rerun()
 
         # 底部保留一行空白緩衝區，避開右下角懸浮之 [Manage app] 按鈕
         st.markdown("<div style='height: 54px;'></div>", unsafe_allow_html=True)
