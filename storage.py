@@ -1,7 +1,7 @@
 """
 storage.py - 本地 SQLite 資料庫與股票歷史紀錄管理器
-(支援含英文後綴台股ETF與雲端分點增量累積與批次清除分點與大盤融資金額欄位向後相容與多日歷史分點統計全載入版)
-版本: 202611210850
+(支援含英文後綴台股ETF與雲端分點增量累積與批次清除分點與大盤融資金額欄位向後相容與多日歷史分點統計全載入及舊表自動遷移防呆版)
+版本: 202611210900
 """
 
 import os
@@ -18,7 +18,7 @@ from datetime import datetime, timedelta
 import pandas as pd
 
 MODULE_NAME = "storage"
-MODULE_VERSION = "202611210850"
+MODULE_VERSION = "202611210900"
 
 STORAGE_DIR = "."
 HISTORY_FILE = os.path.join(STORAGE_DIR, "stock_history.json")
@@ -546,6 +546,10 @@ class StockChipStorage:
                     PRIMARY KEY (broker_name, trade_date)
                 )
             ''')
+            # 【修訂說明 2026-11-21】【修改目的與防呆防錯原因】：
+            # 修改目的：檢查舊版資料庫（如 data_6669.db）之 broker_range_rank 欄位結構，若缺少 range_date 等新版欄位，
+            # 自動重建為最新資料表結構，避免查詢時觸發 OperationalError: no such column: range_date。
+            # 防呆防錯原因：僅重建分點區間統計表（可隨時重新抓取），完整保留 daily_k、institutional_investors、margin_short、shareholding_distribution 與 broker_daily_trades。
             cursor.execute('''
                 CREATE TABLE IF NOT EXISTS broker_range_rank (
                     range_date TEXT,
@@ -562,6 +566,30 @@ class StockChipStorage:
                     PRIMARY KEY (range_date, win_days, side, rank)
                 )
             ''')
+            cursor.execute("PRAGMA table_info(broker_range_rank)")
+            br_cols = {row[1] for row in cursor.fetchall()}
+            required_br_cols = {
+                "range_date", "win_days", "side", "rank", "broker_name",
+                "broker_sys", "buy_sheets", "sell_sheets", "net_sheets", "ratio_str", "range_label"
+            }
+            if br_cols and not required_br_cols.issubset(br_cols):
+                cursor.execute("DROP TABLE IF EXISTS broker_range_rank")
+                cursor.execute('''
+                    CREATE TABLE broker_range_rank (
+                        range_date TEXT,
+                        win_days INTEGER,
+                        side TEXT,
+                        rank INTEGER,
+                        broker_name TEXT,
+                        broker_sys TEXT,
+                        buy_sheets INTEGER DEFAULT 0,
+                        sell_sheets INTEGER DEFAULT 0,
+                        net_sheets INTEGER DEFAULT 0,
+                        ratio_str TEXT,
+                        range_label TEXT,
+                        PRIMARY KEY (range_date, win_days, side, rank)
+                    )
+                ''')
             cursor.execute("DELETE FROM shareholding_distribution WHERE level > 15 OR level < 1")
             conn.commit()
 
@@ -784,13 +812,17 @@ class StockChipStorage:
         r_date = str(range_date or "").strip()[:10]
         if not r_date:
             return None
-        with sqlite3.connect(self.db_path) as conn:
-            rows = conn.execute('''
-                SELECT win_days, side, rank, broker_name, broker_sys, buy_sheets, sell_sheets, net_sheets, ratio_str, range_label
-                FROM broker_range_rank
-                WHERE range_date = ?
-                ORDER BY win_days ASC, side ASC, rank ASC
-            ''', (r_date,)).fetchall()
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                rows = conn.execute('''
+                    SELECT win_days, side, rank, broker_name, broker_sys, buy_sheets, sell_sheets, net_sheets, ratio_str, range_label
+                    FROM broker_range_rank
+                    WHERE range_date = ?
+                    ORDER BY win_days ASC, side ASC, rank ASC
+                ''', (r_date,)).fetchall()
+        except sqlite3.OperationalError:
+            self._init_db()
+            return None
         if not rows:
             return None
         result = {}
@@ -815,14 +847,18 @@ class StockChipStorage:
         【修訂說明 2026-11-21】【修改目的與防呆防錯原因】：
         修改目的：一次性讀取本地已下載 SQLite 資料庫（broker_range_rank）中所有已累積之歷史基準日分點統計快照，
         回傳 {range_date: bundle_dict}，供主圖十字線切換至前一日（如 11/19）時即時呈現，避免隔日基準日推進後看不到前一日紀錄。
-        防呆防錯原因：僅查詢本地已存在之 data_{code}.db（耗時 < 3ms，零額外雲端或網站網路請求），不影響既有單日查詢介面。
+        防呆防錯原因：僅查詢本地已存在之 data_{code}.db（耗時 < 3ms，零額外雲端或網站網路請求）；若遇舊表結構不符（OperationalError），自動呼叫 _init_db() 修復並安全回傳空字典。
         """
-        with sqlite3.connect(self.db_path) as conn:
-            rows = conn.execute('''
-                SELECT range_date, win_days, side, rank, broker_name, broker_sys, buy_sheets, sell_sheets, net_sheets, ratio_str, range_label
-                FROM broker_range_rank
-                ORDER BY range_date ASC, win_days ASC, side ASC, rank ASC
-            ''').fetchall()
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                rows = conn.execute('''
+                    SELECT range_date, win_days, side, rank, broker_name, broker_sys, buy_sheets, sell_sheets, net_sheets, ratio_str, range_label
+                    FROM broker_range_rank
+                    ORDER BY range_date ASC, win_days ASC, side ASC, rank ASC
+                ''').fetchall()
+        except sqlite3.OperationalError:
+            self._init_db()
+            return {}
         if not rows:
             return {}
         by_date = {}
