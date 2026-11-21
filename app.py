@@ -1,7 +1,7 @@
 """
 app.py - 主應用程式介面與生命週期控制
 (三主頁籤架構：操作儀錶板 / 個股 / 參數設定 + 自選與查詢歷史同步 + 盤中均線多空燈號 + 動態chart_id杜絕跨頁籤殘留 + 批次增補指定基準日起往前N日分點統計與明細版 + 分點15:00前對齊前一交易日與分點統計/分點日況雙頁籤版 + 上下雙複合選單自由輸入置頂/下拉選取不改順序及初始K線30根版)
-版本: 202611211145
+版本: 202611211200
 """
 
 import os
@@ -13,7 +13,7 @@ import streamlit.components.v1 as components
 import cloud_sync
 
 MODULE_NAME = "app"
-MODULE_VERSION = "202611211145"
+MODULE_VERSION = "202611211200"
 
 
 # 【防呆防錯備註 2026-11-07】：版本控制權由 app.py 作為唯一權威源，動態掃描所有模組最大版本號，杜絕多頭覆寫與重工
@@ -94,6 +94,23 @@ def resolve_ticker_code(raw_input: str) -> str:
     if upper in INDEX_MAP:
         return INDEX_MAP[upper]
     return upper
+
+
+def _format_code_name_options(history_list: list) -> list:
+    """確保下拉選項皆完整呈現 '代號 名稱'（若歷史紀錄缺名稱則自動補齊中文名稱）"""
+    opts = []
+    seen = set()
+    for h in history_list:
+        code = str(h.get("code", "")).strip().upper()
+        if not code or code in seen:
+            continue
+        seen.add(code)
+        name = str(h.get("name", "")).strip()
+        if not name or name == code:
+            name = get_stock_chinese_name(code)
+        lbl = f"{code} {name}".strip() if (name and name != code) else code
+        opts.append(lbl)
+    return opts
 
 
 @st.cache_data(ttl=60, show_spinner=False)
@@ -354,36 +371,40 @@ st.markdown("""
         display: none !important;
     }
 
-    /* 上一檔 / 中間複合選單 / 下一檔按鈕列自適應寬度（放寬中間下拉選單，避免窄螢幕收縮只剩箭頭） */
+    /* 上一檔 / 中間複合選單 / 下一檔按鈕列自適應寬度（同時鎖定 stColumn 與 div，防止上下選單收縮只剩箭頭） */
     [data-testid="stHorizontalBlock"] {
         display: flex !important;
         flex-direction: row !important;
         flex-wrap: nowrap !important;
-        justify-content: center !important;
+        justify-content: space-between !important;
         align-items: center !important;
         gap: 6px !important;
         width: 100% !important;
     }
+    [data-testid="stHorizontalBlock"] > [data-testid="stColumn"]:has(button),
     [data-testid="stHorizontalBlock"] > div:has(button) {
-        flex: 0 0 66px !important;
-        width: 66px !important;
-        min-width: 66px !important;
-        max-width: 66px !important;
+        flex: 0 0 68px !important;
+        width: 68px !important;
+        min-width: 68px !important;
+        max-width: 68px !important;
     }
+    [data-testid="stHorizontalBlock"] > [data-testid="stColumn"]:not(:has(button)),
     [data-testid="stHorizontalBlock"] > div:not(:has(button)) {
         flex: 1 1 auto !important;
-        width: 100% !important;
-        min-width: 140px !important;
+        width: calc(100% - 150px) !important;
+        min-width: 160px !important;
         max-width: none !important;
     }
+    [data-testid="stHorizontalBlock"] > [data-testid="stColumn"]:not(:has(button)) [data-testid="stSelectbox"],
+    [data-testid="stHorizontalBlock"] > [data-testid="stColumn"]:not(:has(button)) div[data-baseweb="select"],
     [data-testid="stHorizontalBlock"] > div:not(:has(button)) [data-testid="stSelectbox"],
     [data-testid="stHorizontalBlock"] > div:not(:has(button)) div[data-baseweb="select"] {
         width: 100% !important;
-        min-width: 140px !important;
+        min-width: 160px !important;
     }
     [data-testid="stHorizontalBlock"] button {
         width: 100% !important;
-        min-width: 62px !important;
+        min-width: 64px !important;
         padding: 3px 4px !important;
         font-size: 12px !important;
         white-space: nowrap !important;
@@ -503,10 +524,7 @@ def _apply_stock_selector_choice(widget_key: str):
     if not raw_sel:
         return
     hist_now = load_stock_history()
-    existing_labels = {
-        f"{str(h.get('code', '')).strip().upper()} {str(h.get('name', '')).strip()}".strip()
-        for h in hist_now if h.get("code")
-    }
+    existing_labels = set(_format_code_name_options(hist_now))
     if raw_sel in existing_labels:
         target_code = raw_sel.split()[0].strip().upper()
         if target_code:
@@ -648,6 +666,7 @@ if selected_main_tab == "📊 操作儀錶板":
                 padding: 3px 0 !important;
                 margin: 0 !important;
             }
+            div[data-testid="stVerticalBlock"]:has(.dash-grid-anchor) [data-testid="stHorizontalBlock"] > [data-testid="stColumn"],
             div[data-testid="stVerticalBlock"]:has(.dash-grid-anchor) [data-testid="stHorizontalBlock"] > div {
                 flex: 1 1 0 !important;
                 width: auto !important;
@@ -655,9 +674,11 @@ if selected_main_tab == "📊 操作儀錶板":
                 max-width: none !important;
                 text-align: center !important;
             }
+            div[data-testid="stVerticalBlock"]:has(.dash-grid-anchor) [data-testid="stHorizontalBlock"] > [data-testid="stColumn"]:nth-child(1),
             div[data-testid="stVerticalBlock"]:has(.dash-grid-anchor) [data-testid="stHorizontalBlock"] > div:nth-child(1) {
                 flex: 1.55 1 0 !important;
             }
+            div[data-testid="stVerticalBlock"]:has(.dash-grid-anchor) [data-testid="stHorizontalBlock"] > [data-testid="stColumn"]:nth-child(5),
             div[data-testid="stVerticalBlock"]:has(.dash-grid-anchor) [data-testid="stHorizontalBlock"] > div:nth-child(5) {
                 flex: 1.25 1 0 !important;
             }
@@ -751,9 +772,7 @@ elif selected_main_tab == "⚙️ 參數設定":
 
     with st.expander("查詢歷史紀錄", expanded=True):
         if history_codes:
-            history_options = ["選擇歷史紀錄..."] + [
-                f"{h.get('code')} {h.get('name', '')}".strip() for h in history_records
-            ]
+            history_options = ["選擇歷史紀錄..."] + _format_code_name_options(history_records)
             current_sb_key = f"history_selectbox_{st.session_state.ms_counter}"
             selected_history = st.selectbox(
                 "點擊展開並選擇單一標的（選擇後將置頂並跳轉至個股頁籤）...",
@@ -812,9 +831,6 @@ elif selected_main_tab == "⚙️ 參數設定":
     sel_period_label = st.selectbox("K線歷史抓取範圍", list(period_options.keys()), index=list(period_options.keys()).index(current_period_label))
     st.session_state.period = period_options[sel_period_label]
 
-    # 【修訂說明 2026-11-21】【修改目的與防呆防錯原因】：
-    # 修改目的：初始顯示K線根數恢復 +/- 5 步進輸入框（預設 30 根），支援按鈕微調與自由輸入。
-    # 防呆防錯原因：設定 min_value=5, max_value=240, step=5 確保可視K線視窗範圍有效。
     st.session_state.disp_days = int(st.number_input(
         "初始顯示K線根數",
         min_value=5,
@@ -940,14 +956,12 @@ else:
 
     history_records = load_stock_history()
     history_codes = [str(item.get("code")).strip().upper() for item in history_records if item.get("code")]
-    selector_options = [
-        f"{str(h.get('code', '')).strip().upper()} {str(h.get('name', '')).strip()}".strip()
-        for h in history_records if h.get("code")
-    ]
+    selector_options = _format_code_name_options(history_records)
     cur_code_upper = str(st.session_state.stock_id).strip().upper()
+    cur_name_resolved = get_stock_chinese_name(cur_code_upper)
     cur_display_label = next(
         (opt for opt in selector_options if opt.split()[0] == cur_code_upper),
-        f"{cur_code_upper} {get_stock_chinese_name(cur_code_upper)}".strip()
+        f"{cur_code_upper} {cur_name_resolved}".strip() if (cur_name_resolved and cur_name_resolved != cur_code_upper) else cur_code_upper
     )
     if cur_display_label not in selector_options:
         selector_options = [cur_display_label] + selector_options
@@ -1113,13 +1127,11 @@ else:
         st.markdown("---")
         latest_hist_list = load_stock_history()
         latest_hist_codes = [str(item.get("code")).strip().upper() for item in latest_hist_list if item.get("code")]
-        btm_options = [
-            f"{str(h.get('code', '')).strip().upper()} {str(h.get('name', '')).strip()}".strip()
-            for h in latest_hist_list if h.get("code")
-        ]
+        btm_options = _format_code_name_options(latest_hist_list)
+        btm_name_res = resolved_name if (resolved_name and resolved_name != pure_ticker) else get_stock_chinese_name(pure_ticker)
         btm_cur_label = next(
             (opt for opt in btm_options if opt.split()[0] == pure_ticker),
-            f"{pure_ticker} {resolved_name or get_stock_chinese_name(pure_ticker)}".strip()
+            f"{pure_ticker} {btm_name_res}".strip() if (btm_name_res and btm_name_res != pure_ticker) else pure_ticker
         )
         if btm_cur_label not in btm_options:
             btm_options = [btm_cur_label] + btm_options
