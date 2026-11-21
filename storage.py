@@ -1,7 +1,7 @@
 """
 storage.py - 本地 SQLite 資料庫與股票歷史紀錄管理器
-(支援含英文後綴台股ETF與雲端分點增量累積與批次清除分點與大盤融資金額欄位向後相容與多日歷史分點統計全載入及分點統計/日況舊表自動遷移與全市籌碼指定基準日區間清除防呆版)
-版本: 202611212005
+(支援含英文後綴台股ETF與雲端分點增量累積與批次清除分點與大盤融資金額欄位向後相容與多日歷史分點統計全載入及分點統計/日況舊表自動遷移與全市籌碼指定基準日區間清除防呆與集保每週真實總股數動態加總版)
+版本: 202611220105
 """
 
 import os
@@ -18,7 +18,7 @@ from datetime import datetime, timedelta
 import pandas as pd
 
 MODULE_NAME = "storage"
-MODULE_VERSION = "202611212005"
+MODULE_VERSION = "202611220105"
 
 STORAGE_DIR = "."
 HISTORY_FILE = os.path.join(STORAGE_DIR, "stock_history.json")
@@ -808,18 +808,62 @@ class StockChipStorage:
         sync_db_push(self.pure_code)
 
     def save_holding_data(self, records: list):
+        """
+        【修訂說明 2026-11-22】【修改目的與防呆防錯原因】：
+        1. 修改目的：向下相容 5 欄 (date, level, holders, shares, percent) 與舊版 3 欄 (date, level, percent) 寫入格式，
+           將集保每週公告之真實股數（shares）存入 shareholding_distribution.shares，隨每週更新自動反映增資/減資/庫藏股異動。
+        2. 防呆防錯原因：嚴格限定 1 <= level <= 15（排除第 16 差異數與第 17 合計列）。
+        """
         if not records:
             return
-        valid_records = [r for r in records if 1 <= int(r[1]) <= 15]
-        if not valid_records:
+        norm_records = []
+        for r in records:
+            if not r or len(r) < 3:
+                continue
+            lvl = int(r[1])
+            if not (1 <= lvl <= 15):
+                continue
+            if len(r) >= 5:
+                holders_v = int(r[2] or 0)
+                shares_v = int(r[3] or 0)
+                pct_v = float(r[4] or 0.0)
+                norm_records.append((str(r[0])[:10], lvl, holders_v, shares_v, pct_v))
+            else:
+                pct_v = float(r[2] or 0.0)
+                norm_records.append((str(r[0])[:10], lvl, 0, 0, pct_v))
+        if not norm_records:
             return
         with sqlite3.connect(self.db_path) as conn:
             conn.executemany('''
                 INSERT OR REPLACE INTO shareholding_distribution (date, level, holders, shares, percent)
                 VALUES (?, ?, ?, ?, ?)
-            ''', valid_records)
+            ''', norm_records)
             conn.commit()
         sync_db_push(self.pure_code)
+
+    def get_latest_tdcc_total_shares(self) -> float:
+        """
+        【修訂說明 2026-11-22】【修改目的與防呆防錯原因】：
+        1. 修改目的：動態加總本地 shareholding_distribution 最新一週（含有效 shares > 0）之 1～15 級真實股數，
+           回傳最新總發行股數（單位：股），隨每週集保更新自動同步增資、減資、庫藏股註銷與面額變更，絕不依賴永久死快取。
+        2. 防呆防錯原因：僅查詢有 shares > 0 之最新週別並嚴格限制 1 <= level <= 15，若尚無集保股數則回傳 0.0 供上層備援。
+        """
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                row_dt = conn.execute(
+                    "SELECT MAX(date) FROM shareholding_distribution WHERE level >= 1 AND level <= 15 AND shares > 0"
+                ).fetchone()
+                if not row_dt or not row_dt[0]:
+                    return 0.0
+                latest_dt = str(row_dt[0])[:10]
+                row_sum = conn.execute(
+                    "SELECT SUM(shares) FROM shareholding_distribution WHERE date = ? AND level >= 1 AND level <= 15",
+                    (latest_dt,)
+                ).fetchone()
+                tot = float(row_sum[0] or 0.0) if row_sum else 0.0
+                return tot if tot > 0 else 0.0
+        except Exception:
+            return 0.0
 
     def load_institutional_df(self) -> pd.DataFrame:
         with sqlite3.connect(self.db_path) as conn:
