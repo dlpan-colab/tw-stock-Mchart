@@ -1,7 +1,7 @@
 """
 app.py - 主應用程式介面與生命週期控制
 (三主頁籤架構：操作儀錶板 / 個股 / 參數設定 + 自選與查詢歷史同步 + 盤中均線多空燈號 + 動態chart_id杜絕跨頁籤殘留 + 批次增補指定基準日起往前N日分點統計與明細版 + 分點15:00前對齊前一交易日與分點統計/分點日況雙頁籤版 + 多日歷史分點統計與日況全載入版)
-版本: 202611210912
+版本: 202611210918
 """
 
 import os
@@ -13,7 +13,7 @@ import streamlit.components.v1 as components
 import cloud_sync
 
 MODULE_NAME = "app"
-MODULE_VERSION = "202611210912"
+MODULE_VERSION = "202611210918"
 
 
 # 【防呆防錯備註 2026-11-07】：版本控制權由 app.py 作為唯一權威源，動態掃描所有模組最大版本號，杜絕多頭覆寫與重工
@@ -820,12 +820,22 @@ elif selected_main_tab == "⚙️ 參數設定":
 
     st.markdown("---")
     st.markdown("**全市場分點批次增補與維護**")
+    # 【修訂說明 2026-11-21】【修改目的與防呆防錯原因】：
+    # 修改目的：兼容 get_default_broker_backfill_base_date() 回傳 datetime.date 物件或字串，避免 datetime.strptime 觸發 TypeError。
+    # 防呆防錯原因：依實際型別轉換為 datetime.date，確保參數設定頁籤開啟時不報錯。
     default_bf_date = get_default_broker_backfill_base_date()
+    if isinstance(default_bf_date, str):
+        parsed_bf_date = datetime.strptime(default_bf_date[:10], "%Y-%m-%d").date()
+    elif hasattr(default_bf_date, "date"):
+        parsed_bf_date = default_bf_date.date()
+    else:
+        parsed_bf_date = default_bf_date
+
     bf_col1, bf_col2 = st.columns([1.3, 1.0])
     with bf_col1:
         backfill_base_dt = st.date_input(
             "增補基準日（預設15:00前為前一交易日）",
-            value=datetime.strptime(default_bf_date, "%Y-%m-%d").date(),
+            value=parsed_bf_date,
             key="broker_backfill_base_date_input"
         )
     with bf_col2:
