@@ -1,7 +1,7 @@
 """
 storage.py - 本地 SQLite 資料庫與股票歷史紀錄管理器
-(支援含英文後綴台股ETF與雲端分點增量累積與批次清除分點與大盤融資金額欄位向後相容與多日歷史分點統計全載入及舊表自動遷移防呆版)
-版本: 202611210900
+(支援含英文後綴台股ETF與雲端分點增量累積與批次清除分點與大盤融資金額欄位向後相容與多日歷史分點統計全載入及分點統計/日況舊表自動遷移防呆版)
+版本: 202611210905
 """
 
 import os
@@ -18,7 +18,7 @@ from datetime import datetime, timedelta
 import pandas as pd
 
 MODULE_NAME = "storage"
-MODULE_VERSION = "202611210900"
+MODULE_VERSION = "202611210905"
 
 STORAGE_DIR = "."
 HISTORY_FILE = os.path.join(STORAGE_DIR, "stock_history.json")
@@ -536,6 +536,10 @@ class StockChipStorage:
                     PRIMARY KEY (date, level)
                 )
             ''')
+            # 【修訂說明 2026-11-21】【修改目的與防呆防錯原因】：
+            # 修改目的：檢查舊版資料庫（如 data_6669.db）之 broker_daily_trades 與 broker_range_rank 欄位結構，
+            # 若缺少新版欄位，自動重建為最新資料表結構，避免寫入或查詢時觸發 OperationalError: table ... has no column named ...。
+            # 防呆防錯原因：僅重建可重新抓取之分點資料表，完整保留 daily_k、institutional_investors、margin_short 與 shareholding_distribution。
             cursor.execute('''
                 CREATE TABLE IF NOT EXISTS broker_daily_trades (
                     broker_name TEXT,
@@ -546,10 +550,22 @@ class StockChipStorage:
                     PRIMARY KEY (broker_name, trade_date)
                 )
             ''')
-            # 【修訂說明 2026-11-21】【修改目的與防呆防錯原因】：
-            # 修改目的：檢查舊版資料庫（如 data_6669.db）之 broker_range_rank 欄位結構，若缺少 range_date 等新版欄位，
-            # 自動重建為最新資料表結構，避免查詢時觸發 OperationalError: no such column: range_date。
-            # 防呆防錯原因：僅重建分點區間統計表（可隨時重新抓取），完整保留 daily_k、institutional_investors、margin_short、shareholding_distribution 與 broker_daily_trades。
+            cursor.execute("PRAGMA table_info(broker_daily_trades)")
+            bdt_cols = {row[1] for row in cursor.fetchall()}
+            required_bdt_cols = {"broker_name", "trade_date", "buy_sheets", "sell_sheets", "net_sheets"}
+            if bdt_cols and not required_bdt_cols.issubset(bdt_cols):
+                cursor.execute("DROP TABLE IF EXISTS broker_daily_trades")
+                cursor.execute('''
+                    CREATE TABLE broker_daily_trades (
+                        broker_name TEXT,
+                        trade_date TEXT,
+                        buy_sheets INTEGER DEFAULT 0,
+                        sell_sheets INTEGER DEFAULT 0,
+                        net_sheets INTEGER DEFAULT 0,
+                        PRIMARY KEY (broker_name, trade_date)
+                    )
+                ''')
+
             cursor.execute('''
                 CREATE TABLE IF NOT EXISTS broker_range_rank (
                     range_date TEXT,
@@ -743,13 +759,23 @@ class StockChipStorage:
             records.append((b_name, d_str, b_val, s_val, n_val))
         if not records:
             return
-        with sqlite3.connect(self.db_path) as conn:
-            conn.executemany('''
-                INSERT OR REPLACE INTO broker_daily_trades
-                (broker_name, trade_date, buy_sheets, sell_sheets, net_sheets)
-                VALUES (?, ?, ?, ?, ?)
-            ''', records)
-            conn.commit()
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                conn.executemany('''
+                    INSERT OR REPLACE INTO broker_daily_trades
+                    (broker_name, trade_date, buy_sheets, sell_sheets, net_sheets)
+                    VALUES (?, ?, ?, ?, ?)
+                ''', records)
+                conn.commit()
+        except sqlite3.OperationalError:
+            self._init_db()
+            with sqlite3.connect(self.db_path) as conn:
+                conn.executemany('''
+                    INSERT OR REPLACE INTO broker_daily_trades
+                    (broker_name, trade_date, buy_sheets, sell_sheets, net_sheets)
+                    VALUES (?, ?, ?, ?, ?)
+                ''', records)
+                conn.commit()
         if sync_cloud:
             sync_db_push(self.pure_code)
 
@@ -758,14 +784,18 @@ class StockChipStorage:
         b_name = str(broker_name or "").strip()
         if not b_name:
             return pd.DataFrame(columns=["日期", "買進(張)", "賣出(張)", "買賣超(張)"])
-        with sqlite3.connect(self.db_path) as conn:
-            df = pd.read_sql_query('''
-                SELECT trade_date AS 日期, buy_sheets AS "買進(張)", sell_sheets AS "賣出(張)", net_sheets AS "買賣超(張)"
-                FROM broker_daily_trades
-                WHERE broker_name = ? AND trade_date >= ? AND trade_date <= ?
-                ORDER BY trade_date ASC
-            ''', conn, params=(b_name, start_date, end_date))
-        return df
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                df = pd.read_sql_query('''
+                    SELECT trade_date AS 日期, buy_sheets AS "買進(張)", sell_sheets AS "賣出(張)", net_sheets AS "買賣超(張)"
+                    FROM broker_daily_trades
+                    WHERE broker_name = ? AND trade_date >= ? AND trade_date <= ?
+                    ORDER BY trade_date ASC
+                ''', conn, params=(b_name, start_date, end_date))
+            return df
+        except Exception:
+            self._init_db()
+            return pd.DataFrame(columns=["日期", "買進(張)", "賣出(張)", "買賣超(張)"])
 
     def save_broker_range_rank(self, range_date: str, bundle_dict: dict, sync_cloud: bool = True):
         """儲存指定基準日之 1/10/20/60 日買賣超前 10 名統計快照"""
