@@ -1,7 +1,7 @@
 """
 app.py - 主應用程式介面與生命週期控制
-(三主頁籤架構：操作儀錶板 / 個股 / 參數設定 + 自選與查詢歷史同步 + 盤中均線多空燈號 + 動態chart_id杜絕跨頁籤殘留 + 批次增補指定基準日起往前N日分點統計與明細版 + 分點15:00前對齊前一交易日與分點統計/分點日況雙頁籤版 + 上下雙複合選單自由輸入置頂/下拉選取不改順序及初始K線30根 + 全市含上櫃籌碼指定基準日區間批次增補與清除版)
-版本: 202611212025
+(三主頁籤架構：操作儀錶板 / 個股 / 參數設定 + 自選與查詢歷史同步 + 盤中均線多空燈號 + 動態chart_id杜絕跨頁籤殘留 + 批次增補指定基準日起往前N日分點統計與明細版 + 分點15:00前對齊前一交易日與分點統計/分點日況雙頁籤版 + 上下雙複合選單自由輸入置頂/下拉選取不改順序及初始K線30根 + 全市含上櫃籌碼指定基準日區間標題與雙鍵並列版)
+版本: 202611212035
 """
 
 import os
@@ -13,7 +13,7 @@ import streamlit.components.v1 as components
 import cloud_sync
 
 MODULE_NAME = "app"
-MODULE_VERSION = "202611212025"
+MODULE_VERSION = "202611212035"
 
 
 # 【防呆防錯備註 2026-11-07】：版本控制權由 app.py 作為唯一權威源，動態掃描所有模組最大版本號，杜絕多頭覆寫與重工
@@ -874,9 +874,9 @@ elif selected_main_tab == "⚙️ 參數設定":
         st.success("快取已清除，切換回「📈 個股」頁籤即會重新抓取最新資料。")
 
     # 【修訂說明 2026-11-21】【修改目的與防呆防錯原因】：
-    # 1. 修改目的：將原單一個股「籌碼資料庫維護」升級為「全市(含上櫃)籌碼資料庫維護」，
+    # 1. 修改目的：全市(含上櫃)籌碼資料庫維護採用「第一列：類別標題；第二列：批次增補 / 清除 兩功能鍵並列」版面，
     #    統一依據「籌碼增補基準日」與「往前增補交易籌碼日數」執行資券、法人、大戶三類籌碼之區間批次增補與區間清除。
-    # 2. 防呆防錯原因：清除按鈕皆附二段式確認，僅刪除 [start_date, base_date] 區間內之目標籌碼表紀錄，完整保留區間外歷史資料與其他資料表。
+    # 2. 防呆防錯原因：進度條與二段式清除確認框皆渲染在並排按鈕列正下方全寬顯示，避免半欄寬度壓縮文字。
     st.markdown("---")
     st.markdown("**全市(含上櫃)籌碼資料庫維護**")
     default_chip_date = get_default_chip_backfill_base_date()
@@ -902,8 +902,17 @@ elif selected_main_tab == "⚙️ 參數設定":
     ))
     chip_base_str = chip_base_dt.strftime("%Y-%m-%d")
 
-    # ① 資券籌碼：批次增補 + 區間清除
-    if st.button("📥 批次增補歷史資券籌碼", use_container_width=True):
+    # ① 第一列：資券籌碼維護；第二列：批次增補 / 清除 並列
+    st.markdown("<div style='font-size:13px; font-weight:700; color:#334155; margin-top:6px; margin-bottom:2px;'>資券籌碼維護</div>", unsafe_allow_html=True)
+    col_ms_add, col_ms_clr = st.columns(2)
+    with col_ms_add:
+        run_ms_sync = st.button("📥 批次增補歷史資券籌碼", key="btn_batch_sync_margin", use_container_width=True)
+    with col_ms_clr:
+        if st.button("🗑️ 清除資券籌碼資料", key="btn_batch_clear_margin", use_container_width=True):
+            st.session_state.confirm_clear_chip_type = "margin"
+            st.rerun()
+
+    if run_ms_sync:
         from data_fetcher import batch_sync_all_stocks_margin
         prog_bar = st.progress(0, text="準備檢查歷史紀錄與增補資券籌碼...")
         status_txt = st.empty()
@@ -923,12 +932,17 @@ elif selected_main_tab == "⚙️ 參數設定":
         get_cached_figures.clear()
         st.success(summary_ms)
 
-    if st.button("🗑️ 清除資券籌碼資料", use_container_width=True):
-        st.session_state.confirm_clear_chip_type = "margin"
-        st.rerun()
+    # ② 第一列：法人籌碼維護；第二列：批次增補 / 清除 並列
+    st.markdown("<div style='font-size:13px; font-weight:700; color:#334155; margin-top:6px; margin-bottom:2px;'>法人籌碼維護</div>", unsafe_allow_html=True)
+    col_in_add, col_in_clr = st.columns(2)
+    with col_in_add:
+        run_in_sync = st.button("📥 批次增補歷史法人籌碼", key="btn_batch_sync_inst", use_container_width=True)
+    with col_in_clr:
+        if st.button("🗑️ 清除法人籌碼資料", key="btn_batch_clear_inst", use_container_width=True):
+            st.session_state.confirm_clear_chip_type = "institutional"
+            st.rerun()
 
-    # ② 法人籌碼：批次增補 + 區間清除
-    if st.button("📥 批次增補歷史法人籌碼", use_container_width=True):
+    if run_in_sync:
         from data_fetcher import batch_sync_all_stocks_institutional
         prog_bar = st.progress(0, text="準備檢查歷史紀錄與增補法人籌碼...")
         status_txt = st.empty()
@@ -948,12 +962,17 @@ elif selected_main_tab == "⚙️ 參數設定":
         get_cached_figures.clear()
         st.success(summary_inst)
 
-    if st.button("🗑️ 清除法人籌碼資料", use_container_width=True):
-        st.session_state.confirm_clear_chip_type = "institutional"
-        st.rerun()
+    # ③ 第一列：大戶籌碼維護；第二列：批次增補 / 清除 並列
+    st.markdown("<div style='font-size:13px; font-weight:700; color:#334155; margin-top:6px; margin-bottom:2px;'>大戶籌碼維護</div>", unsafe_allow_html=True)
+    col_hd_add, col_hd_clr = st.columns(2)
+    with col_hd_add:
+        run_hd_sync = st.button("📥 批次增補歷史大戶籌碼", key="btn_batch_sync_hold", use_container_width=True)
+    with col_hd_clr:
+        if st.button("🗑️ 清除大戶籌碼資料", key="btn_batch_clear_hold", use_container_width=True):
+            st.session_state.confirm_clear_chip_type = "holding"
+            st.rerun()
 
-    # ③ 大戶籌碼：批次增補 + 區間清除
-    if st.button("📥 批次增補歷史大戶籌碼", use_container_width=True):
+    if run_hd_sync:
         from data_fetcher import batch_sync_all_stocks_holding
         prog_bar = st.progress(0, text="準備檢查歷史紀錄與增補大戶籌碼...")
         status_txt = st.empty()
@@ -972,10 +991,6 @@ elif selected_main_tab == "⚙️ 參數設定":
         status_txt.empty()
         get_cached_figures.clear()
         st.success(summary_hold)
-
-    if st.button("🗑️ 清除大戶籌碼資料", use_container_width=True):
-        st.session_state.confirm_clear_chip_type = "holding"
-        st.rerun()
 
     # 二段式確認清除（依籌碼增補基準日＋往前增補交易籌碼日數）
     pending_chip_clr = st.session_state.get("confirm_clear_chip_type", "")
@@ -1030,7 +1045,16 @@ elif selected_main_tab == "⚙️ 參數設定":
         key="broker_backfill_days_input"
     ))
 
-    if st.button("📥 批次增補歷史分點（統計與明細）", use_container_width=True):
+    st.markdown("<div style='font-size:13px; font-weight:700; color:#334155; margin-top:6px; margin-bottom:2px;'>分點統計與明細維護</div>", unsafe_allow_html=True)
+    col_bk_add, col_bk_clr = st.columns(2)
+    with col_bk_add:
+        run_bk_sync = st.button("📥 批次增補歷史分點（統計與明細）", key="btn_batch_sync_brokers", use_container_width=True)
+    with col_bk_clr:
+        if st.button("🗑️ 清除所有個股分點資料", key="btn_batch_clear_brokers", use_container_width=True):
+            st.session_state.confirm_clear_brokers = True
+            st.rerun()
+
+    if run_bk_sync:
         from data_fetcher import batch_sync_all_stocks_brokers
         base_d_str = backfill_base_dt.strftime("%Y-%m-%d")
         prog_bar = st.progress(0, text="準備檢查歷史紀錄與增補分點資料...")
@@ -1050,10 +1074,6 @@ elif selected_main_tab == "⚙️ 參數設定":
         status_txt.empty()
         get_cached_broker_payload.clear()
         st.success(summary_msg)
-
-    if st.button("🗑️ 清除所有個股分點資料（保留日線/法人/資券/集保）", use_container_width=True):
-        st.session_state.confirm_clear_brokers = True
-        st.rerun()
 
     if st.session_state.confirm_clear_brokers:
         st.warning("⚠️ 確定要清除本地與雲端所有個股之「分點統計與分點日況明細」嗎？（日線、法人、資券與集保大戶資料將完整保留）")
