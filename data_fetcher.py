@@ -1,11 +1,12 @@
 """
 data_fetcher.py - 整合技術與籌碼資料擷取模組
-(支援含英文後綴台股ETF + TWSE/TPEx官方日K即時補齊 + 大盤加權^TWII與櫃買^TWOII資券與融資金額(億)擷取 + 雲端增量累積分點引擎 + 集保官網qryStock動態Token多週歷史查詢與id=1-5批次分離含真實股數儲存 + 賣超負值正規化 + 操作儀錶板盤中報價版 + 富邦10欄並排表格與精準單日分點統計/明細5欄修正版 + 全市場歷史分點統計追滿N日但日況明細僅抓最新交易日近20日並綁定關注日版 + 全市含上櫃資券/法人/大戶指定基準日區間批次增補引擎版)
-版本: 202611221555
+(支援含英文後綴台股ETF + TWSE/TPEx官方日K即時補齊 + 大盤加權^TWII與櫃買^TWOII資券與融資金額(億)擷取 + 雲端增量累積分點引擎 + 集保官網qryStock動態Token多週歷史查詢與id=1-5批次分離含真實股數儲存 + 賣超負值正規化 + 操作儀錶板盤中報價版 + 富邦10欄並排表格與精準單日分點統計/明細5欄修正版 + 全市場歷史分點統計追滿N日但日況明細僅抓最新交易日近20日並綁定關注日版 + 全市含上櫃資券/法人/大戶指定基準日區間批次增補引擎版 + 批次增補記憶體主動回收與雲端同步節流防OOM自動Reboot版)
+版本: 202611221715
 """
 import os
 import io
 import re
+import gc
 import glob
 import json
 import time
@@ -18,7 +19,7 @@ from datetime import datetime, timedelta
 from urllib.parse import urljoin, urlparse, parse_qs, urlencode, urlunparse
 
 MODULE_NAME = "data_fetcher"
-MODULE_VERSION = "202611221555"
+MODULE_VERSION = "202611221715"
 
 from storage import (
     StockChipStorage, COMMON_STOCK_NAMES, load_stock_names_dict,
@@ -1381,6 +1382,7 @@ def batch_sync_all_stocks_brokers(
     1. 修改目的：
        - 分點統計（1 / 10 / 20 日買賣超前 10 名，`broker_range_rank`）：依使用者指定基準日（`base_date_str`）往前追溯 `lookback_days` 個交易日，逐日追滿所有缺漏交易日統計。
        - 分點日況明細（`broker_focus_daily_series`）：無論「往前增補交易日數」設為幾天，由於富邦單一分點明細頁（zco0.djhtm）僅提供最新交易日往回 20 個交易日明細，因此**僅針對該個股最新一個交易日（`latest_trade_date`）抓取其近 10 日與近 20 日買賣超前 5 名分點之近 20 日逐日明細並綁定 `focus_date = latest_trade_date`**；更早的歷史基準日完全跳過逐日明細抓取，絕不浪費時間且絕不造成跨日殘影。
+       - 每檔個股完成後主動呼叫 `gc.collect()` 與 `time.sleep(0.25)`，避免 Streamlit Cloud 1 GB 記憶體累積觸發 OOM 自動 Reboot。
     2. 防呆防錯原因：
        - 自動過濾排除 ^ 開頭指數；已具備完整 `w1/w10/w20` 統計之交易日直接跳過；
        - 每檔個股完成所有寫入後僅執行一次 `sync_db_push(code)`，降低 Google Drive API 寫入次數。
@@ -1436,6 +1438,7 @@ def batch_sync_all_stocks_brokers(
 
         if df_k is None or df_k.empty:
             print(f"[BrokerBackfill] [{idx_s}/{tot_n}] {code} {c_name}: 無日K資料，略過")
+            gc.collect()
             continue
 
         trade_dates = [d.strftime("%Y-%m-%d") for d in df_k.index]
@@ -1445,6 +1448,7 @@ def batch_sync_all_stocks_brokers(
         valid_pos = [i for i, d_s in enumerate(trade_dates) if d_s <= b_norm]
         if not valid_pos:
             print(f"[BrokerBackfill] [{idx_s}/{tot_n}] {code} {c_name}: 無 <= {b_norm} 交易日，略過")
+            gc.collect()
             continue
 
         anchor_pos = valid_pos[-1]
@@ -1569,6 +1573,7 @@ def batch_sync_all_stocks_brokers(
                                     sync_cloud=False
                                 )
                                 wrote_focus_series = True
+            broker_df_cache.clear()
 
         # 3. 寫入該檔個股所有缺漏日統計快照並同步上傳雲端一次
         if pending_bundles or wrote_focus_series:
@@ -1578,8 +1583,12 @@ def batch_sync_all_stocks_brokers(
             sync_db_push(code)
             updated_stocks += 1
             print(f"[BrokerBackfill] [{idx_s}/{tot_n}] {code} {c_name}: 補齊 {len(pending_bundles)} 日統計快照（最新日況綁定 {latest_trade_date}）並同步雲端")
+            time.sleep(0.25)
         else:
             print(f"[BrokerBackfill] [{idx_s}/{tot_n}] {code} {c_name}: 目標區間已完整，略過")
+
+        del df_k, pending_bundles, latest_rank_dfs
+        gc.collect()
 
     summary = (
         f"批次分點增補完成（統計基準日 {b_norm} 往前 {n_days} 個交易日；日況明細僅限最新交易日近20日）："
@@ -1633,9 +1642,10 @@ def batch_sync_all_stocks_margin(
     progress_callback=None
 ) -> str:
     """
-    【修訂說明 2026-11-21】【修改目的與防呆防錯原因】：
+    【修訂說明 2026-11-22】【修改目的與防呆防錯原因】：
     1. 修改目的：依據「籌碼增補基準日（base_date_str）」與「往前增補交易籌碼日數（lookback_days）」，
-       針對所有上市／上櫃個股（含 ETF）補齊 [start_date, base_date_str] 區間內缺失之資券籌碼資料（margin_short）並同步雲端。
+       針對所有上市／上櫃個股（含 ETF）補齊 [start_date, base_date_str] 區間內缺失之資券籌碼資料（margin_short）並同步雲端；
+       每檔完成後主動釋放記憶體並節制雲端上傳節奏，避免容器 OOM 重啟。
     2. 防呆防錯原因：沿用已驗證資料源 FinMind TaiwanStockMarginPurchaseShortSale；已具備該區間完整交易日紀錄者自動跳過。
     """
     stock_items = _get_hist_tw_stock_items()
@@ -1660,11 +1670,13 @@ def batch_sync_all_stocks_margin(
             if k_res and k_res[0] is not None:
                 df_k = k_res[0]
         if df_k is None or df_k.empty:
+            gc.collect()
             continue
 
         trade_dates = [d.strftime("%Y-%m-%d") for d in df_k.index]
         valid_pos = [i for i, d_s in enumerate(trade_dates) if d_s <= b_norm]
         if not valid_pos:
+            gc.collect()
             continue
 
         anchor_pos = valid_pos[-1]
@@ -1676,6 +1688,8 @@ def batch_sync_all_stocks_margin(
         exist_dates = set(df_ms_exist["date"].dt.strftime("%Y-%m-%d")) if (df_ms_exist is not None and not df_ms_exist.empty) else set()
         missing_dates = [d for d in target_dates if d not in exist_dates]
         if not missing_dates:
+            del df_k, df_ms_exist
+            gc.collect()
             continue
 
         if progress_callback:
@@ -1688,7 +1702,12 @@ def batch_sync_all_stocks_margin(
             storage.save_margin_data(recs_filtered)
             updated_stocks += 1
             added_rows_total += len(recs_filtered)
-        time.sleep(0.08)
+            time.sleep(0.25)
+        else:
+            time.sleep(0.08)
+
+        del df_k, df_ms_exist, recs_all, recs_filtered
+        gc.collect()
 
     return (
         f"批次資券籌碼增補完成（基準日 {b_norm} 往前 {n_days} 個交易日）："
@@ -1702,9 +1721,10 @@ def batch_sync_all_stocks_institutional(
     progress_callback=None
 ) -> str:
     """
-    【修訂說明 2026-11-21】【修改目的與防呆防錯原因】：
+    【修訂說明 2026-11-22】【修改目的與防呆防錯原因】：
     1. 修改目的：依據「籌碼增補基準日（base_date_str）」與「往前增補交易籌碼日數（lookback_days）」，
-       針對所有上市／上櫃個股（含 ETF）補齊 [start_date, base_date_str] 區間內缺失之三大法人籌碼資料（institutional_investors）並同步雲端。
+       針對所有上市／上櫃個股（含 ETF）補齊 [start_date, base_date_str] 區間內缺失之三大法人籌碼資料（institutional_investors）並同步雲端；
+       每檔完成後主動釋放記憶體並節制雲端上傳節奏，避免容器 OOM 重啟。
     2. 防呆防錯原因：沿用已驗證資料源（證交所 T86 / 櫃買 3itrade / FinMind 備援），僅針對區間內缺失交易日發起請求。
     """
     stock_items = _get_hist_tw_stock_items()
@@ -1729,11 +1749,13 @@ def batch_sync_all_stocks_institutional(
             if k_res and k_res[0] is not None:
                 df_k = k_res[0]
         if df_k is None or df_k.empty:
+            gc.collect()
             continue
 
         trade_dates = [d.strftime("%Y-%m-%d") for d in df_k.index]
         valid_pos = [i for i, d_s in enumerate(trade_dates) if d_s <= b_norm]
         if not valid_pos:
+            gc.collect()
             continue
 
         anchor_pos = valid_pos[-1]
@@ -1744,6 +1766,8 @@ def batch_sync_all_stocks_institutional(
         exist_dates = set(df_inst_exist["date"].dt.strftime("%Y-%m-%d")) if (df_inst_exist is not None and not df_inst_exist.empty) else set()
         missing_dt_objs = [d for d in df_k.index if d.strftime("%Y-%m-%d") in target_dates_str and d.strftime("%Y-%m-%d") not in exist_dates]
         if not missing_dt_objs:
+            del df_k, df_inst_exist
+            gc.collect()
             continue
 
         if progress_callback:
@@ -1758,7 +1782,12 @@ def batch_sync_all_stocks_institutional(
             storage.save_institutional_data(inst_recs)
             updated_stocks += 1
             added_rows_total += len(inst_recs)
-        time.sleep(0.06)
+            time.sleep(0.25)
+        else:
+            time.sleep(0.06)
+
+        del df_k, df_inst_exist, inst_recs
+        gc.collect()
 
     return (
         f"批次法人籌碼增補完成（基準日 {b_norm} 往前 {n_days} 個交易日）："
@@ -1774,7 +1803,8 @@ def batch_sync_all_stocks_holding(
     """
     【修訂說明 2026-11-22】【修改目的與防呆防錯原因】：
     1. 修改目的：依據「籌碼增補基準日（base_date_str）」與「往前增補交易籌碼日數（lookback_days）」所涵蓋之區間 [start_date, base_date_str]，
-       針對所有上市／上櫃個股（含 ETF）補齊落於該區間內之集保大戶股權分散表（1～15 級，含人數與真實股數）並同步雲端。
+       針對所有上市／上櫃個股（含 ETF）補齊落於該區間內之集保大戶股權分散表（1～15 級，含人數與真實股數）並同步雲端；
+       每檔完成後主動釋放記憶體並節制雲端上傳節奏，避免容器 OOM 重啟。
     2. 防呆防錯原因：沿用已驗證資料源（集保官網 qryStock 動態 Token 多週歷史查詢），保留完整 5 欄 `(d, lvl, holders, shares, pct)` 寫入資料庫，並嚴格限制 1 <= level <= 15。
     """
     stock_items = _get_hist_tw_stock_items()
@@ -1824,7 +1854,12 @@ def batch_sync_all_stocks_holding(
             weeks_cnt = len({str(r[0])[:10] for r in filtered_recs})
             updated_stocks += 1
             added_weeks_total += weeks_cnt
-        time.sleep(0.08)
+            time.sleep(0.25)
+        else:
+            time.sleep(0.08)
+
+        del df_k, hist_recs, filtered_recs
+        gc.collect()
 
     return (
         f"批次大戶籌碼增補完成（基準日 {b_norm} 往前 {n_days} 個交易日區間）："
