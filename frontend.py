@@ -1,19 +1,19 @@
 """
 frontend.py - 前端 HTML/CSS 渲染模組
-(恢復 16 日正常版純淨 20 日初始可視視窗 + 分點買賣超紅綠對齊＋柱狀圖 staticPlot 徹底鎖死不可平移縮放版 + 分點統計與分點日況雙頁籤分離版 + 分點日況預設20日自動貼合容器寬度版 + 大盤加權^TWII與櫃買^TWOII緊緻雙列資券千張＋融資金額(億)＋融資/融券維持率消除空白版 + 分點日況嚴格綁定關注交易日無專屬明細整組清空不平移殘影版)
-版本: 202611221600
+(恢復 16 日正常版純淨 20 日初始可視視窗 + 分點買賣超紅綠對齊＋柱狀圖 staticPlot 徹底鎖死不可平移縮放版 + 分點統計與分點日況雙頁籤分離版 + 分點日況預設20日自動貼合容器寬度版 + 大盤加權^TWII與櫃買^TWOII緊緻雙列資券千張＋融資金額(億)＋融資/融券維持率消除空白版 + 分點日況嚴格綁定關注交易日無專屬明細整組清空不平移殘影版 + 主圖成交量Y軸0刻度負值緩衝對齊完整顯示版)
+版本: 202611221635
 """
 import json
 import pandas as pd
 
 MODULE_NAME = "frontend"
-MODULE_VERSION = "202611221600"
+MODULE_VERSION = "202611221635"
 
 
 # 【修訂說明 2026-11-18】【修改目的與防呆防錯原因】：
 # 修改目的：保留主圖上方圖例與互動操作說明列，並兼容未傳入 version_tag 之呼叫方式。
 # 防呆防錯原因：app.py 以 get_legend_html() 無參數呼叫，設定預設參數確保不觸發 TypeError。
-def get_legend_html(version_tag: str = "202611221600") -> str:
+def get_legend_html(version_tag: str = "202611221635") -> str:
     return """
     <div style="font-size:12px; color:#334155; background:#f1f5f9; padding:5px 8px; border-radius:5px; margin-bottom:4px; line-height:1.5;">
         <b>📌 圖例與互動操作說明：</b>
@@ -60,9 +60,10 @@ function fmtDiff(v,d){if(v===null||v===undefined||isNaN(v))return'-';var n=Numbe
 """
 
 
-# 【修訂說明 2026-11-18】【修改目的與防呆防錯原因】：
-# 修改目的：恢復 16 日正常版（5131d5f）之初始 20 日 X 軸視窗設定，移除先前測試加入之額外 relayout 鎖定物件。
-# 防呆防錯原因：在已修復 app.py safe_end_idx 為 len(df)-1 後，直接以 pTop.layout.xaxis.range=[currentR0,currentR1] 初始化即可穩定顯示最近 20 日，避免第二次 relayout 將視窗拉成全年全覽。
+# 【修訂說明 2026-11-22】【修改目的與防呆防錯原因】：
+# 修改目的：在 calcBounds 中為成交量 Y 軸（yaxis2）保留底部負值緩衝（-vMax*0.10），與 chart_builder.py 對齊，
+# 確保初始化及左右拖曳平移 K 線重新計算 Y 軸範圍時，「0」刻度線與刻度文字皆完整抬升顯示，不被底部邊界裁切。
+# 防呆防錯原因：維持既有 20 日初始可視視窗與雙圖同步邏輯不變。
 def get_top_chart_html(fig_top, df: pd.DataFrame, chart_id: str, top_height: int = 270, initial_disp_days: int = 20, initial_end_idx: int = None) -> str:
     n_pts = len(df)
     end_idx = n_pts - 1 if initial_end_idx is None else initial_end_idx
@@ -96,7 +97,9 @@ function calcBounds(r0,r1){var s=Math.max(0,Math.floor(r0)),e=Math.min(totalPoin
     }
     if(pMin===Infinity){pMin=0;pMax=100;}
     var pad=(pMax>pMin)?(pMax-pMin)*0.10:2.0;
-    return{p:[pMin-pad,pMax+pad],v:[0,vMax>0?vMax*1.25:1000]};
+    var vTop=vMax>0?vMax*1.25:1000;
+    var vBot=vMax>0?-vMax*0.10:-80;
+    return{p:[pMin-pad,pMax+pad],v:[vBot,vTop]};
 }
 
 function renderInfo(idx){if(idx<0||idx>=totalPoints)return;
