@@ -1,7 +1,7 @@
 """
 data_fetcher.py - 整合技術與籌碼資料擷取模組
-(支援含英文後綴台股ETF + TWSE/TPEx官方日K即時補齊 + 大盤加權^TWII與櫃買^TWOII資券與融資金額(億)擷取 + 雲端增量累積分點引擎 + 集保官網qryStock動態Token多週歷史查詢與id=1-5批次分離含真實股數儲存 + 賣超負值正規化 + 操作儀錶板盤中報價版 + 富邦10欄並排表格與精準單日分點統計/明細5欄修正版 + 全市場歷史分點跨日去重加速批次增補引擎 + 全市含上櫃資券/法人/大戶指定基準日區間批次增補引擎版)
-版本: 202611220115
+(支援含英文後綴台股ETF + TWSE/TPEx官方日K即時補齊 + 大盤加權^TWII與櫃買^TWOII資券與融資金額(億)擷取 + 雲端增量累積分點引擎 + 集保官網qryStock動態Token多週歷史查詢與id=1-5批次分離含真實股數儲存 + 賣超負值正規化 + 操作儀錶板盤中報價版 + 富邦10欄並排表格與精準單日分點統計/明細5欄修正版 + 全市場歷史分點統計追滿N日但日況明細僅抓最新交易日近20日並綁定關注日版 + 全市含上櫃資券/法人/大戶指定基準日區間批次增補引擎版)
+版本: 202611221555
 """
 import os
 import io
@@ -18,7 +18,7 @@ from datetime import datetime, timedelta
 from urllib.parse import urljoin, urlparse, parse_qs, urlencode, urlunparse
 
 MODULE_NAME = "data_fetcher"
-MODULE_VERSION = "202611220115"
+MODULE_VERSION = "202611221555"
 
 from storage import (
     StockChipStorage, COMMON_STOCK_NAMES, load_stock_names_dict,
@@ -1377,15 +1377,13 @@ def batch_sync_all_stocks_brokers(
     progress_callback=None
 ) -> str:
     """
-    【修訂說明 2026-11-21】【修改目的與防呆防錯原因】：
+    【修訂說明 2026-11-22】【修改目的與防呆防錯原因】：
     1. 修改目的：
-       - 供「⚙️ 參數設定」執行全市場查詢歷史清單之歷史分點批次增補，從指定基準日（base_date_str）往前追溯 lookback_days 個交易日，
-         補齊 1 / 10 / 20 日買賣超前 10 名統計（broker_range_rank）與各區間前 5 名分點逐日進出明細（broker_daily_trades）。
-       - 跨日分點去重加速：同一檔個股先蒐集所有缺漏交易日「近 10 日前 5 名」與「近 20 日前 5 名」買賣超分點聯集，
-         每家分點僅針對整段最長涵蓋區間抓取一次逐日明細，大幅減少重複 HTTP 請求並輸出 Console Log。
+       - 分點統計（1 / 10 / 20 日買賣超前 10 名，`broker_range_rank`）：依使用者指定基準日（`base_date_str`）往前追溯 `lookback_days` 個交易日，逐日追滿所有缺漏交易日統計。
+       - 分點日況明細（`broker_focus_daily_series`）：無論「往前增補交易日數」設為幾天，由於富邦單一分點明細頁（zco0.djhtm）僅提供最新交易日往回 20 個交易日明細，因此**僅針對該個股最新一個交易日（`latest_trade_date`）抓取其近 10 日與近 20 日買賣超前 5 名分點之近 20 日逐日明細並綁定 `focus_date = latest_trade_date`**；更早的歷史基準日完全跳過逐日明細抓取，絕不浪費時間且絕不造成跨日殘影。
     2. 防呆防錯原因：
-       - 自動過濾排除 ^ 開頭指數；已具備完整 w1/w10/w20 快照之交易日直接跳過；
-       - 每檔個股完成所有交易日寫入後僅執行一次 sync_db_push(code)，降低 Google Drive API 寫入次數。
+       - 自動過濾排除 ^ 開頭指數；已具備完整 `w1/w10/w20` 統計之交易日直接跳過；
+       - 每檔個股完成所有寫入後僅執行一次 `sync_db_push(code)`，降低 Google Drive API 寫入次數。
     """
     hist_list = load_stock_history()
     stock_items = []
@@ -1404,7 +1402,7 @@ def batch_sync_all_stocks_brokers(
     tot_n = len(stock_items)
     n_days = max(1, int(lookback_days or 1))
     b_norm = _normalize_mdj_date(base_date_str) or str(base_date_str).strip()[:10]
-    print(f"[BrokerBackfill] 啟動批次分點增補：基準日={b_norm}，往前={n_days}日，共={tot_n}檔")
+    print(f"[BrokerBackfill] 啟動批次分點增補：統計基準日={b_norm}，往前={n_days}日（日況明細僅抓最新交易日近20日），共={tot_n}檔")
 
     def _df_to_rank_recs(df_rank):
         if df_rank is None or df_rank.empty:
@@ -1441,6 +1439,9 @@ def batch_sync_all_stocks_brokers(
             continue
 
         trade_dates = [d.strftime("%Y-%m-%d") for d in df_k.index]
+        latest_trade_idx = len(trade_dates) - 1
+        latest_trade_date = trade_dates[latest_trade_idx]
+
         valid_pos = [i for i, d_s in enumerate(trade_dates) if d_s <= b_norm]
         if not valid_pos:
             print(f"[BrokerBackfill] [{idx_s}/{tot_n}] {code} {c_name}: 無 <= {b_norm} 交易日，略過")
@@ -1450,11 +1451,9 @@ def batch_sync_all_stocks_brokers(
         start_pos = max(0, anchor_pos - n_days + 1)
         target_indices = list(range(anchor_pos, start_pos - 1, -1))
 
-        # 1. 篩選出尚未有完整 w1/w10/w20 的缺漏交易日，並蒐集各日統計榜單與所有需補抓逐日明細的分點聯集
+        # 1. 追滿指定區間所有缺漏交易日之「分點統計」（w1/w10/w20），不再浪費時間抓取歷史基準日的日況明細
         pending_bundles = []
-        union_broker_urls = {}
-        earliest_all_s = None
-        latest_all_e = None
+        latest_rank_dfs = {}
 
         for t_idx in target_indices:
             end_d_str = trade_dates[t_idx]
@@ -1475,10 +1474,6 @@ def batch_sync_all_stocks_brokers(
                 10: trade_dates[max(0, t_idx - 10 + 1)],
                 20: trade_dates[max(0, t_idx - 20 + 1)],
             }
-            if earliest_all_s is None or win_starts[20] < earliest_all_s:
-                earliest_all_s = win_starts[20]
-            if latest_all_e is None or end_d_str > latest_all_e:
-                latest_all_e = end_d_str
 
             rank_dfs = {}
             for w in (1, 10, 20):
@@ -1489,16 +1484,8 @@ def batch_sync_all_stocks_brokers(
                 rank_dfs[w] = (df_b, df_s)
                 time.sleep(0.08)
 
-            # 蒐集該交易日「近 10 日前 5 名」與「近 20 日前 5 名」買賣超分點（聯集不遺漏）
-            for w in (10, 20):
-                df_b, df_s = rank_dfs.get(w, (None, None))
-                for df_side in (df_b, df_s):
-                    if df_side is not None and not df_side.empty:
-                        for _, row in df_side.head(5).iterrows():
-                            b_name = str(row.get("分點名稱", "")).strip()
-                            d_url = str(row.get("明細網址", "")).strip()
-                            if b_name and d_url and b_name not in union_broker_urls:
-                                union_broker_urls[b_name] = d_url
+            if end_d_str == latest_trade_date:
+                latest_rank_dfs = rank_dfs
 
             day_bundle = dict(existing_bundle) if isinstance(existing_bundle, dict) else {}
             has_any = False
@@ -1517,31 +1504,86 @@ def batch_sync_all_stocks_brokers(
             if has_any:
                 pending_bundles.append((end_d_str, day_bundle))
 
-        # 2. 針對聯集分點一次性抓取 [earliest_all_s, latest_all_e] 逐日明細，杜絕跨日重複查詢
-        if union_broker_urls and earliest_all_s and latest_all_e:
-            tot_b = len(union_broker_urls)
-            for b_i, (b_name, d_url) in enumerate(union_broker_urls.items(), start=1):
-                if progress_callback:
-                    progress_callback(idx_s, tot_n, code, c_name, f"補抓分點逐日明細 ({b_i}/{tot_b})：{b_name}...")
-                df_fresh = fetch_single_broker_daily_series(d_url, earliest_all_s, latest_all_e)
-                if df_fresh is not None and not df_fresh.empty:
-                    storage.save_broker_daily_trades(b_name, df_fresh, sync_cloud=False)
-                time.sleep(0.06)
+        # 2. 分點日況明細：僅針對「最新一個交易日（latest_trade_date）」抓取近 10 日與近 20 日前 5 名之近 20 日逐日明細
+        existing_focus_map = storage.load_all_broker_focus_daily_series().get(latest_trade_date, {})
+        need_latest_w10 = not (
+            existing_focus_map.get("w10", {}).get("top5_buy_series")
+            or existing_focus_map.get("w10", {}).get("top5_sell_series")
+        )
+        need_latest_w20 = not (
+            existing_focus_map.get("w20", {}).get("top5_buy_series")
+            or existing_focus_map.get("w20", {}).get("top5_sell_series")
+        )
+        wrote_focus_series = False
+
+        if need_latest_w10 or need_latest_w20:
+            latest_s10 = trade_dates[max(0, latest_trade_idx - 10 + 1)]
+            latest_s20 = trade_dates[max(0, latest_trade_idx - 20 + 1)]
+            win_pairs = []
+            if need_latest_w10:
+                win_pairs.append((10, latest_s10))
+            if need_latest_w20:
+                win_pairs.append((20, latest_s20))
+
+            # 若剛才迴圈未抓過 latest_trade_date 的 10/20 日排行，補抓排行以取得各分點明細網址
+            for w_num, s_start in win_pairs:
+                if w_num not in latest_rank_dfs:
+                    df_b, df_s = fetch_stock_broker_range_ranking(code, s_start, latest_trade_date)
+                    latest_rank_dfs[w_num] = (df_b, df_s)
+                    time.sleep(0.08)
+
+            broker_df_cache = {}
+            for w_num, s_start in win_pairs:
+                df_b, df_s = latest_rank_dfs.get(w_num, (None, None))
+                for side_key, df_side in (("buy", df_b), ("sell", df_s)):
+                    if df_side is None or df_side.empty:
+                        continue
+                    for rank_idx, (_, row) in enumerate(df_side.head(5).iterrows(), start=1):
+                        b_name = str(row.get("分點名稱", "")).strip()
+                        d_url = str(row.get("明細網址", "")).strip()
+                        tot_net = int(row.get("買賣超(張)", 0) or 0)
+                        if not b_name or not d_url:
+                            continue
+                        if b_name not in broker_df_cache:
+                            if progress_callback:
+                                progress_callback(idx_s, tot_n, code, c_name, f"補抓最新交易日({latest_trade_date})分點日況：{b_name}...")
+                            df_fresh = fetch_single_broker_daily_series(d_url, latest_s20, latest_trade_date)
+                            broker_df_cache[b_name] = df_fresh
+                            if df_fresh is not None and not df_fresh.empty:
+                                storage.save_broker_daily_trades(b_name, df_fresh, sync_cloud=False)
+                            time.sleep(0.06)
+                        df_cached_b = broker_df_cache.get(b_name)
+                        if df_cached_b is not None and not df_cached_b.empty:
+                            df_win = df_cached_b[
+                                (df_cached_b["日期"] >= s_start) & (df_cached_b["日期"] <= latest_trade_date)
+                            ].copy()
+                            if not df_win.empty:
+                                storage.save_broker_focus_daily_series(
+                                    focus_date=latest_trade_date,
+                                    window_days=w_num,
+                                    side=side_key,
+                                    rank_no=rank_idx,
+                                    broker_name=b_name,
+                                    total_net=tot_net,
+                                    df_trades=df_win,
+                                    sync_cloud=False
+                                )
+                                wrote_focus_series = True
 
         # 3. 寫入該檔個股所有缺漏日統計快照並同步上傳雲端一次
-        if pending_bundles:
+        if pending_bundles or wrote_focus_series:
             for end_d_str, day_bundle in pending_bundles:
                 storage.save_broker_range_rank(end_d_str, day_bundle, sync_cloud=False)
                 updated_days_total += 1
             sync_db_push(code)
             updated_stocks += 1
-            print(f"[BrokerBackfill] [{idx_s}/{tot_n}] {code} {c_name}: 補齊 {len(pending_bundles)} 日快照、{len(union_broker_urls)} 家分點明細並同步雲端")
+            print(f"[BrokerBackfill] [{idx_s}/{tot_n}] {code} {c_name}: 補齊 {len(pending_bundles)} 日統計快照（最新日況綁定 {latest_trade_date}）並同步雲端")
         else:
             print(f"[BrokerBackfill] [{idx_s}/{tot_n}] {code} {c_name}: 目標區間已完整，略過")
 
     summary = (
-        f"批次分點增補完成（基準日 {b_norm} 往前 {n_days} 個交易日）："
-        f"共檢查 {tot_n} 檔個股，實際補齊 {updated_stocks} 檔（新增 {updated_days_total} 筆交易日快照），"
+        f"批次分點增補完成（統計基準日 {b_norm} 往前 {n_days} 個交易日；日況明細僅限最新交易日近20日）："
+        f"共檢查 {tot_n} 檔個股，實際補齊 {updated_stocks} 檔（新增 {updated_days_total} 筆交易日統計快照），"
         f"略過已存在完整快照 {skipped_days_total} 筆。"
     )
     print(f"[BrokerBackfill] {summary}")
