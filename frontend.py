@@ -1,19 +1,19 @@
 """
 frontend.py - 前端 HTML/CSS 渲染模組
-(恢復 16 日正常版純淨 20 日初始可視視窗 + 分點買賣超紅綠對齊＋柱狀圖 staticPlot 徹底鎖死不可平移縮放版 + 分點統計與分點日況雙頁籤分離版 + 分點日況預設20日自動貼合容器寬度版 + 大盤加權^TWII與櫃買^TWOII緊緻雙列資券千張＋融資金額(億)＋融資/融券維持率消除空白版 + 分點日況嚴格綁定關注交易日無專屬明細整組清空不平移殘影版 + 主圖成交量Y軸tick0=0與動態回報iframe高度完整顯示版)
-版本: 202611221700
+(恢復 16 日正常版純淨 20 日初始可視視窗 + 分點買賣超紅綠對齊＋柱狀圖 staticPlot 徹底鎖死不可平移縮放版 + 分點統計與分點日況雙頁籤分離版 + 分點日況預設20日自動貼合容器寬度版 + 大盤加權^TWII與櫃買^TWOII緊緻雙列資券千張＋融資金額(億)＋融資/融券維持率消除空白版 + 分點日況嚴格綁定關注交易日無專屬明細整組清空不平移殘影版 + 主圖成交量Y軸tick0=0與動態回報iframe高度完整顯示版 + 個股資券資訊列新增藍色預估融資維持率顯示版)
+版本: 202611222256
 """
 import json
 import pandas as pd
 
 MODULE_NAME = "frontend"
-MODULE_VERSION = "202611221700"
+MODULE_VERSION = "202611222256"
 
 
 # 【修訂說明 2026-11-18】【修改目的與防呆防錯原因】：
 # 修改目的：保留主圖上方圖例與互動操作說明列，並兼容未傳入 version_tag 之呼叫方式。
 # 防呆防錯原因：app.py 以 get_legend_html() 無參數呼叫，設定預設參數確保不觸發 TypeError。
-def get_legend_html(version_tag: str = "202611221700") -> str:
+def get_legend_html(version_tag: str = "202611222256") -> str:
     return """
     <div style="font-size:12px; color:#334155; background:#f1f5f9; padding:5px 8px; border-radius:5px; margin-bottom:4px; line-height:1.5;">
         <b>📌 圖例與互動操作說明：</b>
@@ -263,7 +263,7 @@ def get_chip_tab_html(fig_btm, df: pd.DataFrame, chart_id: str, chip_height: int
     has_money_bal = ('Margin_Money_Bal' in df.columns and (df['Margin_Money_Bal'].fillna(0) != 0).any())
     zero_margin_bal = ('Margin_Bal' not in df.columns or (df['Margin_Bal'].fillna(0) == 0).all())
     is_twoii = ("^TWOII" in cid_upper) or (has_maint and has_money_bal and zero_margin_bal)
-    is_tw_index = ("^TWII" in cid_upper) or is_twoii or has_maint
+    is_tw_index = ("^TWII" in cid_upper) or is_twoii or (has_maint and zero_margin_bal)
 
     tpl = COMMON_CSS + """
 <div class="frame-root" id="__CID___chip_root">
@@ -289,7 +289,7 @@ function renderInfo(idx){if(idx<0||idx>=totalPoints)return;
         infoMs.innerHTML='<span class="tag-lbl"><b>上市資券[千張]('+d+')</b></span>融資:'+fmtDiff(mT,2)+' 融券:'+fmtDiff(sT,2)+' ｜ <b>融資金額:</b>'+fmtDiff(mMoneyDiffs[idx],2)+'億 ｜ <span style="color:#e67e22;font-weight:bold;">融資維持率:'+fmtNum(mMaints[idx])+'%</span> <span style="color:#8e44ad;font-weight:bold;">融券維持率:'+fmtNum(sMaints[idx])+'%</span>';
         infoChip.innerHTML='<span class="tag-lbl"><b>大盤指數('+d+')</b></span>加權指數顯示上市資券(千張)、上市融資金額(億)及融資/融券維持率（無單一法人/集保分級）';
     }else{
-        infoMs.innerHTML='<span class="tag-lbl"><b>資券[千張]('+d+')</b></span>融資:'+fmtDiff(mT,3)+' 融券:'+fmtDiff(sT,3)+' <span class="tag-lbl"><b>券資比:'+fmtNum(rat[idx])+'%</b></span>';
+        infoMs.innerHTML='<span class="tag-lbl"><b>資券[千張]('+d+')</b></span>融資:'+fmtDiff(mT,3)+' 融券:'+fmtDiff(sT,3)+' <span style="color:#e67e22;font-weight:bold;">券資比:'+fmtNum(rat[idx])+'%</span> <span style="color:#2980b9;font-weight:bold;">預估融資維持率:'+fmtNum(mMaints[idx])+'%</span>';
         infoChip.innerHTML='<span class="tag-lbl"><b>法人集保('+d+')</b></span>外資:'+fmtDiff(foreigns[idx],0)+' 投信:'+fmtDiff(trusts[idx],0)+' 自營:'+fmtDiff(dealers[idx],0)+' | ≥'+m1_thresh+'張: '+fmtNum(m1_pcts[idx])+'% ≥'+m2_thresh+'張: '+fmtNum(m2_pcts[idx])+'%';
     }
 }
