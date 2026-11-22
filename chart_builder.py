@@ -1,6 +1,6 @@
 """
-chart_builder.py - Plotly 圖表建置模組 (主圖1/2緊緻化、指標頁籤乖離率、籌碼分頁標準字典防快取遺失、主標題藍色加大、副圖左上角內嵌標籤與加權^TWII/櫃買^TWOII緊緻雙列資券千張＋融資金額(億)副圖消除空白及大戶線1%約當張數優先採用集保最新週總張數註明版 + 主圖成交量Y軸0刻度抬升完整顯示版 + 個股籌碼資券副圖新增藍色預估融資維持率折線版)
-版本: 202611222256
+chart_builder.py - Plotly 圖表建置模組 (主圖1/2緊緻化、指標頁籤乖離率、籌碼分頁標準字典防快取遺失、主標題藍色加大、副圖左上角內嵌標籤與加權^TWII/櫃買^TWOII緊緻雙列資券千張＋融資金額(億)副圖消除空白及大戶線1%約當張數優先採用集保最新週總張數註明版 + 主圖成交量Y軸0刻度抬升完整顯示版 + 個股籌碼資券副圖棕色券資比與藍色預估融資維持率雙獨立Y軸無刻度折線版)
+版本: 202611222308
 """
 
 from typing import Tuple, Optional, Dict
@@ -10,7 +10,7 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
 MODULE_NAME = "chart_builder"
-MODULE_VERSION = "202611222256"
+MODULE_VERSION = "202611222308"
 
 from data_fetcher import fetch_stock_daily_k, fetch_stock_name
 from indicators import calculate_all_indicators
@@ -172,19 +172,20 @@ def build_split_figures(
         mmaint_range = [max(0, mm_r_min - mm_r_pad), mm_r_max + mm_r_pad]
     else:
         # 【修訂說明 2026-11-22】【修改目的與防呆防錯原因】：
-        # 修改目的：個股資券副圖右側次軸同時承載棕色「券資比%（Short_Margin_Ratio）」與藍色「預估融資維持率%（Margin_Maint_Pct）」，
-        # 合併計算兩者可視區間上下限作為 ratio_range，確保雙折線完整呈現不被裁切。
-        # 防呆防錯原因：若其中一條全為 NaN（例如無融資或無融券），自動退回另一條有效範圍或預設 [0, 10]。
-        ratio_parts = [
-            sub_df['Short_Margin_Ratio'].dropna() if 'Short_Margin_Ratio' in sub_df.columns else pd.Series(dtype=float),
-            sub_df['Margin_Maint_Pct'].dropna() if 'Margin_Maint_Pct' in sub_df.columns else pd.Series(dtype=float)
-        ]
-        ratio_clean = pd.concat(ratio_parts)
-        r_min = float(ratio_clean.min()) if not ratio_clean.empty else 0
-        r_max = float(ratio_clean.max()) if not ratio_clean.empty else 10
-        r_pad = max(1.0, (r_max - r_min) * 0.15) if r_max > r_min else 2.0
-        ratio_range = [max(0, r_min - r_pad), r_max + r_pad]
-        mmaint_range = [0, 100]
+        # 修改目的：個股資券副圖之棕色「券資比%（yaxis5）」與藍色「預估融資維持率%（yaxis9）」各自使用獨立比例尺，
+        # 互不校準、互不壓縮，且兩者皆隱藏刻度標籤（showticklabels=False）。
+        # 防呆防錯原因：若任一數列全為 NaN（無融券或無融資），自動給定合理預設上下限避免除零異常。
+        ratio_clean = sub_df['Short_Margin_Ratio'].dropna() if 'Short_Margin_Ratio' in sub_df.columns else pd.Series(dtype=float)
+        r_min = float(ratio_clean.min()) if not ratio_clean.empty else 0.0
+        r_max = float(ratio_clean.max()) if not ratio_clean.empty else 10.0
+        r_pad = max(0.5, (r_max - r_min) * 0.18) if r_max > r_min else 1.0
+        ratio_range = [max(0.0, r_min - r_pad), r_max + r_pad]
+
+        mmaint_clean = sub_df['Margin_Maint_Pct'].dropna() if 'Margin_Maint_Pct' in sub_df.columns else pd.Series(dtype=float)
+        mm_r_min = float(mmaint_clean.min()) if not mmaint_clean.empty else 120.0
+        mm_r_max = float(mmaint_clean.max()) if not mmaint_clean.empty else 180.0
+        mm_r_pad = max(2.0, (mm_r_max - mm_r_min) * 0.18) if mm_r_max > mm_r_min else 5.0
+        mmaint_range = [max(0.0, mm_r_min - mm_r_pad), mm_r_max + mm_r_pad]
 
     # 【修訂說明 2026-11-22】【修改目的與防呆防錯原因】：
     # 修改目的：主圖高度設為 296/336，並於成交量 yaxis2 底部設定負值緩衝（-vol_upper * 0.08），將「0」刻度線向上抬升，
@@ -466,13 +467,15 @@ def build_split_figures(
             ), secondary_y=True, row=4, col=1)
 
             # 【修訂說明 2026-11-22】【修改目的與防呆防錯原因】：
-            # 修改目的：在個股資券副圖右側次軸新增冷色系藍色折線「預估融資維持率%」（#2980b9），與暖色棕色「券資比%」（#e67e22）形成明確對比。
-            # 防呆防錯原因：connectgaps=True 確保連續繪製不因單日缺值中斷。
+            # 修改目的：在個股資券副圖新增冷色系藍色折線「預估融資維持率%」（#2980b9），並綁定獨立疊加 Y 軸 yaxis9（overlaying="y4"），
+            # 使藍色維持率折線與棕色券資比折線（yaxis5）各自擁有獨立垂直座標範圍且均不顯示刻度標籤。
+            # 防呆防錯原因：使用 yaxis9 避開既有 y~y8 軸號，xaxis="x4" 精準對齊第 4 列資券副圖 X 軸。
             if 'Margin_Maint_Pct' in df.columns:
                 fig_chip.add_trace(go.Scatter(
                     x=date_str_list, y=df['Margin_Maint_Pct'], line=dict(color='#2980b9', width=1.5),
-                    connectgaps=True, hoverinfo='none', name='預估融資維持率%'
-                ), secondary_y=True, row=4, col=1)
+                    connectgaps=True, hoverinfo='none', name='預估融資維持率%',
+                    xaxis='x4', yaxis='y9'
+                ))
 
             fig_chip.add_trace(go.Scatter(
                 x=date_str_list, y=df['Major1_Pct'], line=dict(color='#e74c3c', width=1.5),
@@ -488,7 +491,17 @@ def build_split_figures(
             font=dict(size=12), template='plotly_white', hovermode=False, dragmode='pan',
             showlegend=False, height=chip_height,
             margin=dict(l=80, r=15, t=8, b=24, autoexpand=False),
-            xaxis_rangeslider_visible=False
+            xaxis_rangeslider_visible=False,
+            yaxis9=dict(
+                overlaying='y4',
+                side='right',
+                range=mmaint_range,
+                showgrid=False,
+                showticklabels=False,
+                zeroline=False,
+                fixedrange=True,
+                showspikes=False
+            )
         )
         for r in range(1, 7):
             fig_chip.update_xaxes(
