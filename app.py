@@ -1,7 +1,7 @@
 """
 app.py - 主應用程式介面與生命週期控制
-(三主頁籤架構：操作儀錶板 / 個股 / 參數設定 + 自選與查詢歷史同步 + 盤中均線多空燈號 + 動態chart_id杜絕跨頁籤殘留 + 批次增補指定基準日起往前N日分點統計與明細版 + 分點15:00前對齊前一交易日與分點統計/分點日況雙頁籤版 + 上下雙複合選單自由輸入置頂/下拉選取不改順序及初始K線30根 + 全市含上櫃籌碼指定基準日區間標題與雙鍵並列 + 大戶15週與全市場含上櫃標題及底部目前關注目標列版 + 關注交易日專屬分點日況隔離與增補分點標註僅限最近交易日之近20日版 + 修正主圖高度解包錯位並對齊成交量Y軸0刻度完整顯示版)
-版本: 202611221700
+(三主頁籤架構：操作儀錶板 / 個股 / 參數設定 + 自選與查詢歷史同步 + 盤中均線多空燈號 + 動態chart_id杜絕跨頁籤殘留 + 批次增補指定基準日起往前N日分點統計與明細版 + 分點15:00前對齊前一交易日與分點統計/分點日況雙頁籤版 + 上下雙複合選單自由輸入置頂/下拉選取不改順序及初始K線30根 + 全市含上櫃籌碼指定基準日區間標題與雙鍵並列 + 大戶15週與全市場含上櫃標題及底部目前關注目標列版 + 關注交易日專屬分點日況隔離與增補分點標註僅限最近交易日之近20日版 + 修正主圖高度解包錯位並對齊成交量Y軸0刻度完整顯示版 + 手機窄螢幕個股導覽列與參數設定雙功能鍵強制同列並排版)
+版本: 202611222322
 """
 
 import os
@@ -13,7 +13,7 @@ import streamlit.components.v1 as components
 import cloud_sync
 
 MODULE_NAME = "app"
-MODULE_VERSION = "202611221700"
+MODULE_VERSION = "202611222322"
 
 
 # 【防呆防錯備註 2026-11-07】：版本控制權由 app.py 作為唯一權威源，動態掃描所有模組最大版本號，杜絕多頭覆寫與重工
@@ -383,50 +383,81 @@ st.markdown("""
         display: none !important;
     }
 
-    /* 【修訂說明 2026-11-21】個股頁籤上／下「◀ 上一檔 / 中間複合選單 / 下一檔 ▶」專區強制放寬選單，穿透 BaseWeb 預設寬度限制 */
-    div[data-testid="stVerticalBlock"]:has(> div > .stock-nav-anchor) [data-testid="stHorizontalBlock"] {
+    /* 【修訂說明 2026-11-22】【修改目的與防呆防錯原因】：
+       1. 修改目的：使用後代選擇器 :has(.stock-nav-anchor) 穿透手機窄螢幕（<640px）Streamlit 垂直堆疊樣式，
+          強制個股頁籤上下「◀ 上一檔 / 中間複合選單 / 下一檔 ▶」三元件始終並排於同一列；
+       2. 防呆防錯原因：設定中間選單 min-width: 0 與 flex: 1 1 0，避免在 360px 手機螢幕撐爆寬度而折行。 */
+    div[data-testid="stVerticalBlock"]:has(.stock-nav-anchor) [data-testid="stHorizontalBlock"] {
         display: flex !important;
         flex-direction: row !important;
         flex-wrap: nowrap !important;
         align-items: center !important;
         justify-content: space-between !important;
-        gap: 8px !important;
+        gap: 6px !important;
         width: 100% !important;
     }
-    div[data-testid="stVerticalBlock"]:has(> div > .stock-nav-anchor) [data-testid="stHorizontalBlock"] > [data-testid="stColumn"]:nth-child(1),
-    div[data-testid="stVerticalBlock"]:has(> div > .stock-nav-anchor) [data-testid="stHorizontalBlock"] > [data-testid="stColumn"]:nth-child(3),
-    div[data-testid="stVerticalBlock"]:has(> div > .stock-nav-anchor) [data-testid="stHorizontalBlock"] > div:nth-child(1),
-    div[data-testid="stVerticalBlock"]:has(> div > .stock-nav-anchor) [data-testid="stHorizontalBlock"] > div:nth-child(3) {
-        flex: 0 0 76px !important;
-        width: 76px !important;
-        min-width: 76px !important;
-        max-width: 76px !important;
+    div[data-testid="stVerticalBlock"]:has(.stock-nav-anchor) [data-testid="stHorizontalBlock"] > [data-testid="stColumn"]:nth-child(1),
+    div[data-testid="stVerticalBlock"]:has(.stock-nav-anchor) [data-testid="stHorizontalBlock"] > [data-testid="stColumn"]:nth-child(3),
+    div[data-testid="stVerticalBlock"]:has(.stock-nav-anchor) [data-testid="stHorizontalBlock"] > div:nth-child(1),
+    div[data-testid="stVerticalBlock"]:has(.stock-nav-anchor) [data-testid="stHorizontalBlock"] > div:nth-child(3) {
+        flex: 0 0 64px !important;
+        width: 64px !important;
+        min-width: 64px !important;
+        max-width: 64px !important;
     }
-    div[data-testid="stVerticalBlock"]:has(> div > .stock-nav-anchor) [data-testid="stHorizontalBlock"] > [data-testid="stColumn"]:nth-child(2),
-    div[data-testid="stVerticalBlock"]:has(> div > .stock-nav-anchor) [data-testid="stHorizontalBlock"] > div:nth-child(2) {
-        flex: 1 1 auto !important;
+    div[data-testid="stVerticalBlock"]:has(.stock-nav-anchor) [data-testid="stHorizontalBlock"] > [data-testid="stColumn"]:nth-child(2),
+    div[data-testid="stVerticalBlock"]:has(.stock-nav-anchor) [data-testid="stHorizontalBlock"] > div:nth-child(2) {
+        flex: 1 1 0 !important;
         width: auto !important;
-        min-width: 180px !important;
+        min-width: 0 !important;
         max-width: none !important;
     }
-    div[data-testid="stVerticalBlock"]:has(> div > .stock-nav-anchor) [data-testid="stHorizontalBlock"] > [data-testid="stColumn"]:nth-child(2) > div,
-    div[data-testid="stVerticalBlock"]:has(> div > .stock-nav-anchor) [data-testid="stHorizontalBlock"] > [data-testid="stColumn"]:nth-child(2) [data-testid="stSelectbox"],
-    div[data-testid="stVerticalBlock"]:has(> div > .stock-nav-anchor) [data-testid="stHorizontalBlock"] > [data-testid="stColumn"]:nth-child(2) div[data-baseweb="select"],
-    div[data-testid="stVerticalBlock"]:has(> div > .stock-nav-anchor) [data-testid="stHorizontalBlock"] > [data-testid="stColumn"]:nth-child(2) div[data-baseweb="select"] > div,
-    div[data-testid="stVerticalBlock"]:has(> div > .stock-nav-anchor) [data-testid="stHorizontalBlock"] > div:nth-child(2) > div,
-    div[data-testid="stVerticalBlock"]:has(> div > .stock-nav-anchor) [data-testid="stHorizontalBlock"] > div:nth-child(2) [data-testid="stSelectbox"],
-    div[data-testid="stVerticalBlock"]:has(> div > .stock-nav-anchor) [data-testid="stHorizontalBlock"] > div:nth-child(2) div[data-baseweb="select"],
-    div[data-testid="stVerticalBlock"]:has(> div > .stock-nav-anchor) [data-testid="stHorizontalBlock"] > div:nth-child(2) div[data-baseweb="select"] > div {
+    div[data-testid="stVerticalBlock"]:has(.stock-nav-anchor) [data-testid="stHorizontalBlock"] > [data-testid="stColumn"]:nth-child(2) > div,
+    div[data-testid="stVerticalBlock"]:has(.stock-nav-anchor) [data-testid="stHorizontalBlock"] > [data-testid="stColumn"]:nth-child(2) [data-testid="stSelectbox"],
+    div[data-testid="stVerticalBlock"]:has(.stock-nav-anchor) [data-testid="stHorizontalBlock"] > [data-testid="stColumn"]:nth-child(2) div[data-baseweb="select"],
+    div[data-testid="stVerticalBlock"]:has(.stock-nav-anchor) [data-testid="stHorizontalBlock"] > [data-testid="stColumn"]:nth-child(2) div[data-baseweb="select"] > div,
+    div[data-testid="stVerticalBlock"]:has(.stock-nav-anchor) [data-testid="stHorizontalBlock"] > div:nth-child(2) > div,
+    div[data-testid="stVerticalBlock"]:has(.stock-nav-anchor) [data-testid="stHorizontalBlock"] > div:nth-child(2) [data-testid="stSelectbox"],
+    div[data-testid="stVerticalBlock"]:has(.stock-nav-anchor) [data-testid="stHorizontalBlock"] > div:nth-child(2) div[data-baseweb="select"],
+    div[data-testid="stVerticalBlock"]:has(.stock-nav-anchor) [data-testid="stHorizontalBlock"] > div:nth-child(2) div[data-baseweb="select"] > div {
         width: 100% !important;
-        min-width: 180px !important;
+        min-width: 0 !important;
         max-width: 100% !important;
     }
-    div[data-testid="stVerticalBlock"]:has(> div > .stock-nav-anchor) [data-testid="stHorizontalBlock"] button {
+    div[data-testid="stVerticalBlock"]:has(.stock-nav-anchor) [data-testid="stHorizontalBlock"] button {
         width: 100% !important;
-        min-width: 72px !important;
-        padding: 4px 4px !important;
+        min-width: 60px !important;
+        padding: 4px 2px !important;
+        font-size: 11.5px !important;
+        white-space: nowrap !important;
+    }
+
+    /* 【修訂說明 2026-11-22】【修改目的與防呆防錯原因】：
+       修改目的：強制「⚙️ 參數設定」頁籤內所有「批次增補 / 清除」雙按鈕列在手機窄螢幕（<640px）保持同列水平並排；
+       防呆防錯原因：以 .settings-btn-row-anchor 錨點限定作用於並排功能鍵列，不影響全寬表單元件。 */
+    div[data-testid="stVerticalBlock"]:has(.settings-btn-row-anchor) [data-testid="stHorizontalBlock"] {
+        display: flex !important;
+        flex-direction: row !important;
+        flex-wrap: nowrap !important;
+        align-items: stretch !important;
+        gap: 6px !important;
+        width: 100% !important;
+    }
+    div[data-testid="stVerticalBlock"]:has(.settings-btn-row-anchor) [data-testid="stHorizontalBlock"] > [data-testid="stColumn"],
+    div[data-testid="stVerticalBlock"]:has(.settings-btn-row-anchor) [data-testid="stHorizontalBlock"] > div {
+        flex: 1 1 0 !important;
+        width: 50% !important;
+        min-width: 0 !important;
+        max-width: 50% !important;
+    }
+    div[data-testid="stVerticalBlock"]:has(.settings-btn-row-anchor) [data-testid="stHorizontalBlock"] button {
+        width: 100% !important;
+        min-width: 0 !important;
+        padding: 5px 4px !important;
         font-size: 12px !important;
         white-space: nowrap !important;
+        overflow: hidden !important;
+        text-overflow: ellipsis !important;
     }
 
     /* 個股子頁籤（指標 / 籌碼 / 分點統計 / 分點日況） */
@@ -915,13 +946,15 @@ elif selected_main_tab == "⚙️ 參數設定":
 
     # ① 第一列：資券籌碼維護；第二列：批次增補 / 清除 並列
     st.markdown("<div style='font-size:13px; font-weight:700; color:#334155; margin-top:6px; margin-bottom:2px;'>資券籌碼維護</div>", unsafe_allow_html=True)
-    col_ms_add, col_ms_clr = st.columns(2)
-    with col_ms_add:
-        run_ms_sync = st.button("📥 批次增補歷史資券籌碼", key="btn_batch_sync_margin", use_container_width=True)
-    with col_ms_clr:
-        if st.button("🗑️ 清除資券籌碼資料", key="btn_batch_clear_margin", use_container_width=True):
-            st.session_state.confirm_clear_chip_type = "margin"
-            st.rerun()
+    with st.container():
+        st.markdown("<div class='settings-btn-row-anchor'></div>", unsafe_allow_html=True)
+        col_ms_add, col_ms_clr = st.columns(2)
+        with col_ms_add:
+            run_ms_sync = st.button("📥 批次增補歷史資券籌碼", key="btn_batch_sync_margin", use_container_width=True)
+        with col_ms_clr:
+            if st.button("🗑️ 清除資券籌碼資料", key="btn_batch_clear_margin", use_container_width=True):
+                st.session_state.confirm_clear_chip_type = "margin"
+                st.rerun()
 
     if run_ms_sync:
         from data_fetcher import batch_sync_all_stocks_margin
@@ -945,13 +978,15 @@ elif selected_main_tab == "⚙️ 參數設定":
 
     # ② 第一列：法人籌碼維護；第二列：批次增補 / 清除 並列
     st.markdown("<div style='font-size:13px; font-weight:700; color:#334155; margin-top:6px; margin-bottom:2px;'>法人籌碼維護</div>", unsafe_allow_html=True)
-    col_in_add, col_in_clr = st.columns(2)
-    with col_in_add:
-        run_in_sync = st.button("📥 批次增補歷史法人籌碼", key="btn_batch_sync_inst", use_container_width=True)
-    with col_in_clr:
-        if st.button("🗑️ 清除法人籌碼資料", key="btn_batch_clear_inst", use_container_width=True):
-            st.session_state.confirm_clear_chip_type = "institutional"
-            st.rerun()
+    with st.container():
+        st.markdown("<div class='settings-btn-row-anchor'></div>", unsafe_allow_html=True)
+        col_in_add, col_in_clr = st.columns(2)
+        with col_in_add:
+            run_in_sync = st.button("📥 批次增補歷史法人籌碼", key="btn_batch_sync_inst", use_container_width=True)
+        with col_in_clr:
+            if st.button("🗑️ 清除法人籌碼資料", key="btn_batch_clear_inst", use_container_width=True):
+                st.session_state.confirm_clear_chip_type = "institutional"
+                st.rerun()
 
     if run_in_sync:
         from data_fetcher import batch_sync_all_stocks_institutional
@@ -975,13 +1010,15 @@ elif selected_main_tab == "⚙️ 參數設定":
 
     # ③ 第一列：大戶籌碼維護（最多15週）；第二列：批次增補 / 清除 並列
     st.markdown("<div style='font-size:13px; font-weight:700; color:#334155; margin-top:6px; margin-bottom:2px;'>大戶籌碼維護（最多15週）</div>", unsafe_allow_html=True)
-    col_hd_add, col_hd_clr = st.columns(2)
-    with col_hd_add:
-        run_hd_sync = st.button("📥 批次增補歷史大戶籌碼", key="btn_batch_sync_hold", use_container_width=True)
-    with col_hd_clr:
-        if st.button("🗑️ 清除大戶籌碼資料", key="btn_batch_clear_hold", use_container_width=True):
-            st.session_state.confirm_clear_chip_type = "holding"
-            st.rerun()
+    with st.container():
+        st.markdown("<div class='settings-btn-row-anchor'></div>", unsafe_allow_html=True)
+        col_hd_add, col_hd_clr = st.columns(2)
+        with col_hd_add:
+            run_hd_sync = st.button("📥 批次增補歷史大戶籌碼", key="btn_batch_sync_hold", use_container_width=True)
+        with col_hd_clr:
+            if st.button("🗑️ 清除大戶籌碼資料", key="btn_batch_clear_hold", use_container_width=True):
+                st.session_state.confirm_clear_chip_type = "holding"
+                st.rerun()
 
     if run_hd_sync:
         from data_fetcher import batch_sync_all_stocks_holding
@@ -1015,22 +1052,24 @@ elif selected_main_tab == "⚙️ 參數設定":
         st.warning(
             f"⚠️ 確定要清除所有上市／上櫃個股於基準日 **{chip_base_str}** 往前 **{chip_days_opt}** 個交易日區間內之「**{cur_lbl}**」嗎？（區間外更早歷史資料與其他資料表將完整保留）"
         )
-        cc_yes, cc_no = st.columns(2)
-        with cc_yes:
-            if st.button(f"確定清除{cur_lbl}", key="btn_confirm_clear_chip_yes", use_container_width=True):
-                with st.spinner(f"正在清除基準日 {chip_base_str} 往前 {chip_days_opt} 日之{cur_lbl}..."):
-                    res_chip_msg = clear_all_stocks_chip_range(
-                        chip_type=pending_chip_clr,
-                        base_date_str=chip_base_str,
-                        lookback_days=int(chip_days_opt)
-                    )
-                st.session_state.confirm_clear_chip_type = ""
-                get_cached_figures.clear()
-                st.success(res_chip_msg)
-        with cc_no:
-            if st.button("取消清除", key="btn_confirm_clear_chip_no", use_container_width=True):
-                st.session_state.confirm_clear_chip_type = ""
-                st.rerun()
+        with st.container():
+            st.markdown("<div class='settings-btn-row-anchor'></div>", unsafe_allow_html=True)
+            cc_yes, cc_no = st.columns(2)
+            with cc_yes:
+                if st.button(f"確定清除{cur_lbl}", key="btn_confirm_clear_chip_yes", use_container_width=True):
+                    with st.spinner(f"正在清除基準日 {chip_base_str} 往前 {chip_days_opt} 日之{cur_lbl}..."):
+                        res_chip_msg = clear_all_stocks_chip_range(
+                            chip_type=pending_chip_clr,
+                            base_date_str=chip_base_str,
+                            lookback_days=int(chip_days_opt)
+                        )
+                    st.session_state.confirm_clear_chip_type = ""
+                    get_cached_figures.clear()
+                    st.success(res_chip_msg)
+            with cc_no:
+                if st.button("取消清除", key="btn_confirm_clear_chip_no", use_container_width=True):
+                    st.session_state.confirm_clear_chip_type = ""
+                    st.rerun()
 
     st.markdown("---")
     # 【修訂說明 2026-11-22】【修改目的與防呆防錯原因】：
@@ -1060,13 +1099,15 @@ elif selected_main_tab == "⚙️ 參數設定":
     ))
 
     st.markdown("<div style='font-size:13px; font-weight:700; color:#334155; margin-top:6px; margin-bottom:2px;'>增補分點(分點買賣超交易日況僅限最近交易日之近20日)</div>", unsafe_allow_html=True)
-    col_bk_add, col_bk_clr = st.columns(2)
-    with col_bk_add:
-        run_bk_sync = st.button("📥 批次增補歷史分點（統計與明細）", key="btn_batch_sync_brokers", use_container_width=True)
-    with col_bk_clr:
-        if st.button("🗑️ 清除所有個股分點資料", key="btn_batch_clear_brokers", use_container_width=True):
-            st.session_state.confirm_clear_brokers = True
-            st.rerun()
+    with st.container():
+        st.markdown("<div class='settings-btn-row-anchor'></div>", unsafe_allow_html=True)
+        col_bk_add, col_bk_clr = st.columns(2)
+        with col_bk_add:
+            run_bk_sync = st.button("📥 批次增補歷史分點（統計與明細）", key="btn_batch_sync_brokers", use_container_width=True)
+        with col_bk_clr:
+            if st.button("🗑️ 清除所有個股分點資料", key="btn_batch_clear_brokers", use_container_width=True):
+                st.session_state.confirm_clear_brokers = True
+                st.rerun()
 
     if run_bk_sync:
         from data_fetcher import batch_sync_all_stocks_brokers
@@ -1091,18 +1132,20 @@ elif selected_main_tab == "⚙️ 參數設定":
 
     if st.session_state.confirm_clear_brokers:
         st.warning("⚠️ 確定要清除本地與雲端所有個股之「分點統計與分點日況明細」嗎？（日線、法人、資券與集保大戶資料將完整保留）")
-        cb_yes, cb_no = st.columns(2)
-        with cb_yes:
-            if st.button("確定清除分點", key="btn_confirm_clear_brokers_yes", use_container_width=True):
-                with st.spinner("正在清除本地與雲端分點資料表..."):
-                    res_msg = clear_all_broker_data()
-                st.session_state.confirm_clear_brokers = False
-                get_cached_broker_payload.clear()
-                st.success(res_msg)
-        with cb_no:
-            if st.button("取消清除", key="btn_confirm_clear_brokers_no", use_container_width=True):
-                st.session_state.confirm_clear_brokers = False
-                st.rerun()
+        with st.container():
+            st.markdown("<div class='settings-btn-row-anchor'></div>", unsafe_allow_html=True)
+            cb_yes, cb_no = st.columns(2)
+            with cb_yes:
+                if st.button("確定清除分點", key="btn_confirm_clear_brokers_yes", use_container_width=True):
+                    with st.spinner("正在清除本地與雲端分點資料表..."):
+                        res_msg = clear_all_broker_data()
+                    st.session_state.confirm_clear_brokers = False
+                    get_cached_broker_payload.clear()
+                    st.success(res_msg)
+            with cb_no:
+                if st.button("取消清除", key="btn_confirm_clear_brokers_no", use_container_width=True):
+                    st.session_state.confirm_clear_brokers = False
+                    st.rerun()
 
 
 # =====================================================================
