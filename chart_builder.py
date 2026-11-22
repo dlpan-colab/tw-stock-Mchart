@@ -1,6 +1,6 @@
 """
-chart_builder.py - Plotly 圖表建置模組 (主圖1/2緊緻化、指標頁籤乖離率、籌碼分頁標準字典防快取遺失、主標題藍色加大、副圖左上角內嵌標籤與加權^TWII/櫃買^TWOII緊緻雙列資券千張＋融資金額(億)副圖消除空白及大戶線1%約當張數優先採用集保最新週總張數註明版 + 主圖成交量Y軸0刻度抬升完整顯示版)
-版本: 202611221630
+chart_builder.py - Plotly 圖表建置模組 (主圖1/2緊緻化、指標頁籤乖離率、籌碼分頁標準字典防快取遺失、主標題藍色加大、副圖左上角內嵌標籤與加權^TWII/櫃買^TWOII緊緻雙列資券千張＋融資金額(億)副圖消除空白及大戶線1%約當張數優先採用集保最新週總張數註明版 + 主圖成交量Y軸0刻度抬升完整顯示版 + 個股籌碼資券副圖新增藍色預估融資維持率折線版)
+版本: 202611222256
 """
 
 from typing import Tuple, Optional, Dict
@@ -10,7 +10,7 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
 MODULE_NAME = "chart_builder"
-MODULE_VERSION = "202611221630"
+MODULE_VERSION = "202611222256"
 
 from data_fetcher import fetch_stock_daily_k, fetch_stock_name
 from indicators import calculate_all_indicators
@@ -171,10 +171,18 @@ def build_split_figures(
         mm_r_pad = max(1.5, (mm_r_max - mm_r_min) * 0.15) if mm_r_max > mm_r_min else 3.0
         mmaint_range = [max(0, mm_r_min - mm_r_pad), mm_r_max + mm_r_pad]
     else:
-        ratio_clean = sub_df['Short_Margin_Ratio'].dropna()
+        # 【修訂說明 2026-11-22】【修改目的與防呆防錯原因】：
+        # 修改目的：個股資券副圖右側次軸同時承載棕色「券資比%（Short_Margin_Ratio）」與藍色「預估融資維持率%（Margin_Maint_Pct）」，
+        # 合併計算兩者可視區間上下限作為 ratio_range，確保雙折線完整呈現不被裁切。
+        # 防呆防錯原因：若其中一條全為 NaN（例如無融資或無融券），自動退回另一條有效範圍或預設 [0, 10]。
+        ratio_parts = [
+            sub_df['Short_Margin_Ratio'].dropna() if 'Short_Margin_Ratio' in sub_df.columns else pd.Series(dtype=float),
+            sub_df['Margin_Maint_Pct'].dropna() if 'Margin_Maint_Pct' in sub_df.columns else pd.Series(dtype=float)
+        ]
+        ratio_clean = pd.concat(ratio_parts)
         r_min = float(ratio_clean.min()) if not ratio_clean.empty else 0
         r_max = float(ratio_clean.max()) if not ratio_clean.empty else 10
-        r_pad = max(0.5, (r_max - r_min) * 0.15) if r_max > r_min else 1.0
+        r_pad = max(1.0, (r_max - r_min) * 0.15) if r_max > r_min else 2.0
         ratio_range = [max(0, r_min - r_pad), r_max + r_pad]
         mmaint_range = [0, 100]
 
@@ -290,7 +298,8 @@ def build_split_figures(
         fixedrange=True, showspikes=False, tickfont=dict(size=11), row=1, col=1
     )
     fig_top.update_yaxes(
-        title_text='', range=[-vol_upper * 0.08, vol_upper], zeroline=True, zerolinecolor='#cbd5e1', zerolinewidth=1,
+        title_text='', range=[-vol_upper * 0.08, vol_upper],
+        zeroline=True, zerolinecolor='#cbd5e1', zerolinewidth=1,
         fixedrange=True, showspikes=False, tickfont=dict(size=11), row=2, col=1
     )
 
@@ -455,6 +464,15 @@ def build_split_figures(
                 x=date_str_list, y=df['Short_Margin_Ratio'], line=dict(color='#e67e22', width=1.5),
                 connectgaps=True, hoverinfo='none', name='券資比%'
             ), secondary_y=True, row=4, col=1)
+
+            # 【修訂說明 2026-11-22】【修改目的與防呆防錯原因】：
+            # 修改目的：在個股資券副圖右側次軸新增冷色系藍色折線「預估融資維持率%」（#2980b9），與暖色棕色「券資比%」（#e67e22）形成明確對比。
+            # 防呆防錯原因：connectgaps=True 確保連續繪製不因單日缺值中斷。
+            if 'Margin_Maint_Pct' in df.columns:
+                fig_chip.add_trace(go.Scatter(
+                    x=date_str_list, y=df['Margin_Maint_Pct'], line=dict(color='#2980b9', width=1.5),
+                    connectgaps=True, hoverinfo='none', name='預估融資維持率%'
+                ), secondary_y=True, row=4, col=1)
 
             fig_chip.add_trace(go.Scatter(
                 x=date_str_list, y=df['Major1_Pct'], line=dict(color='#e74c3c', width=1.5),
