@@ -1,19 +1,19 @@
 """
 frontend.py - 前端 HTML/CSS 渲染模組
-(恢復 16 日正常版純淨 20 日初始可視視窗 + 分點買賣超紅綠對齊＋柱狀圖 staticPlot 徹底鎖死不可平移縮放版 + 分點統計與分點日況雙頁籤分離版 + 分點日況預設20日自動貼合容器寬度版 + 大盤加權^TWII與櫃買^TWOII緊緻雙列資券千張＋融資金額(億)＋融資/融券維持率消除空白版)
-版本: 202611202355
+(恢復 16 日正常版純淨 20 日初始可視視窗 + 分點買賣超紅綠對齊＋柱狀圖 staticPlot 徹底鎖死不可平移縮放版 + 分點統計與分點日況雙頁籤分離版 + 分點日況預設20日自動貼合容器寬度版 + 大盤加權^TWII與櫃買^TWOII緊緻雙列資券千張＋融資金額(億)＋融資/融券維持率消除空白版 + 分點日況嚴格綁定關注交易日無專屬明細整組清空不平移殘影版)
+版本: 202611221600
 """
 import json
 import pandas as pd
 
 MODULE_NAME = "frontend"
-MODULE_VERSION = "202611202355"
+MODULE_VERSION = "202611221600"
 
 
 # 【修訂說明 2026-11-18】【修改目的與防呆防錯原因】：
 # 修改目的：保留主圖上方圖例與互動操作說明列，並兼容未傳入 version_tag 之呼叫方式。
 # 防呆防錯原因：app.py 以 get_legend_html() 無參數呼叫，設定預設參數確保不觸發 TypeError。
-def get_legend_html(version_tag: str = "202611202355") -> str:
+def get_legend_html(version_tag: str = "202611221600") -> str:
     return """
     <div style="font-size:12px; color:#334155; background:#f1f5f9; padding:5px 8px; border-radius:5px; margin-bottom:4px; line-height:1.5;">
         <b>📌 圖例與互動操作說明：</b>
@@ -446,16 +446,16 @@ def get_broker_daily_tab_html(
         is_index = len(dates_list) == 0 or (df['Turnover_Rate'].max() == 0 and df['Foreign_Net'].abs().max() == 0)
     safe_payload = broker_payload if isinstance(broker_payload, dict) else {"by_date": {}}
 
-    # 【修訂說明 2026-11-19】【修改目的與防呆防錯原因】：
-    # 1. 修改目的：解決「📈 分點日況」位於預設隱藏頁籤時，初次載入以預設 700px 寬度繪圖導致右側 2/3 遭裁切的問題。
-    # 2. 防呆防錯原因：
-    #    - 偵測 rootEl 實際可見寬度（offsetWidth / getBoundingClientRect().width），若尚為隱藏狀態（<= 0）則延後至頁籤展開可見時再執行首次繪圖；
-    #    - 繪製每張柱狀圖時明確讀取外框實際像素寬度寫入 lay.width，並於容器寬度變化超過 8px 時自動重繪。
+    # 【修訂說明 2026-11-22】【修改目的與防呆防錯原因】：
+    # 1. 修改目的：
+    #    - 嚴格檢查該關注交易日（dStr）於所選視窗（w10/w20/w60）是否具備專屬逐日序列（hasSeriesData，即 top5_buy_series 或 top5_sell_series 內至少一檔具備非空 dates 陣列）；
+    #    - 若該關注交易日無專屬逐日明細（例如滑鼠移至歷史基準日 10/22），整組清空不畫任何柱狀圖並顯示清楚提示，杜絕把空序列畫成全 0 圖或誤抓其他交易日殘影平移。
+    # 2. 防呆防錯原因：維持頁籤隱藏狀態延遲繪圖（getVisibleW() <= 0）與容器寬度變動自動重繪防呆。
     tpl = COMMON_CSS + BROKER_SHARED_CSS + """
 <div class="frame-root" id="__CID___broker_daily_root">
     <div id="__CID___d_hdr" class="pane-info-bar" style="margin-bottom:6px;"></div>
     <div class="b-card">
-        <div class="b-title">區間買賣超統計各前 5 名分點 — 各日買賣超柱狀圖</div>
+        <div class="b-title">區間買賣超統計各前 5 名分點 — 各日買賣超柱狀圖（分點買賣超交易日況僅限最近20日）</div>
         <div style="display:flex;align-items:center;gap:8px;margin-bottom:4px;flex-wrap:wrap;">
             <label for="__CID___b_sel" style="font-size:12.5px;font-weight:bold;color:#334155;">統計區間天數：</label>
             <select id="__CID___b_sel" style="padding:4px 8px;font-size:13px;border-radius:4px;border:1px solid #94a3b8;font-weight:bold;">
@@ -464,7 +464,7 @@ def get_broker_daily_tab_html(
                 <option value="60">近 60 日（含關注交易日）</option>
             </select>
         </div>
-        <div id="__CID___b_warn" style="font-size:12px;color:#d97706;background:#fffbeb;padding:4px 8px;border-radius:4px;border:1px solid #fde68a;margin-bottom:8px;display:none;"></div>
+        <div id="__CID___b_warn" style="font-size:12px;color:#d97706;background:#fffbeb;padding:6px 8px;border-radius:4px;border:1px solid #fde68a;margin-bottom:8px;display:none;"></div>
         <div id="__CID___b_bars"></div>
     </div>
 </div>
@@ -473,7 +473,7 @@ def get_broker_daily_tab_html(
 var cfg={responsive:true,staticPlot:true,displayModeBar:false,scrollZoom:false,doubleClick:false};
 var rootEl=document.getElementById('__CID___broker_daily_root'),hdrEl=document.getElementById('__CID___d_hdr');
 var selEl=document.getElementById('__CID___b_sel'),warnEl=document.getElementById('__CID___b_warn'),barsEl=document.getElementById('__CID___b_bars');
-var MSG_60D_ON_DEMAND='尚未載入近 60 日明細（預設僅載入至 20 日；請點擊上方「📥 載入近 60 日分點統計與明細」按鈕按需抓取）';
+var MSG_60D_ON_DEMAND='尚無近 60 日逐日進出明細（富邦單一分點日況僅提供最近 20 個交易日明細）';
 var lastRenderedW=0,hasRenderedOnce=false,resizeTimer=null;
 function getVisibleW(){
     if(!rootEl)return 0;
@@ -482,6 +482,13 @@ function getVisibleW(){
 }
 function pushH(){if(!rootEl)return;var h=Math.ceil(rootEl.scrollHeight)+16;if(window.parent&&window.parent!==window)window.parent.postMessage({isStreamlitMessage:true,type:"streamlit:setFrameHeight",height:h},"*");}
 function fmtNet(v,isBuySide){var n=Number(v)||0;if(isBuySide){var a=Math.abs(n);return a>0?'+'+a.toLocaleString('en-US'):'0';}else{var b=Math.abs(n);return b>0?'-'+b.toLocaleString('en-US'):'0';}}
+function hasValidSeries(arr){
+    if(!Array.isArray(arr)||arr.length===0)return false;
+    for(var i=0;i<arr.length;i++){
+        if(arr[i]&&Array.isArray(arr[i].dates)&&arr[i].dates.length>0)return true;
+    }
+    return false;
+}
 function renderBars(forceDraw){
     if(!barsEl)return;
     var win=selEl?selEl.value:'20',dStr=dates[curIdx]||'',dayObj=(payload.by_date&&payload.by_date[dStr])?payload.by_date[dStr]:null;
@@ -493,14 +500,18 @@ function renderBars(forceDraw){
     if(curW<=0&&!forceDraw){return;}
     lastRenderedW=curW;
     hasRenderedOnce=true;
-    if(isIndex||!dayObj){if(warnEl)warnEl.style.display='none';barsEl.innerHTML='<div style="color:#94a3b8;font-size:12px;padding:8px;">無可用之分點逐日明細資料。</div>';pushH();return;}
-    var wObj=dayObj['w'+win]||null;
-    if(!wObj||((!wObj.buy||wObj.buy.length===0)&&(!wObj.sell||wObj.sell.length===0))){
-        if(warnEl){warnEl.textContent=(win==='60')?MSG_60D_ON_DEMAND:('查無近 '+win+' 日區間買賣超統計資料');warnEl.style.display='block';}
+    if(isIndex){if(warnEl)warnEl.style.display='none';barsEl.innerHTML='<div style="color:#94a3b8;font-size:12px;padding:8px;">大盤指數無單一券商分點逐日明細資料。</div>';pushH();return;}
+    if(!dayObj){
+        if(warnEl){warnEl.textContent='尚無 '+dStr+' 之近 '+win+' 日分點逐日進出明細（分點買賣超交易日況僅限最近20日）。';warnEl.style.display='block';}
         barsEl.innerHTML='';pushH();return;
     }
-    var bList=wObj.top5_buy_series||[],sList=wObj.top5_sell_series||[];
-    if(bList.length===0&&sList.length===0){if(warnEl){warnEl.textContent='查無該區間前 5 名分點之逐日進出明細（可能為資料來源暫時無回應）';warnEl.style.display='block';}barsEl.innerHTML='';pushH();return;}
+    var wObj=dayObj['w'+win]||null;
+    var bList=(wObj&&wObj.top5_buy_series)?wObj.top5_buy_series:[];
+    var sList=(wObj&&wObj.top5_sell_series)?wObj.top5_sell_series:[];
+    if(!wObj||(!hasValidSeries(bList)&&!hasValidSeries(sList))){
+        if(warnEl){warnEl.textContent=(win==='60')?MSG_60D_ON_DEMAND:('尚無 '+dStr+' 之近 '+win+' 日分點逐日進出明細（分點買賣超交易日況僅限最近20日）。');warnEl.style.display='block';}
+        barsEl.innerHTML='';pushH();return;
+    }
     if(warnEl)warnEl.style.display='none';
     var winNum=parseInt(win,10)||20;
     var sIdx=Math.max(0,curIdx-winNum+1);
