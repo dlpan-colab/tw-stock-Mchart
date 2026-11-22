@@ -1,7 +1,7 @@
 """
 app.py - 主應用程式介面與生命週期控制
-(三主頁籤架構：操作儀錶板 / 個股 / 參數設定 + 自選與查詢歷史同步 + 盤中均線多空燈號 + 動態chart_id杜絕跨頁籤殘留 + 批次增補指定基準日起往前N日分點統計與明細版 + 分點15:00前對齊前一交易日與分點統計/分點日況雙頁籤版 + 上下雙複合選單自由輸入置頂/下拉選取不改順序及初始K線30根 + 全市含上櫃籌碼指定基準日區間標題與雙鍵並列 + 大戶15週與全市場含上櫃標題及底部目前關注目標列版 + 關注交易日專屬分點日況隔離與增補分點標註僅限最近交易日之近20日版)
-版本: 202611221620
+(三主頁籤架構：操作儀錶板 / 個股 / 參數設定 + 自選與查詢歷史同步 + 盤中均線多空燈號 + 動態chart_id杜絕跨頁籤殘留 + 批次增補指定基準日起往前N日分點統計與明細版 + 分點15:00前對齊前一交易日與分點統計/分點日況雙頁籤版 + 上下雙複合選單自由輸入置頂/下拉選取不改順序及初始K線30根 + 全市含上櫃籌碼指定基準日區間標題與雙鍵並列 + 大戶15週與全市場含上櫃標題及底部目前關注目標列版 + 關注交易日專屬分點日況隔離與增補分點標註僅限最近交易日之近20日版 + 修正主圖高度解包錯位並對齊成交量Y軸0刻度完整顯示版)
+版本: 202611221700
 """
 
 import os
@@ -13,7 +13,7 @@ import streamlit.components.v1 as components
 import cloud_sync
 
 MODULE_NAME = "app"
-MODULE_VERSION = "202611221620"
+MODULE_VERSION = "202611221700"
 
 
 # 【防呆防錯備註 2026-11-07】：版本控制權由 app.py 作為唯一權威源，動態掃描所有模組最大版本號，杜絕多頭覆寫與重工
@@ -1169,7 +1169,7 @@ else:
         st.session_state.force_refresh = False
 
     with st.spinner(f"正在載入 {st.session_state.stock_id} 技術與籌碼數據..."):
-        fig_top, fig_btm, df_res, resolved_name, top_h, btm_h = get_cached_figures(
+        fig_top, fig_btm, df_res, resolved_name, raw_end_idx, raw_disp_n = get_cached_figures(
             st.session_state.stock_id,
             st.session_state.period,
             st.session_state.disp_days,
@@ -1201,16 +1201,22 @@ else:
             except Exception:
                 pass
 
+        # 【修訂說明 2026-11-22】【修改目的與防呆防錯原因】：
+        # 修改目的：build_split_figures 第 5 個回傳值為 end_idx（非圖表高度），改為明確指定 actual_top_h（296/336，對齊 chart_builder.py）
+        # 並將 iframe 外框高度設為 actual_top_h + 62，確保 Reboot 初次載入時資訊列與成交量 Y 軸「0」刻度完整顯示不被底部裁切。
+        # 防呆防錯原因：優先讀取 fig_top.layout.height，無則退回 296/336。
+        actual_top_h = int(getattr(getattr(fig_top, "layout", None), "height", None) or (296 if st.session_state.is_mobile_mode else 336))
+
         # 上半部共用主圖
         top_html = get_top_chart_html(
             fig_top=fig_top,
             df=df_res,
             chart_id=chart_id,
-            top_height=top_h,
+            top_height=actual_top_h,
             initial_disp_days=st.session_state.disp_days,
             initial_end_idx=safe_end_idx
         )
-        components.html(top_html, height=top_h + 46, scrolling=False)
+        components.html(top_html, height=actual_top_h + 62, scrolling=False)
 
         # 下半部四大子頁籤（指標 / 籌碼 / 分點統計 / 分點日況）
         tab_tech, tab_chip, tab_broker_stats, tab_broker_daily = st.tabs([
