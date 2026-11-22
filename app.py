@@ -1,7 +1,7 @@
 """
 app.py - 主應用程式介面與生命週期控制
-(三主頁籤架構：操作儀錶板 / 個股 / 參數設定 + 自選與查詢歷史同步 + 盤中均線多空燈號 + 動態chart_id杜絕跨頁籤殘留 + 批次增補指定基準日起往前N日分點統計與明細版 + 分點15:00前對齊前一交易日與分點統計/分點日況雙頁籤版 + 上下雙複合選單自由輸入置頂/下拉選取不改順序及初始K線30根 + 全市含上櫃籌碼指定基準日區間標題與雙鍵並列 + 大戶15週與全市場含上櫃標題及底部目前關注目標列版 + 關注交易日專屬分點日況隔離與增補分點標註僅限最近20日版)
-版本: 202611221605
+(三主頁籤架構：操作儀錶板 / 個股 / 參數設定 + 自選與查詢歷史同步 + 盤中均線多空燈號 + 動態chart_id杜絕跨頁籤殘留 + 批次增補指定基準日起往前N日分點統計與明細版 + 分點15:00前對齊前一交易日與分點統計/分點日況雙頁籤版 + 上下雙複合選單自由輸入置頂/下拉選取不改順序及初始K線30根 + 全市含上櫃籌碼指定基準日區間標題與雙鍵並列 + 大戶15週與全市場含上櫃標題及底部目前關注目標列版 + 關注交易日專屬分點日況隔離與增補分點標註僅限最近交易日之近20日版)
+版本: 202611221620
 """
 
 import os
@@ -13,7 +13,7 @@ import streamlit.components.v1 as components
 import cloud_sync
 
 MODULE_NAME = "app"
-MODULE_VERSION = "202611221605"
+MODULE_VERSION = "202611221620"
 
 
 # 【防呆防錯備註 2026-11-07】：版本控制權由 app.py 作為唯一權威源，動態掃描所有模組最大版本號，杜絕多頭覆寫與重工
@@ -1034,9 +1034,9 @@ elif selected_main_tab == "⚙️ 參數設定":
 
     st.markdown("---")
     # 【修訂說明 2026-11-22】【修改目的與防呆防錯原因】：
-    # 修改目的：在「增補分點」功能名稱後方明確標註「(分點買賣超交易日況僅限最近20日)」，清楚區分歷史統計與最近20日交易日況限制。
+    # 修改目的：在「增補分點」功能名稱後方明確標註「(分點買賣超交易日況僅限最近交易日之近20日)」，清楚區分歷史統計與最近交易日之近20日交易日況限制。
     # 防呆防錯原因：避免使用者誤以為設定往前增補 N 日時可回溯更早基準日之逐日柱狀圖明細。
-    st.markdown("**全市場（含上櫃）分點批次增補與維護(分點買賣超交易日況僅限最近20日)**")
+    st.markdown("**全市場（含上櫃）分點批次增補與維護(分點買賣超交易日況僅限最近交易日之近20日)**")
     default_bf_date = get_default_broker_backfill_base_date()
     if isinstance(default_bf_date, str):
         parsed_bf_date = datetime.strptime(default_bf_date[:10], "%Y-%m-%d").date()
@@ -1059,7 +1059,7 @@ elif selected_main_tab == "⚙️ 參數設定":
         key="broker_backfill_days_input"
     ))
 
-    st.markdown("<div style='font-size:13px; font-weight:700; color:#334155; margin-top:6px; margin-bottom:2px;'>增補分點(分點買賣超交易日況僅限最近20日)</div>", unsafe_allow_html=True)
+    st.markdown("<div style='font-size:13px; font-weight:700; color:#334155; margin-top:6px; margin-bottom:2px;'>增補分點(分點買賣超交易日況僅限最近交易日之近20日)</div>", unsafe_allow_html=True)
     col_bk_add, col_bk_clr = st.columns(2)
     with col_bk_add:
         run_bk_sync = st.button("📥 批次增補歷史分點（統計與明細）", key="btn_batch_sync_brokers", use_container_width=True)
