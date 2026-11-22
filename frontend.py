@@ -1,19 +1,19 @@
 """
 frontend.py - 前端 HTML/CSS 渲染模組
-(恢復 16 日正常版純淨 20 日初始可視視窗 + 分點買賣超紅綠對齊＋柱狀圖 staticPlot 徹底鎖死不可平移縮放版 + 分點統計與分點日況雙頁籤分離版 + 分點日況預設20日自動貼合容器寬度版 + 大盤加權^TWII與櫃買^TWOII緊緻雙列資券千張＋融資金額(億)＋融資/融券維持率消除空白版 + 分點日況嚴格綁定關注交易日無專屬明細整組清空不平移殘影版 + 主圖成交量Y軸0刻度負值緩衝對齊完整顯示版)
-版本: 202611221635
+(恢復 16 日正常版純淨 20 日初始可視視窗 + 分點買賣超紅綠對齊＋柱狀圖 staticPlot 徹底鎖死不可平移縮放版 + 分點統計與分點日況雙頁籤分離版 + 分點日況預設20日自動貼合容器寬度版 + 大盤加權^TWII與櫃買^TWOII緊緻雙列資券千張＋融資金額(億)＋融資/融券維持率消除空白版 + 分點日況嚴格綁定關注交易日無專屬明細整組清空不平移殘影版 + 主圖成交量Y軸tick0=0與動態回報iframe高度完整顯示版)
+版本: 202611221700
 """
 import json
 import pandas as pd
 
 MODULE_NAME = "frontend"
-MODULE_VERSION = "202611221635"
+MODULE_VERSION = "202611221700"
 
 
 # 【修訂說明 2026-11-18】【修改目的與防呆防錯原因】：
 # 修改目的：保留主圖上方圖例與互動操作說明列，並兼容未傳入 version_tag 之呼叫方式。
 # 防呆防錯原因：app.py 以 get_legend_html() 無參數呼叫，設定預設參數確保不觸發 TypeError。
-def get_legend_html(version_tag: str = "202611221635") -> str:
+def get_legend_html(version_tag: str = "202611221700") -> str:
     return """
     <div style="font-size:12px; color:#334155; background:#f1f5f9; padding:5px 8px; border-radius:5px; margin-bottom:4px; line-height:1.5;">
         <b>📌 圖例與互動操作說明：</b>
@@ -61,8 +61,9 @@ function fmtDiff(v,d){if(v===null||v===undefined||isNaN(v))return'-';var n=Numbe
 
 
 # 【修訂說明 2026-11-22】【修改目的與防呆防錯原因】：
-# 修改目的：在 calcBounds 中為成交量 Y 軸（yaxis2）保留底部負值緩衝（-vMax*0.10），與 chart_builder.py 對齊，
-# 確保初始化及左右拖曳平移 K 線重新計算 Y 軸範圍時，「0」刻度線與刻度文字皆完整抬升顯示，不被底部邊界裁切。
+# 修改目的：
+#   1. 明確設定 pTop.layout.height = __TOP_H__ 與 yaxis2.tick0 = 0（保留底部負值緩衝 -vMax*0.06），強制成交量 Y 軸「0」刻度必現且不被底線裁切；
+#   2. 加入 pushTopH()（streamlit:setFrameHeight）與 ResizeObserver 監聽容器高度/寬度變動，無論資訊列 info1 折成 1 列或 2 列、或視窗大小切換，外層 iframe 皆自動貼合完整高度。
 # 防呆防錯原因：維持既有 20 日初始可視視窗與雙圖同步邏輯不變。
 def get_top_chart_html(fig_top, df: pd.DataFrame, chart_id: str, top_height: int = 270, initial_disp_days: int = 20, initial_end_idx: int = None) -> str:
     n_pts = len(df)
@@ -86,8 +87,16 @@ var pTop=__P_TOP__,dates=__DATES__,opens=__OPENS__,highs=__HIGHS__,lows=__LOWS__
 var ma5s=__MA5S__,ma20s=__MA20S__,ma60s=__MA60S__,turnovers=__TURNOVERS__;
 var totalPoints=dates.length,initEnd=__INIT_END__,targetDays=Number(__DISP_DAYS__)||20;
 var currentR0=Math.max(0,initEnd-targetDays+1)-0.5,currentR1=initEnd+0.5,isUpdating=false;
-var elTop=document.getElementById('__CID___top'),info1=document.getElementById('__CID___info1');
+var rootEl=document.getElementById('__CID___root'),elTop=document.getElementById('__CID___top'),info1=document.getElementById('__CID___info1');
 var lineX=document.getElementById('__CID___line_x'),lineY=document.getElementById('__CID___line_y');
+
+function pushTopH(){
+    if(!rootEl)return;
+    var h=Math.ceil(rootEl.scrollHeight)+8;
+    if(window.parent&&window.parent!==window){
+        window.parent.postMessage({isStreamlitMessage:true,type:"streamlit:setFrameHeight",height:h},"*");
+    }
+}
 
 function calcBounds(r0,r1){var s=Math.max(0,Math.floor(r0)),e=Math.min(totalPoints-1,Math.ceil(r1)),pMin=Infinity,pMax=-Infinity,vMax=0;
     for(var i=s;i<=e;i++){var h=Number(highs[i]),l=Number(lows[i]);
@@ -98,7 +107,7 @@ function calcBounds(r0,r1){var s=Math.max(0,Math.floor(r0)),e=Math.min(totalPoin
     if(pMin===Infinity){pMin=0;pMax=100;}
     var pad=(pMax>pMin)?(pMax-pMin)*0.10:2.0;
     var vTop=vMax>0?vMax*1.25:1000;
-    var vBot=vMax>0?-vMax*0.10:-80;
+    var vBot=vMax>0?-vMax*0.06:-50;
     return{p:[pMin-pad,pMax+pad],v:[vBot,vTop]};
 }
 
@@ -106,12 +115,22 @@ function renderInfo(idx){if(idx<0||idx>=totalPoints)return;
     var d=dates[idx],c=closes[idx],o=opens[idx],h=highs[idx],l=lows[idx],prev=idx>0?closes[idx-1]:o;
     var diff=c-prev,pct=prev?(diff/prev*100):0,cls=diff>0?'val-up':(diff<0?'val-dn':'');
     info1.innerHTML='<span class="tag-lbl"><b>'+d+'</b></span>開:<span class="'+(o>prev?'val-up':(o<prev?'val-dn':''))+'">'+fmtNum(o)+'</span> 高:<span class="'+(h>prev?'val-up':(h<prev?'val-dn':''))+'">'+fmtNum(h)+'</span> 低:<span class="'+(l>prev?'val-up':(l<prev?'val-dn':''))+'">'+fmtNum(l)+'</span> 收:<span class="'+cls+'">'+fmtNum(c)+' ('+(diff>0?'+':'')+fmtNum(diff)+', '+(pct>0?'+':'')+fmtNum(pct)+'%)</span> 量:'+fmtNum(vols[idx],0)+'張 <span class="tag-lbl"><b>換手:'+fmtNum(turnovers[idx])+'%</b></span> MA5:'+fmtNum(ma5s[idx])+' MA20:'+fmtNum(ma20s[idx])+' MA60:'+fmtNum(ma60s[idx]);
+    pushTopH();
 }
 
 var b0=calcBounds(currentR0,currentR1);
+pTop.layout.height=Number(__TOP_H__)||296;
 pTop.layout.xaxis.range=[currentR0,currentR1];if(pTop.layout.xaxis2)pTop.layout.xaxis2.range=[currentR0,currentR1];
-pTop.layout.yaxis.range=b0.p;if(pTop.layout.yaxis2)pTop.layout.yaxis2.range=b0.v;
-Plotly.newPlot(elTop,pTop.data,pTop.layout,{responsive:true,displayModeBar:false,scrollZoom:false}).then(function(){renderInfo(initEnd);
+pTop.layout.yaxis.range=b0.p;if(pTop.layout.yaxis2){pTop.layout.yaxis2.range=b0.v;pTop.layout.yaxis2.tick0=0;}
+Plotly.newPlot(elTop,pTop.data,pTop.layout,{responsive:true,displayModeBar:false,scrollZoom:false}).then(function(){renderInfo(initEnd);pushTopH();
+    if(typeof ResizeObserver!=='undefined'&&rootEl){
+        var rzTimer=null;
+        new ResizeObserver(function(){
+            pushTopH();
+            clearTimeout(rzTimer);
+            rzTimer=setTimeout(function(){if(elTop&&elTop._fullLayout)Plotly.Plots.resize(elTop);},50);
+        }).observe(rootEl);
+    }
     elTop.on('plotly_relayout',function(ed){if(isUpdating)return;
         var r0=ed['xaxis.range[0]']??ed['xaxis2.range[0]']??(ed['xaxis.range']?ed['xaxis.range'][0]:null);
         var r1=ed['xaxis.range[1]']??ed['xaxis2.range[1]']??(ed['xaxis.range']?ed['xaxis.range'][1]:null);
