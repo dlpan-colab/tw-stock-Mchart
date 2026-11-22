@@ -1,7 +1,7 @@
 """
 storage.py - 本地 SQLite 資料庫與股票歷史紀錄管理器
-(支援含英文後綴台股ETF與雲端分點增量累積與批次清除分點與大盤融資金額欄位向後相容與多日歷史分點統計全載入及分點統計/日況舊表自動遷移與全市籌碼指定基準日區間清除防呆與集保每週真實總股數動態加總及集保舊表補欄防呆版)
-版本: 202611220140
+(支援含英文後綴台股ETF與雲端分點增量累積與批次清除分點與大盤融資金額欄位向後相容與多日歷史分點統計全載入及分點統計/日況舊表自動遷移與全市籌碼指定基準日區間清除防呆與集保每週真實總股數動態加總及集保舊表補欄防呆及關注交易日專屬分點日況序列綁定版)
+版本: 202611221550
 """
 
 import os
@@ -18,7 +18,7 @@ from datetime import datetime, timedelta
 import pandas as pd
 
 MODULE_NAME = "storage"
-MODULE_VERSION = "202611220140"
+MODULE_VERSION = "202611221550"
 
 STORAGE_DIR = "."
 HISTORY_FILE = os.path.join(STORAGE_DIR, "stock_history.json")
@@ -534,9 +534,10 @@ def clear_all_stocks_chip_range(chip_type: str, base_date_str: str, lookback_day
 
 def clear_all_broker_data() -> str:
     """
-    【修訂說明 2026-11-18】【修改目的與防呆防錯原因】：
-    修改目的：一次性清除本地及雲端 Google Drive 資料夾內所有個股資料庫（data_*.db）之分點區間統計（broker_range_rank）與分點逐日明細（broker_daily_trades）資料表，並同步回寫雲端。
-    防呆防錯原因：僅刪除分點資料表並執行 VACUUM 釋放空間，完整保留 daily_k（日線）、institutional_investors（三大法人）、margin_short（資券）與 shareholding_distribution（集保大戶）資料；同步雲端前先 pull 避免覆蓋雲端既有歷史資料。
+    【修訂說明 2026-11-22】【修改目的與防呆防錯原因】：
+    修改目的：一次性清除本地及雲端 Google Drive 資料夾內所有個股資料庫（data_*.db）之分點區間統計（broker_range_rank）、
+    分點逐日明細（broker_daily_trades）與關注交易日專屬分點日況序列（broker_focus_daily_series）資料表，並同步回寫雲端。
+    防呆防錯原因：逐表 try/except 刪除避免舊庫缺表報錯，完整保留 daily_k（日線）、institutional_investors（三大法人）、margin_short（資券）與 shareholding_distribution（集保大戶）資料。
     """
     codes_set = set()
     for p in glob.glob(os.path.join(STORAGE_DIR, "data_*.db")):
@@ -574,8 +575,11 @@ def clear_all_broker_data() -> str:
         try:
             with sqlite3.connect(db_path) as conn:
                 cur = conn.cursor()
-                cur.execute("DELETE FROM broker_range_rank")
-                cur.execute("DELETE FROM broker_daily_trades")
+                for tbl in ("broker_range_rank", "broker_daily_trades", "broker_focus_daily_series"):
+                    try:
+                        cur.execute(f"DELETE FROM {tbl}")
+                    except Exception:
+                        pass
                 conn.commit()
             _do_sync_db_push(pure_code)
             cleared_count += 1
@@ -727,6 +731,26 @@ class StockChipStorage:
                         PRIMARY KEY (range_date, win_days, side, rank)
                     )
                 ''')
+
+            # 【修訂說明 2026-11-22】【修改目的與防呆防錯原因】：
+            # 修改目的：建立關注交易日專屬分點日況資料表 broker_focus_daily_series，
+            # 明確以 (focus_date, window_days, side, rank_no, trade_date) 作為複合主鍵，綁定各關注交易日對應 W10/W20/W60 前五名分點之逐日買賣超值。
+            # 防呆防錯原因：徹底隔離不同關注交易日之分點日況柱狀圖，避免滑鼠切換至無逐日明細的歷史關注日（如 10/22）時誤抓最新交易日（如 11/20）重疊邊界日殘影。
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS broker_focus_daily_series (
+                    focus_date TEXT,
+                    window_days INTEGER,
+                    side TEXT,
+                    rank_no INTEGER,
+                    broker_name TEXT,
+                    total_net INTEGER DEFAULT 0,
+                    trade_date TEXT,
+                    buy_sheets INTEGER DEFAULT 0,
+                    sell_sheets INTEGER DEFAULT 0,
+                    net_sheets INTEGER DEFAULT 0,
+                    PRIMARY KEY (focus_date, window_days, side, rank_no, trade_date)
+                )
+            ''')
             cursor.execute("DELETE FROM shareholding_distribution WHERE level > 15 OR level < 1")
             conn.commit()
 
@@ -969,6 +993,118 @@ class StockChipStorage:
         except Exception:
             self._init_db()
             return pd.DataFrame(columns=["日期", "買進(張)", "賣出(張)", "買賣超(張)"])
+
+    def save_broker_focus_daily_series(
+        self,
+        focus_date: str,
+        window_days: int,
+        side: str,
+        rank_no: int,
+        broker_name: str,
+        total_net: int,
+        df_trades: pd.DataFrame,
+        sync_cloud: bool = True
+    ):
+        """
+        【修訂說明 2026-11-22】【修改目的與防呆防錯原因】：
+        修改目的：儲存指定關注交易日（focus_date）在特定統計視窗（window_days: 10/20/60）與買賣超方向（side: 'buy'/'sell'）
+        下第 rank_no 名分點之完整逐日買賣超序列至 broker_focus_daily_series。
+        防呆防錯原因：寫入前先刪除同一 (focus_date, window_days, side, rank_no) 舊列並重試防呆缺表，確保資料潔淨且與其他關注交易日完全隔離。
+        """
+        f_date = str(focus_date or "").strip()[:10]
+        b_name = str(broker_name or "").strip()
+        s_side = str(side or "").strip().lower()
+        w_days = int(window_days or 20)
+        r_no = int(rank_no or 1)
+        t_net = int(total_net or 0)
+        if not f_date or not b_name or s_side not in ("buy", "sell") or df_trades is None or df_trades.empty:
+            return
+
+        records = []
+        for _, r in df_trades.iterrows():
+            d_str = str(r.get("日期", "")).strip()[:10]
+            if not d_str:
+                continue
+            b_val = int(r.get("買進(張)", 0) or 0)
+            s_val = int(r.get("賣出(張)", 0) or 0)
+            n_val = int(r.get("買賣超(張)", b_val - s_val) or 0)
+            records.append((f_date, w_days, s_side, r_no, b_name, t_net, d_str, b_val, s_val, n_val))
+        if not records:
+            return
+
+        def _exec_write():
+            with sqlite3.connect(self.db_path) as conn:
+                conn.execute(
+                    "DELETE FROM broker_focus_daily_series WHERE focus_date = ? AND window_days = ? AND side = ? AND rank_no = ?",
+                    (f_date, w_days, s_side, r_no)
+                )
+                conn.executemany('''
+                    INSERT OR REPLACE INTO broker_focus_daily_series
+                    (focus_date, window_days, side, rank_no, broker_name, total_net, trade_date, buy_sheets, sell_sheets, net_sheets)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ''', records)
+                conn.commit()
+
+        try:
+            _exec_write()
+        except sqlite3.OperationalError:
+            self._init_db()
+            _exec_write()
+
+        if sync_cloud:
+            sync_db_push(self.pure_code)
+
+    def load_all_broker_focus_daily_series(self) -> dict:
+        """
+        【修訂說明 2026-11-22】【修改目的與防呆防錯原因】：
+        修改目的：一次性讀取本地資料庫 broker_focus_daily_series 中所有已儲存之關注交易日專屬分點逐日買賣超序列，
+        回傳結構：{focus_date: {"w10": {"top5_buy_series": [...], "top5_sell_series": [...]}, "w20": ..., "w60": ...}}。
+        防呆防錯原因：僅查詢本地已存在之 SQLite（耗時 < 3ms，零額外網路請求）；若遇舊表缺失則自動初始化並安全回傳空字典。
+        """
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                rows = conn.execute('''
+                    SELECT focus_date, window_days, side, rank_no, broker_name, total_net, trade_date, net_sheets
+                    FROM broker_focus_daily_series
+                    ORDER BY focus_date ASC, window_days ASC, side ASC, rank_no ASC, trade_date ASC
+                ''').fetchall()
+        except sqlite3.OperationalError:
+            self._init_db()
+            return {}
+        if not rows:
+            return {}
+
+        grouped = {}
+        for f_date, w_days, side, rank_no, b_name, t_net, tr_date, n_sh in rows:
+            fd = str(f_date or "").strip()[:10]
+            td = str(tr_date or "").strip()[:10]
+            if not fd or not td:
+                continue
+            w_key = f"w{int(w_days)}"
+            s_key = "top5_buy_series" if str(side).lower() == "buy" else "top5_sell_series"
+            r_no = int(rank_no)
+            fd_map = grouped.setdefault(fd, {})
+            w_map = fd_map.setdefault(w_key, {"top5_buy_series": {}, "top5_sell_series": {}})
+            rank_dict = w_map[s_key]
+            if r_no not in rank_dict:
+                rank_dict[r_no] = {
+                    "name": str(b_name or ""),
+                    "total_net": int(t_net or 0),
+                    "dates": [],
+                    "nets": []
+                }
+            rank_dict[r_no]["dates"].append(td)
+            rank_dict[r_no]["nets"].append(int(n_sh or 0))
+
+        out = {}
+        for fd, fd_map in grouped.items():
+            out[fd] = {}
+            for w_key, w_map in fd_map.items():
+                out[fd][w_key] = {
+                    "top5_buy_series": [w_map["top5_buy_series"][r] for r in sorted(w_map["top5_buy_series"].keys())],
+                    "top5_sell_series": [w_map["top5_sell_series"][r] for r in sorted(w_map["top5_sell_series"].keys())],
+                }
+        return out
 
     def save_broker_range_rank(self, range_date: str, bundle_dict: dict, sync_cloud: bool = True):
         """儲存指定基準日之 1/10/20/60 日買賣超前 10 名統計快照"""
