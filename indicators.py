@@ -1,13 +1,13 @@
 """
 indicators.py - 技術指標與籌碼計算模組
-(新增 20/120/240/1200 日乖離率、大盤加權^TWII與櫃買^TWOII融資金額(億)與融資/融券維持率及以集保最新週真實總股數扣除近15週1000張以上大於0最小持股比例之實際流通張數週轉率與1%約當張數輸出版)
-版本: 202611220125
+(新增 20/120/240/1200 日乖離率、大盤加權^TWII與櫃買^TWOII融資金額(億)與融資/融券維持率、個股預估融資維持率滾動成本法計算及以集保最新週真實總股數扣除近15週1000張以上大於0最小持股比例之實際流通張數週轉率與1%約當張數輸出版)
+版本: 202611222256
 """
 import numpy as np
 import pandas as pd
 
 MODULE_NAME = "indicators"
-MODULE_VERSION = "202611220125"
+MODULE_VERSION = "202611222256"
 
 HOLDING_LEVEL_MAP = {
     100: [8, 9, 10, 11, 12, 13, 14, 15],
@@ -200,11 +200,37 @@ def calculate_all_indicators(
     # 【修訂說明 2026-11-20】【修改目的與防呆防錯原因】：
     # 修改目的：大盤加權指數（^TWII）與櫃買指數（^TWOII）同步計算「融資維持率（Margin_Maint_Pct）」與「融券維持率（Short_Maint_Pct）」，
     # 以 20 日滾動成本基準（166.67% / 190.0%）推算整戶維持率折線，供籌碼頁籤資券副圖雙折線繪製。
-    if str(pure_code or "").strip().upper() in ("^TWII", "^TWOII"):
+    code_upper = str(pure_code or "").strip().upper()
+    if code_upper in ("^TWII", "^TWOII"):
         rolling_cost = df['Close'].rolling(20, min_periods=1).mean().replace(0, np.nan)
         close_safe = df['Close'].replace(0, np.nan)
         df['Margin_Maint_Pct'] = (close_safe / rolling_cost) * 166.67
         df['Short_Maint_Pct'] = (rolling_cost / close_safe) * 190.0
+    elif not code_upper.startswith("^"):
+        # 【修訂說明 2026-11-22】【修改目的與防呆防錯原因】：
+        # 修改目的：針對台股個股/ETF 以「融資淨增減滾動成本法（借款成數 6 成，基準 166.67%）」計算每日預估融資維持率（Margin_Maint_Pct），
+        # 供籌碼頁籤第 4 列「資券」副圖藍色折線與資訊列同步顯示。
+        # 防呆防錯原因：當日無融資餘額（Margin_Bal <= 0）或收盤價無效時輸出 np.nan 並重置平均成本單價，避免除以零。
+        maint_vals = []
+        avg_cost = np.nan
+        prev_bal = 0.0
+        for c_p, m_bal, m_diff in zip(df['Close'], df['Margin_Bal'], df['Margin_Diff']):
+            c_val = float(c_p) if pd.notna(c_p) else 0.0
+            bal_val = float(m_bal) if pd.notna(m_bal) else 0.0
+            diff_val = float(m_diff) if pd.notna(m_diff) else 0.0
+            if bal_val <= 0 or c_val <= 0:
+                avg_cost = np.nan
+                prev_bal = 0.0
+                maint_vals.append(np.nan)
+                continue
+            if pd.isna(avg_cost) or prev_bal <= 0:
+                avg_cost = c_val
+            elif diff_val > 0:
+                base_bal = max(0.0, bal_val - diff_val)
+                avg_cost = ((base_bal * avg_cost) + (diff_val * c_val)) / bal_val
+            prev_bal = bal_val
+            maint_vals.append((c_val / avg_cost) * 166.67 if avg_cost > 0 else np.nan)
+        df['Margin_Maint_Pct'] = maint_vals
 
     # 大戶持股門檻（嚴格同週對齊，當週全交易日共用該週最新公告值）
     if not holding_df.empty:
