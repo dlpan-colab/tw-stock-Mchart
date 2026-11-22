@@ -1,6 +1,6 @@
 """
-chart_builder.py - Plotly 圖表建置模組 (主圖1/2緊緻化、指標頁籤乖離率、籌碼分頁標準字典防快取遺失、主標題藍色加大、副圖左上角內嵌標籤與加權^TWII/櫃買^TWOII緊緻雙列資券千張＋融資金額(億)副圖消除空白及大戶線1%約當張數優先採用集保最新週總張數註明版 + 主圖成交量底部邊距放寬完整顯示Y軸0刻度與極小量柱狀圖邊框保底可見版)
-版本: 202611221610
+chart_builder.py - Plotly 圖表建置模組 (主圖1/2緊緻化、指標頁籤乖離率、籌碼分頁標準字典防快取遺失、主標題藍色加大、副圖左上角內嵌標籤與加權^TWII/櫃買^TWOII緊緻雙列資券千張＋融資金額(億)副圖消除空白及大戶線1%約當張數優先採用集保最新週總張數註明版 + 主圖成交量Y軸0刻度抬升完整顯示版)
+版本: 202611221630
 """
 
 from typing import Tuple, Optional, Dict
@@ -10,7 +10,7 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
 MODULE_NAME = "chart_builder"
-MODULE_VERSION = "202611221610"
+MODULE_VERSION = "202611221630"
 
 from data_fetcher import fetch_stock_daily_k, fetch_stock_name
 from indicators import calculate_all_indicators
@@ -179,9 +179,10 @@ def build_split_figures(
         mmaint_range = [0, 100]
 
     # 【修訂說明 2026-11-22】【修改目的與防呆防錯原因】：
-    # 修改目的：主圖高度增加 16px（286/326）並將底部邊距由 b=18 放寬為 b=32，完整顯示成交量 Y 軸「0」刻度與底部月份 X 軸標籤，不被截切。
-    # 防呆防錯原因：維持 K 線與成交量可視高度比例（0.70 : 0.30），避免底部邊距放寬後壓縮副圖高度。
-    top_height = 286 if is_mobile else 326
+    # 修改目的：主圖高度設為 296/336，並於成交量 yaxis2 底部設定負值緩衝（-vol_upper * 0.08），將「0」刻度線向上抬升，
+    # 配合底部邊距 b=34，確保成交量 Y 軸「0」刻度文字完整呈現不被 iframe 底緣裁切。
+    # 防呆防錯原因：維持 K 線與成交量高度比例（0.70 : 0.30），不影響任何指標與數值計算。
+    top_height = 296 if is_mobile else 336
     tech_height = 540 if is_mobile else 580
     chip_height = (380 if is_mobile else 420) if is_tw_index else (760 if is_mobile else 800)
 
@@ -272,7 +273,7 @@ def build_split_figures(
         ),
         font=dict(size=12), template='plotly_white', hovermode=False, dragmode='pan',
         showlegend=False, height=top_height,
-        margin=dict(l=80, r=15, t=34, b=32, autoexpand=False),
+        margin=dict(l=80, r=15, t=34, b=34, autoexpand=False),
         xaxis_rangeslider_visible=False
     )
     fig_top.update_xaxes(
@@ -289,7 +290,7 @@ def build_split_figures(
         fixedrange=True, showspikes=False, tickfont=dict(size=11), row=1, col=1
     )
     fig_top.update_yaxes(
-        title_text='', range=[0, vol_upper], zeroline=True, zerolinecolor='#cbd5e1', zerolinewidth=1,
+        title_text='', range=[-vol_upper * 0.08, vol_upper], zeroline=True, zerolinecolor='#cbd5e1', zerolinewidth=1,
         fixedrange=True, showspikes=False, tickfont=dict(size=11), row=2, col=1
     )
 
