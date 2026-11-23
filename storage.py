@@ -1,7 +1,7 @@
 """
 storage.py - 本地 SQLite 資料庫與股票歷史紀錄管理器
-(支援含英文後綴台股ETF與雲端分點增量累積與批次清除分點與大盤融資金額欄位向後相容與多日歷史分點統計全載入及分點統計/日況舊表自動遷移與全市籌碼指定基準日區間清除防呆與集保每週真實總股數動態加總及集保舊表補欄防呆及關注交易日專屬分點日況序列綁定版)
-版本: 202611221550
+(支援含英文後綴台股ETF與雲端分點增量累積與批次清除分點含加權^TWII及櫃買^TWOII八大官股與大盤融資金額欄位向後相容與多日歷史分點統計全載入及分點統計/日況舊表自動遷移與全市籌碼指定基準日區間清除防呆與集保每週真實總股數動態加總及集保舊表補欄防呆及關注交易日專屬分點日況序列綁定版)
+版本: 202611231825
 """
 
 import os
@@ -18,7 +18,7 @@ from datetime import datetime, timedelta
 import pandas as pd
 
 MODULE_NAME = "storage"
-MODULE_VERSION = "202611221550"
+MODULE_VERSION = "202611231825"
 
 STORAGE_DIR = "."
 HISTORY_FILE = os.path.join(STORAGE_DIR, "stock_history.json")
@@ -31,6 +31,12 @@ def is_tw_stock_or_etf(code: str) -> bool:
     if not c or c.startswith("^"):
         return False
     return bool(re.match(r"^\d{4,6}[A-Z]{0,2}$", c))
+
+
+def is_tw_index_with_gov_brokers(code: str) -> bool:
+    """【修訂說明 2026-11-23】識別具備八大官股買賣超統計與日況之台股大盤指數（^TWII / ^TWOII）"""
+    c = str(code or "").strip().upper()
+    return c in ("^TWII", "^TWOII")
 
 
 COMMON_STOCK_NAMES = {
@@ -534,16 +540,16 @@ def clear_all_stocks_chip_range(chip_type: str, base_date_str: str, lookback_day
 
 def clear_all_broker_data() -> str:
     """
-    【修訂說明 2026-11-22】【修改目的與防呆防錯原因】：
-    修改目的：一次性清除本地及雲端 Google Drive 資料夾內所有個股資料庫（data_*.db）之分點區間統計（broker_range_rank）、
-    分點逐日明細（broker_daily_trades）與關注交易日專屬分點日況序列（broker_focus_daily_series）資料表，並同步回寫雲端。
+    【修訂說明 2026-11-23】【修改目的與防呆防錯原因】：
+    修改目的：一次性清除本地及雲端 Google Drive 資料夾內所有台股個股/ETF 與加權(^TWII)/櫃買(^TWOII)資料庫（data_*.db）之
+    分點區間統計（broker_range_rank）、分點逐日明細（broker_daily_trades）與關注交易日專屬分點日況序列（broker_focus_daily_series）資料表，並同步回寫雲端。
     防呆防錯原因：逐表 try/except 刪除避免舊庫缺表報錯，完整保留 daily_k（日線）、institutional_investors（三大法人）、margin_short（資券）與 shareholding_distribution（集保大戶）資料。
     """
     codes_set = set()
     for p in glob.glob(os.path.join(STORAGE_DIR, "data_*.db")):
         base = os.path.basename(p)
         pure = base.replace("data_", "").replace(".db", "").strip().upper()
-        if pure and not pure.startswith("^"):
+        if pure and (is_tw_stock_or_etf(pure) or is_tw_index_with_gov_brokers(pure)):
             codes_set.add(pure)
 
     try:
@@ -557,13 +563,13 @@ def clear_all_broker_data() -> str:
             for f in res.get("files", []):
                 fname = f.get("name", "")
                 pure = fname.replace("data_", "").replace(".db", "").strip().upper()
-                if pure and not pure.startswith("^"):
+                if pure and (is_tw_stock_or_etf(pure) or is_tw_index_with_gov_brokers(pure)):
                     codes_set.add(pure)
     except Exception as e:
         print(f"[Storage] 雲端分點資料庫列表掃描警告: {e}")
 
     if not codes_set:
-        return "目前無任何已收集之個股資料庫。"
+        return "目前無任何已收集之個股或大盤/櫃買資料庫。"
 
     cleared_count = 0
     for pure_code in sorted(codes_set):
@@ -586,7 +592,7 @@ def clear_all_broker_data() -> str:
         except Exception as e:
             print(f"[Storage] 清除 {pure_code} 分點資料失敗: {e}")
 
-    return f"已成功清除 {cleared_count} 檔個股之分點統計與分點日況明細（日線、法人、資券與集保大戶資料完整保留）。"
+    return f"已成功清除 {cleared_count} 檔標的（含上市/上櫃個股及加權/櫃買八大官股）之分點統計與分點日況明細（日線、法人、資券與集保大戶資料完整保留）。"
 
 
 class StockChipStorage:
@@ -1221,4 +1227,4 @@ class StockChipStorage:
                 "ratio": r_str or "-"
             })
         return by_date
-# EOF storage.py
+## EOF storage.py
