@@ -1,19 +1,19 @@
 """
 frontend.py - 前端 HTML/CSS 渲染模組
-(恢復 16 日正常版純淨 20 日初始可視視窗 + 分點買賣超紅綠對齊＋柱狀圖 staticPlot 徹底鎖死不可平移縮放版 + 分點統計與分點日況雙頁籤分離版 + 分點日況預設20日自動貼合容器寬度版 + 大盤加權^TWII與櫃買^TWOII緊緻雙列資券千張＋融資金額(億)＋融資/融券維持率消除空白版 + 分點日況嚴格綁定關注交易日無專屬明細整組清空不平移殘影版 + 主圖成交量Y軸tick0=0與動態回報iframe高度完整顯示版 + 個股資券資訊列新增藍色預估融資維持率與綠色季融資維持率顯示版 + 加權^TWII與櫃買^TWOII八大官股個股前50名分點統計與關注個股下拉選單及8家官股行庫每日買賣超萬元紅買綠賣8子圖渲染版 + 修正個股誤判八大官股導致無分點日況版)
-版本: 202611240735
+(恢復 16 日正常版純淨 20 日初始可視視窗 + 分點買賣超紅綠對齊＋柱狀圖 staticPlot 徹底鎖死不可平移縮放版 + 分點統計與分點日況雙頁籤分離版 + 分點日況預設20日自動貼合容器寬度版 + 大盤加權^TWII與櫃買^TWOII緊緻雙列資券千張＋融資金額(億)＋融資/融券維持率消除空白版 + 分點日況嚴格綁定關注交易日無專屬明細整組清空不平移殘影版 + 主圖成交量Y軸tick0=0與動態回報iframe高度完整顯示版 + 個股資券資訊列新增藍色預估融資維持率與綠色季融資維持率顯示版 + 加權^TWII與櫃買^TWOII八大官股個股前50名分點統計與關注個股下拉選單及8家官股行庫每日買賣超萬元紅買綠賣8子圖渲染版 + 明確接收is_gov_index與pure_code參數徹底根治個股誤判八大官股導致無分點日況版)
+版本: 202611240750
 """
 import json
 import pandas as pd
 
 MODULE_NAME = "frontend"
-MODULE_VERSION = "202611240735"
+MODULE_VERSION = "202611240750"
 
 
 # 【修訂說明 2026-11-18】【修改目的與防呆防錯原因】：
 # 修改目的：保留主圖上方圖例與互動操作說明列，並兼容未傳入 version_tag 之呼叫方式。
 # 防呆防錯原因：app.py 以 get_legend_html() 無參數呼叫，設定預設參數確保不觸發 TypeError。
-def get_legend_html(version_tag: str = "202611240735") -> str:
+def get_legend_html(version_tag: str = "202611240750") -> str:
     return """
     <div style="font-size:12px; color:#334155; background:#f1f5f9; padding:5px 8px; border-radius:5px; margin-bottom:4px; line-height:1.5;">
         <b>📌 圖例與互動操作說明：</b>
@@ -41,17 +41,36 @@ def _extract_dates_list(df: pd.DataFrame) -> list:
     return s.strftime('%Y-%m-%d').tolist() if hasattr(s, 'strftime') else [str(x)[:10] for x in s]
 
 
-def _detect_gov_index_unit(df: pd.DataFrame, chart_id: str, is_index: bool) -> tuple:
+def _detect_gov_index_unit(
+    df: pd.DataFrame,
+    chart_id: str,
+    is_index: bool,
+    is_gov_index: bool = None,
+    pure_code: str = None
+) -> tuple:
     """
     【修訂說明 2026-11-24】【修改目的與防呆防錯原因】：
-    1. 修改目的：精準辨識是否為大盤加權（^TWII）或櫃買（^TWOII）八大官股模式，
+    1. 修改目的：優先採用 app.py 明確傳入之 `is_gov_index` 與 `pure_code` 判定是否為大盤加權（^TWII）或櫃買（^TWOII）八大官股模式，
        回傳 (is_gov_index, unit_label, title_prefix)。上市加權與上櫃櫃買八大官股單位皆為「萬元」。
     2. 防呆防錯原因：
-       - 一般台股個股/ETF 亦會計算 `Margin_Maint_Pct`（預估融資維持率），先前僅以 `has_maint` 判定會誤將所有有融資的個股判為 `is_gov_idx=True`，導致個股分點日況走入官股分支而顯示「尚無此區間八大官股前50大個股」；
-       - 改為嚴格檢查 `Short_Maint_Pct`（僅 ^TWII / ^TWOII 具備融券維持率）或 `chart_id` 含 `^TWII` / `^TWOII`，且同時具備「無法人買賣超欄位數值（Foreign_Net/Trust_Net/Dealer_Net 全為 0）」特徵，徹底杜絕個股誤判。
+       - `chart_id` 為純數字雜湊字串（如 `mchart_123456`），不含 `^TWII` / `^TWOII`；
+       - 當 `is_gov_index` 明確傳入 `False` 時直接回傳 `(False, "張", "券商分點")`，不再透過 `df` 欄位推測，100% 杜絕個股（如 2454）誤判為八大官股。
     """
     if is_index:
         return False, "張", "券商分點"
+    code_up = str(pure_code or "").strip().upper()
+    if is_gov_index is not None:
+        if not bool(is_gov_index):
+            return False, "張", "券商分點"
+        is_twoii = (code_up == "^TWOII") or (
+            ('Margin_Money_Bal' in df.columns and (df['Margin_Money_Bal'].fillna(0) != 0).any())
+            and ('Margin_Bal' not in df.columns or (df['Margin_Bal'].fillna(0) == 0).all())
+        )
+        return (True, "萬元", "上櫃八大官股") if is_twoii else (True, "萬元", "上市八大官股")
+
+    if code_up in ("^TWII", "^TWOII"):
+        return (True, "萬元", "上櫃八大官股") if code_up == "^TWOII" else (True, "萬元", "上市八大官股")
+
     cid_up = str(chart_id or "").upper()
     has_short_maint = ('Short_Maint_Pct' in df.columns and not df['Short_Maint_Pct'].dropna().empty)
     no_inst_flow = (
@@ -416,7 +435,9 @@ def get_broker_stats_tab_html(
     disp_days: int = 20,
     is_mobile: bool = False,
     initial_end_idx: int = None,
-    is_index: bool = None
+    is_index: bool = None,
+    is_gov_index: bool = None,
+    pure_code: str = None
 ) -> str:
     n_pts = len(df)
     resolved_end = end_idx if end_idx is not None else (initial_end_idx if initial_end_idx is not None else (n_pts - 1))
@@ -424,7 +445,9 @@ def get_broker_stats_tab_html(
     if is_index is None:
         is_index = len(dates_list) == 0 or (df['Turnover_Rate'].max() == 0 and df['Foreign_Net'].abs().max() == 0)
     safe_payload = broker_payload if isinstance(broker_payload, dict) else {"by_date": {}}
-    is_gov_idx, unit_lbl, title_prefix = _detect_gov_index_unit(df, chart_id, bool(is_index))
+    is_gov_idx, unit_lbl, title_prefix = _detect_gov_index_unit(
+        df, chart_id, bool(is_index), is_gov_index=is_gov_index, pure_code=pure_code
+    )
 
     tpl = COMMON_CSS + BROKER_SHARED_CSS + """
 <div class="frame-root" id="__CID___broker_stats_root">
@@ -487,7 +510,9 @@ def get_broker_daily_tab_html(
     disp_days: int = 20,
     is_mobile: bool = False,
     initial_end_idx: int = None,
-    is_index: bool = None
+    is_index: bool = None,
+    is_gov_index: bool = None,
+    pure_code: str = None
 ) -> str:
     """
     【修訂說明 2026-11-24】【修改目的與防呆防錯原因】：
@@ -500,7 +525,7 @@ def get_broker_daily_tab_html(
        - 一般台股個股 / ETF 模式下（is_gov_idx=False）：
          完整保留原雙欄買超前 5 名與賣超前 5 名券商分點逐日進出柱狀圖。
     2. 防呆防錯原因：
-       - 透過修正後之 `_detect_gov_index_unit()` 嚴格區分個股與 ^TWII / ^TWOII，確保所有個股（含融資個股）皆正確走入一般分點日況分支。
+       - 接收明確的 `is_gov_index` 與 `pure_code` 參數，確保個股（如 2454）100% 進入一般券商分點日況分支。
     """
     n_pts = len(df)
     resolved_end = end_idx if end_idx is not None else (initial_end_idx if initial_end_idx is not None else (n_pts - 1))
@@ -508,7 +533,9 @@ def get_broker_daily_tab_html(
     if is_index is None:
         is_index = len(dates_list) == 0 or (df['Turnover_Rate'].max() == 0 and df['Foreign_Net'].abs().max() == 0)
     safe_payload = broker_payload if isinstance(broker_payload, dict) else {"by_date": {}}
-    is_gov_idx, unit_lbl, title_prefix = _detect_gov_index_unit(df, chart_id, bool(is_index))
+    is_gov_idx, unit_lbl, title_prefix = _detect_gov_index_unit(
+        df, chart_id, bool(is_index), is_gov_index=is_gov_index, pure_code=pure_code
+    )
 
     tpl = COMMON_CSS + BROKER_SHARED_CSS + """
 <div class="frame-root" id="__CID___broker_daily_root">
@@ -743,7 +770,9 @@ def get_broker_tab_html(
     disp_days: int = 20,
     is_mobile: bool = False,
     initial_end_idx: int = None,
-    is_index: bool = None
+    is_index: bool = None,
+    is_gov_index: bool = None,
+    pure_code: str = None
 ) -> str:
     """向下相容別名：預設回傳分點統計頁籤 HTML"""
     return get_broker_stats_tab_html(
@@ -754,6 +783,8 @@ def get_broker_tab_html(
         disp_days=disp_days,
         is_mobile=is_mobile,
         initial_end_idx=initial_end_idx,
-        is_index=is_index
+        is_index=is_index,
+        is_gov_index=is_gov_index,
+        pure_code=pure_code
     )
 ## EOF frontend.py
