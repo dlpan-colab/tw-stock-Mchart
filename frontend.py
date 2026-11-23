@@ -1,19 +1,19 @@
 """
 frontend.py - 前端 HTML/CSS 渲染模組
-(恢復 16 日正常版純淨 20 日初始可視視窗 + 分點買賣超紅綠對齊＋柱狀圖 staticPlot 徹底鎖死不可平移縮放版 + 分點統計與分點日況雙頁籤分離版 + 分點日況預設20日自動貼合容器寬度版 + 大盤加權^TWII與櫃買^TWOII緊緻雙列資券千張＋融資金額(億)＋融資/融券維持率消除空白版 + 分點日況嚴格綁定關注交易日無專屬明細整組清空不平移殘影版 + 主圖成交量Y軸tick0=0與動態回報iframe高度完整顯示版 + 個股資券資訊列新增藍色預估融資維持率與綠色季融資維持率顯示版 + 加權^TWII與櫃買^TWOII八大官股分點統計與分點日況渲染版)
-版本: 202611231838
+(恢復 16 日正常版純淨 20 日初始可視視窗 + 分點買賣超紅綠對齊＋柱狀圖 staticPlot 徹底鎖死不可平移縮放版 + 分點統計與分點日況雙頁籤分離版 + 分點日況預設20日自動貼合容器寬度版 + 大盤加權^TWII與櫃買^TWOII緊緻雙列資券千張＋融資金額(億)＋融資/融券維持率消除空白版 + 分點日況嚴格綁定關注交易日無專屬明細整組清空不平移殘影版 + 主圖成交量Y軸tick0=0與動態回報iframe高度完整顯示版 + 個股資券資訊列新增藍色預估融資維持率與綠色季融資維持率顯示版 + 加權^TWII與櫃買^TWOII八大官股個股前50名分點統計與關注個股下拉選單及8家官股行庫每日買賣超萬元紅買綠賣8子圖渲染版)
+版本: 202611240725
 """
 import json
 import pandas as pd
 
 MODULE_NAME = "frontend"
-MODULE_VERSION = "202611231838"
+MODULE_VERSION = "202611240725"
 
 
 # 【修訂說明 2026-11-18】【修改目的與防呆防錯原因】：
 # 修改目的：保留主圖上方圖例與互動操作說明列，並兼容未傳入 version_tag 之呼叫方式。
 # 防呆防錯原因：app.py 以 get_legend_html() 無參數呼叫，設定預設參數確保不觸發 TypeError。
-def get_legend_html(version_tag: str = "202611231838") -> str:
+def get_legend_html(version_tag: str = "202611240725") -> str:
     return """
     <div style="font-size:12px; color:#334155; background:#f1f5f9; padding:5px 8px; border-radius:5px; margin-bottom:4px; line-height:1.5;">
         <b>📌 圖例與互動操作說明：</b>
@@ -43,11 +43,11 @@ def _extract_dates_list(df: pd.DataFrame) -> list:
 
 def _detect_gov_index_unit(df: pd.DataFrame, chart_id: str, is_index: bool) -> tuple:
     """
-    【修訂說明 2026-11-23】【修改目的與防呆防錯原因】：
-    修改目的：辨識是否為大盤加權（^TWII，單位：張）或櫃買（^TWOII，單位：萬元）八大官股模式，
-    回傳 (is_gov_index, unit_label, title_prefix)。
+    【修訂說明 2026-11-24】【修改目的與防呆防錯原因】：
+    修改目的：辨識是否為大盤加權（^TWII）或櫃買（^TWOII）八大官股模式，
+    回傳 (is_gov_index, unit_label, title_prefix)。上市加權與上櫃櫃買八大官股單位皆為「萬元」。
     防呆防錯原因：當 is_index=False 且 df 具備 Margin_Maint_Pct（大盤/櫃買指標）時判定為八大官股指數；
-    以 Margin_Bal 全為 0 且 Margin_Money_Bal 有值精準區分上櫃（萬元）與上市加權（張）。
+    以 Margin_Bal 全為 0 且 Margin_Money_Bal 有值區分上櫃八大官股與上市八大官股。
     """
     if is_index:
         return False, "張", "券商分點"
@@ -60,7 +60,7 @@ def _detect_gov_index_unit(df: pd.DataFrame, chart_id: str, is_index: bool) -> t
     if is_twoii:
         return True, "萬元", "上櫃八大官股"
     if is_twii:
-        return True, "張", "上市八大官股"
+        return True, "萬元", "上市八大官股"
     return False, "張", "券商分點"
 
 
@@ -385,9 +385,9 @@ BROKER_SHARED_CSS = """<style>
 .b-title{font-size:13px;font-weight:bold;color:#1e293b;background:#f1f5f9;padding:4px 8px;border-radius:4px;margin-bottom:6px;border-left:3px solid #2c3e50}
 .b-grid{display:grid;grid-template-columns:1fr 1fr;gap:6px;width:100%}@media(max-width:720px){.b-grid{grid-template-columns:1fr}}
 .b-grid>div{min-width:0;width:100%}
-.b-wrap{overflow-x:auto;border:1px solid #e2e8f0;border-radius:4px}
+.b-wrap{overflow-x:auto;border:1px solid #e2e8f0;border-radius:4px;max-height:520px;overflow-y:auto}
 .b-tbl{width:100%;border-collapse:collapse;font-size:11.5px;text-align:right;white-space:nowrap}
-.b-tbl th{background:#f8fafc;color:#334155;font-weight:700;padding:4px 5px;border-bottom:1px solid #cbd5e1}
+.b-tbl th{position:sticky;top:0;z-index:2;background:#f8fafc;color:#334155;font-weight:700;padding:4px 5px;border-bottom:1px solid #cbd5e1}
 .b-tbl td{padding:3px 5px;border-bottom:1px solid #f1f5f9;color:#1e293b}
 .b-tbl td.val-up{color:#eb4d4b!important;font-weight:bold!important}
 .b-tbl td.val-dn{color:#16a085!important;font-weight:bold!important}
@@ -427,9 +427,9 @@ function pushH(){if(!rootEl)return;var h=Math.ceil(rootEl.scrollHeight)+16;if(wi
 if(typeof ResizeObserver!=='undefined'&&rootEl){new ResizeObserver(function(){pushH();}).observe(rootEl);}
 function fmtI(v){var n=Number(v)||0;return n.toLocaleString('en-US');}
 function fmtNet(v,isBuySide){var n=Number(v)||0;if(isBuySide){var a=Math.abs(n);return a>0?'+'+a.toLocaleString('en-US'):'0';}else{var b=Math.abs(n);return b>0?'-'+b.toLocaleString('en-US'):'0';}}
-function buildSideTable(title,rows,isBuySide){var h='<div style="border:1px solid #cbd5e1;border-radius:5px;padding:4px;background:#fff;"><div style="font-size:12px;font-weight:bold;margin-bottom:4px;color:'+(isBuySide?'#eb4d4b':'#16a085')+';">'+title+'</div><div class="b-wrap"><table class="b-tbl"><thead><tr><th>名次</th><th>'+(isGovIdx?'官股行庫':'分點名稱')+'</th><th>買進</th><th>賣出</th><th>買賣超</th><th>佔比</th></tr></thead><tbody>';
+function buildSideTable(title,rows,isBuySide){var h='<div style="border:1px solid #cbd5e1;border-radius:5px;padding:4px;background:#fff;"><div style="font-size:12px;font-weight:bold;margin-bottom:4px;color:'+(isBuySide?'#eb4d4b':'#16a085')+';">'+title+'</div><div class="b-wrap"><table class="b-tbl"><thead><tr><th>名次</th><th>'+(isGovIdx?'股票名稱':'分點名稱')+'</th><th>買進</th><th>賣出</th><th>買賣超</th><th>佔比</th></tr></thead><tbody>';
     if(!rows||rows.length===0){h+='<tr><td colspan="6" style="text-align:center;color:#94a3b8;padding:10px;">查無明細資料</td></tr>';}
-    else{for(var i=0;i<rows.length;i++){var r=rows[i],badge=(r.sys==='官股'||r.sys==='八大官股')?'<span class="gov-badge">官股</span>':'',cls=isBuySide?'val-up':'val-dn';
+    else{for(var i=0;i<rows.length;i++){var r=rows[i],badge=(!isGovIdx&&(r.sys==='官股'||r.sys==='八大官股'))?'<span class="gov-badge">官股</span>':'',cls=isBuySide?'val-up':'val-dn';
         h+='<tr><td>'+(i+1)+'</td><td><b>'+r.name+'</b>'+badge+'</td><td>'+fmtI(r.buy)+'</td><td>'+fmtI(r.sell)+'</td><td class="'+cls+'">'+fmtNet(r.net,isBuySide)+'</td><td>'+(r.ratio||'-')+'</td></tr>';}}
     return h+'</tbody></table></div></div>';
 }
@@ -437,7 +437,7 @@ function renderStats(idx){if(idx<0||idx>=dates.length)return;curIdx=idx;var dStr
     if(isIndex){hdrEl.innerHTML='<b>📊 券商分點買賣超統計（'+dStr+'）</b> ｜ <span style="color:#64748b;">海外市場指數無單一券商分點明細</span>';tblsEl.innerHTML='';pushH();return;}
     var dayObj=(payload.by_date&&payload.by_date[dStr])?payload.by_date[dStr]:null;
     if(isGovIdx){
-        hdrEl.innerHTML='<b>📊 '+titlePrefix+'買賣超統計</b> ｜ 關注交易日：<b>'+dStr+'</b> <span style="color:#64748b;font-size:11.5px;">（買超紅字＋號、賣超綠字－號；單位：'+unitLbl+'）</span>';
+        hdrEl.innerHTML='<b>📊 '+titlePrefix+'買賣超個股統計（前50大）</b> ｜ 關注交易日：<b>'+dStr+'</b> <span style="color:#64748b;font-size:11.5px;">（買超紅字＋號、賣超綠字－號；單位：'+unitLbl+'）</span>';
     }else{
         hdrEl.innerHTML='<b>📊 券商分點買賣超統計</b> ｜ 關注交易日：<b>'+dStr+'</b> <span style="color:#64748b;font-size:11.5px;">（買超紅字＋號、賣超綠字－號；15:00前預設對齊前一交易日）</span>';
     }
@@ -478,6 +478,19 @@ def get_broker_daily_tab_html(
     initial_end_idx: int = None,
     is_index: bool = None
 ) -> str:
+    """
+    【修訂說明 2026-11-24】【修改目的與防呆防錯原因】：
+    1. 修改目的：
+       - 大盤加權（^TWII）與櫃買指數（^TWOII）模式下（is_gov_idx=True）：
+         提供「統計區間天數」（近 10 日 / 近 20 日 / 近 60 日）下拉選單，並動態載入該區間內
+         「八大官股買超前 50 大個股」與「賣超前 50 大個股」的「關注個股」下拉式選單；
+         選取任一關注個股後，畫面一次呈現該單一個股的 **8 個官股行庫子圖**（合作金庫、土地銀行、臺灣銀行、臺灣企銀、彰化銀行、第一金、兆豐銀、華南永昌），
+         每個子圖繪製該官股行庫於該個股每日買賣超（萬元）的紅買綠賣柱狀圖（買超紅柱、賣超綠柱，staticPlot 鎖死不可平移縮放）。
+       - 一般台股個股 / ETF 模式下（is_gov_idx=False）：
+         完整保留原雙欄買超前 5 名與賣超前 5 名券商分點逐日進出柱狀圖。
+    2. 防呆防錯原因：
+       - 當切換關注交易日或統計區間天數時，若先前選取的關注個股仍存在於新候選清單中則自動保留該個股，否則自動選取買超第 1 名個股，確保 8 個官股子圖即時重繪不空白。
+    """
     n_pts = len(df)
     resolved_end = end_idx if end_idx is not None else (initial_end_idx if initial_end_idx is not None else (n_pts - 1))
     dates_list = _extract_dates_list(df)
@@ -491,13 +504,17 @@ def get_broker_daily_tab_html(
     <div id="__CID___d_hdr" class="pane-info-bar" style="margin-bottom:6px;"></div>
     <div class="b-card">
         <div class="b-title" id="__CID___d_card_title">區間買賣超統計各前 5 名分點 — 各日買賣超柱狀圖（分點買賣超交易日況僅限最近20日）</div>
-        <div style="display:flex;align-items:center;gap:8px;margin-bottom:4px;flex-wrap:wrap;">
+        <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px;flex-wrap:wrap;">
             <label for="__CID___b_sel" style="font-size:12.5px;font-weight:bold;color:#334155;">統計區間天數：</label>
             <select id="__CID___b_sel" style="padding:4px 8px;font-size:13px;border-radius:4px;border:1px solid #94a3b8;font-weight:bold;">
                 <option value="10">近 10 日（含關注交易日）</option>
                 <option value="20" selected>近 20 日（含關注交易日）</option>
                 <option value="60">近 60 日（含關注交易日）</option>
             </select>
+            <span id="__CID___gov_stk_box" style="display:none;align-items:center;gap:6px;flex-wrap:wrap;">
+                <label for="__CID___gov_stk_sel" style="font-size:12.5px;font-weight:bold;color:#1e3a8a;">關注個股（買超前50／賣超前50）：</label>
+                <select id="__CID___gov_stk_sel" style="padding:4px 8px;font-size:13px;border-radius:4px;border:1.5px solid #2563eb;font-weight:bold;color:#0f172a;background:#eff6ff;min-width:210px;"></select>
+            </span>
         </div>
         <div id="__CID___b_warn" style="font-size:12px;color:#d97706;background:#fffbeb;padding:6px 8px;border-radius:4px;border:1px solid #fde68a;margin-bottom:8px;display:none;"></div>
         <div id="__CID___b_bars"></div>
@@ -507,11 +524,13 @@ def get_broker_daily_tab_html(
 <script>(function(){var dates=__DATES__,isIndex=__IS_IDX__,isGovIdx=__IS_GOV_IDX__,unitLbl=__UNIT_LBL__,titlePrefix=__TITLE_PREFIX__,payload=__BROKER_JSON__,curIdx=__INIT_END__;
 var cfg={responsive:true,staticPlot:true,displayModeBar:false,scrollZoom:false,doubleClick:false};
 var rootEl=document.getElementById('__CID___broker_daily_root'),hdrEl=document.getElementById('__CID___d_hdr'),cardTitleEl=document.getElementById('__CID___d_card_title');
-var selEl=document.getElementById('__CID___b_sel'),warnEl=document.getElementById('__CID___b_warn'),barsEl=document.getElementById('__CID___b_bars');
-var MSG_60D_ON_DEMAND='尚無近 60 日逐日進出明細（單一分點/八大官股日況僅提供最近 20 個交易日明細）';
-var lastRenderedW=0,hasRenderedOnce=false,resizeTimer=null;
-if(isGovIdx&&cardTitleEl){
-    cardTitleEl.textContent=titlePrefix+'買賣超各官股行庫 — 各日買賣超柱狀圖（單位：'+unitLbl+'，僅限最近20日）';
+var selEl=document.getElementById('__CID___b_sel'),govBoxEl=document.getElementById('__CID___gov_stk_box'),govSelEl=document.getElementById('__CID___gov_stk_sel');
+var warnEl=document.getElementById('__CID___b_warn'),barsEl=document.getElementById('__CID___b_bars');
+var MSG_60D_ON_DEMAND='尚無近 60 日逐日進出明細（單一分點日況僅提供最近 20 個交易日明細）';
+var lastRenderedW=0,hasRenderedOnce=false,resizeTimer=null,lastSelectedGovStock='';
+if(isGovIdx){
+    if(cardTitleEl)cardTitleEl.textContent=titlePrefix+'買賣超前50大個股 — 選定個股 8 家官股行庫每日買賣超柱狀圖（單位：'+unitLbl+'）';
+    if(govBoxEl)govBoxEl.style.display='inline-flex';
 }
 function getVisibleW(){
     if(!rootEl)return 0;
@@ -520,6 +539,7 @@ function getVisibleW(){
 }
 function pushH(){if(!rootEl)return;var h=Math.ceil(rootEl.scrollHeight)+16;if(window.parent&&window.parent!==window)window.parent.postMessage({isStreamlitMessage:true,type:"streamlit:setFrameHeight",height:h},"*");}
 function fmtNet(v,isBuySide){var n=Number(v)||0;if(isBuySide){var a=Math.abs(n);return a>0?'+'+a.toLocaleString('en-US'):'0';}else{var b=Math.abs(n);return b>0?'-'+b.toLocaleString('en-US'):'0';}}
+function fmtSignedNet(v){var n=Number(v)||0;if(n>0)return '+'+n.toLocaleString('en-US');if(n<0)return '-'+Math.abs(n).toLocaleString('en-US');return '0';}
 function hasValidSeries(arr){
     if(!Array.isArray(arr)||arr.length===0)return false;
     for(var i=0;i<arr.length;i++){
@@ -527,12 +547,86 @@ function hasValidSeries(arr){
     }
     return false;
 }
-function renderBars(forceDraw){
+function rebuildGovStockOptions(wObj){
+    if(!govSelEl)return '';
+    var buyRows=(wObj&&Array.isArray(wObj.buy))?wObj.buy.slice(0,50):[];
+    var sellRows=(wObj&&Array.isArray(wObj.sell))?wObj.sell.slice(0,50):[];
+    var sMap=(wObj&&wObj.stock_8bank_series)?wObj.stock_8bank_series:{};
+    var seen={},opts=[];
+    for(var i=0;i<buyRows.length;i++){
+        var nm=String(buyRows[i].name||'').trim();
+        if(!nm||seen[nm]||!sMap[nm])continue;
+        seen[nm]=true;
+        opts.push({val:nm,lbl:'[買超#'+(i+1)+'] '+nm+' ('+fmtSignedNet(buyRows[i].net)+'萬)'});
+    }
+    for(var j=0;j<sellRows.length;j++){
+        var nm2=String(sellRows[j].name||'').trim();
+        if(!nm2||seen[nm2]||!sMap[nm2])continue;
+        seen[nm2]=true;
+        opts.push({val:nm2,lbl:'[賣超#'+(j+1)+'] '+nm2+' ('+fmtSignedNet(sellRows[j].net)+'萬)'});
+    }
+    govSelEl.innerHTML='';
+    for(var k=0;k<opts.length;k++){
+        var op=document.createElement('option');
+        op.value=opts[k].val;
+        op.textContent=opts[k].lbl;
+        govSelEl.appendChild(op);
+    }
+    if(opts.length===0)return '';
+    var targetVal=opts[0].val;
+    if(lastSelectedGovStock&&seen[lastSelectedGovStock]){targetVal=lastSelectedGovStock;}
+    govSelEl.value=targetVal;
+    lastSelectedGovStock=targetVal;
+    return targetVal;
+}
+function renderGov8Banks(wObj,axisDates,tVals,tTexts,curW){
+    var selStk=rebuildGovStockOptions(wObj);
+    var sMap=(wObj&&wObj.stock_8bank_series)?wObj.stock_8bank_series:{};
+    var bankList=(selStk&&sMap[selStk])?sMap[selStk]:[];
+    if(!selStk||!Array.isArray(bankList)||bankList.length===0){
+        if(warnEl){warnEl.textContent='尚無此區間八大官股前50大個股之逐日明細，請先於「⚙️ 參數設定 → 加權指數／櫃買指數八大官股維護」點擊「📥 批次增補八大官股交易前30個股」。';warnEl.style.display='block';}
+        barsEl.innerHTML='';pushH();return;
+    }
+    if(warnEl)warnEl.style.display='none';
+    var html='<div class="b-grid"><div>';
+    for(var i=0;i<4&&i<bankList.length;i++)html+='<div id="__CID___gb_'+i+'" class="b-bar"></div>';
+    html+='</div><div>';
+    for(var j=4;j<bankList.length;j++)html+='<div id="__CID___gb_'+j+'" class="b-bar"></div>';
+    html+='</div></div>';
+    barsEl.innerHTML=html;
+
+    for(var idx=0;idx<bankList.length;idx++){
+        (function(divId,item,bIdx){
+            var el=document.getElementById(divId);if(!el||typeof Plotly==='undefined')return;
+            var boxW=Math.floor(el.getBoundingClientRect().width||el.clientWidth||0);
+            if(boxW<=0){boxW=curW>720?Math.floor((curW-24)/2):Math.max(260,curW-18);}
+            var netMap={};
+            var rawD=item.dates||[],rawN=item.nets||[];
+            for(var k=0;k<rawD.length;k++){netMap[rawD[k]]=Number(rawN[k])||0;}
+            var yVals=axisDates.map(function(dt){return Object.prototype.hasOwnProperty.call(netMap,dt)?netMap[dt]:0;});
+            var cols=yVals.map(function(v){return v>=0?'#eb4d4b':'#2ecc71';});
+            var totVal=Number(item.total_net)||0;
+            var totStr=fmtSignedNet(totVal);
+            var titleClr=totVal>0?'#eb4d4b':(totVal<0?'#16a085':'#334155');
+            var tr={x:axisDates,y:yVals,type:'bar',marker:{color:cols},hoverinfo:'skip'};
+            var lay={
+                width:boxW,height:182,autosize:false,
+                title:{text:'<b>'+(bIdx+1)+'. '+item.bank+' — '+selStk+' (區間:'+totStr+unitLbl+')</b>',font:{size:11.5,color:titleClr},x:0.02,xanchor:'left'},
+                margin:{l:50,r:10,t:28,b:22},template:'plotly_white',showlegend:false,hovermode:false,dragmode:false,
+                xaxis:{type:'category',categoryorder:'array',categoryarray:axisDates,range:[-0.5,axisDates.length-0.5],fixedrange:true,showgrid:false,tickmode:'array',tickvals:tVals,ticktext:tTexts,tickfont:{size:10}},
+                yaxis:{fixedrange:true,zeroline:true,zerolinecolor:'#94a3b8',zerolinewidth:1,tickfont:{size:10},title:{text:unitLbl,font:{size:10}}}
+            };
+            Plotly.newPlot(el,[tr],lay,cfg);
+        })('__CID___gb_'+idx,bankList[idx],idx);
+    }
+    setTimeout(pushH,80);
+}
+function renderBars(forceDraw,keepGovSelection){
     if(!barsEl)return;
     var win=selEl?selEl.value:'20',dStr=dates[curIdx]||'',dayObj=(payload.by_date&&payload.by_date[dStr])?payload.by_date[dStr]:null;
     if(hdrEl){
         if(isIndex){hdrEl.innerHTML='<b>📈 券商分點逐日進出日況（'+dStr+'）</b> ｜ <span style="color:#64748b;">海外市場指數無單一券商分點明細</span>';}
-        else if(isGovIdx){hdrEl.innerHTML='<b>📈 '+titlePrefix+'逐日進出日況</b> ｜ 關注交易日：<b>'+dStr+'</b> <span style="color:#64748b;font-size:11.5px;">（八大官股行庫逐日買賣超柱狀圖，單位：'+unitLbl+'）</span>';}
+        else if(isGovIdx){hdrEl.innerHTML='<b>📈 '+titlePrefix+'逐日進出日況</b> ｜ 關注交易日：<b>'+dStr+'</b> <span style="color:#64748b;font-size:11.5px;">（下拉選取前50大買超／賣超個股，一次檢視 8 家官股行庫每日買賣超，單位：'+unitLbl+'）</span>';}
         else{hdrEl.innerHTML='<b>📈 券商分點逐日進出日況</b> ｜ 關注交易日：<b>'+dStr+'</b> <span style="color:#64748b;font-size:11.5px;">（買超前 5 名與賣超前 5 名逐日進出柱狀圖）</span>';}
     }
     var curW=getVisibleW();
@@ -541,17 +635,11 @@ function renderBars(forceDraw){
     hasRenderedOnce=true;
     if(isIndex){if(warnEl)warnEl.style.display='none';barsEl.innerHTML='<div style="color:#94a3b8;font-size:12px;padding:8px;">海外市場指數無單一券商分點逐日明細資料。</div>';pushH();return;}
     if(!dayObj){
-        if(warnEl){warnEl.textContent='尚無 '+dStr+' 之近 '+win+' 日'+titlePrefix+'逐日進出明細（分點買賣超交易日況僅限最近20日）。';warnEl.style.display='block';}
+        if(govSelEl)govSelEl.innerHTML='';
+        if(warnEl){warnEl.textContent='尚無 '+dStr+' 之近 '+win+' 日'+titlePrefix+'逐日進出明細。';warnEl.style.display='block';}
         barsEl.innerHTML='';pushH();return;
     }
     var wObj=dayObj['w'+win]||null;
-    var bList=(wObj&&wObj.top5_buy_series)?wObj.top5_buy_series:[];
-    var sList=(wObj&&wObj.top5_sell_series)?wObj.top5_sell_series:[];
-    if(!wObj||(!hasValidSeries(bList)&&!hasValidSeries(sList))){
-        if(warnEl){warnEl.textContent=(win==='60')?MSG_60D_ON_DEMAND:('尚無 '+dStr+' 之近 '+win+' 日'+titlePrefix+'逐日進出明細（分點買賣超交易日況僅限最近20日）。');warnEl.style.display='block';}
-        barsEl.innerHTML='';pushH();return;
-    }
-    if(warnEl)warnEl.style.display='none';
     var winNum=parseInt(win,10)||20;
     var sIdx=Math.max(0,curIdx-winNum+1);
     var axisDates=dates.slice(sIdx,curIdx+1);
@@ -560,6 +648,20 @@ function renderBars(forceDraw){
         var ym=axisDates[ti].slice(0,7);
         if(ym!==curM){curM=ym;tVals.push(axisDates[ti]);tTexts.push(parseInt(axisDates[ti].slice(5,7),10)+'月');}
     }
+
+    if(isGovIdx){
+        if(keepGovSelection&&govSelEl&&govSelEl.value){lastSelectedGovStock=govSelEl.value;}
+        renderGov8Banks(wObj,axisDates,tVals,tTexts,curW);
+        return;
+    }
+
+    var bList=(wObj&&wObj.top5_buy_series)?wObj.top5_buy_series:[];
+    var sList=(wObj&&wObj.top5_sell_series)?wObj.top5_sell_series:[];
+    if(!wObj||(!hasValidSeries(bList)&&!hasValidSeries(sList))){
+        if(warnEl){warnEl.textContent=(win==='60')?MSG_60D_ON_DEMAND:('尚無 '+dStr+' 之近 '+win+' 日'+titlePrefix+'逐日進出明細（分點買賣超交易日況僅限最近20日）。');warnEl.style.display='block';}
+        barsEl.innerHTML='';pushH();return;
+    }
+    if(warnEl)warnEl.style.display='none';
     var html='<div class="b-grid"><div>';
     for(var i=0;i<bList.length;i++)html+='<div id="__CID___bb_'+i+'" class="b-bar"></div>';
     html+='</div><div>';
@@ -595,7 +697,7 @@ if(typeof ResizeObserver!=='undefined'&&rootEl){
         var nowW=getVisibleW();
         if(nowW>0&&(!hasRenderedOnce||Math.abs(nowW-lastRenderedW)>8)){
             clearTimeout(resizeTimer);
-            resizeTimer=setTimeout(function(){renderBars(true);},60);
+            resizeTimer=setTimeout(function(){renderBars(true,true);},60);
         }
     }).observe(rootEl);
 }
@@ -603,12 +705,13 @@ window.addEventListener('resize',function(){
     var nowW=getVisibleW();
     if(nowW>0&&(!hasRenderedOnce||Math.abs(nowW-lastRenderedW)>8)){
         clearTimeout(resizeTimer);
-        resizeTimer=setTimeout(function(){renderBars(true);},80);
+        resizeTimer=setTimeout(function(){renderBars(true,true);},80);
     }
 });
-if(selEl)selEl.addEventListener('change',function(){renderBars(true);});
-window.addEventListener('message',function(ev){var msg=ev.data||{};if(msg.type==='MCHART_SYNC_FOCUS'&&msg.idx>=0){curIdx=msg.idx;renderBars(false);}});
-renderBars(false);
+if(selEl)selEl.addEventListener('change',function(){renderBars(true,true);});
+if(govSelEl)govSelEl.addEventListener('change',function(){lastSelectedGovStock=govSelEl.value;renderBars(true,true);});
+window.addEventListener('message',function(ev){var msg=ev.data||{};if(msg.type==='MCHART_SYNC_FOCUS'&&msg.idx>=0){curIdx=msg.idx;renderBars(false,true);}});
+renderBars(false,false);
 })();</script>"""
     return (tpl.replace("__CID__", chart_id)
             .replace("__DATES__", json.dumps(dates_list))
