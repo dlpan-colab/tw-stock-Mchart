@@ -1,7 +1,7 @@
 """
 data_fetcher.py - 整合技術與籌碼資料擷取模組
-(支援含英文後綴台股ETF + TWSE/TPEx官方日K即時補齊 + 大盤加權^TWII與櫃買^TWOII資券與融資金額(億)擷取 + 大盤加權^TWII與櫃買^TWOII八大官股個股前30買賣超(萬元)明細擷取與區間買賣超前50大個股統計及單一個股8家官股行庫逐日買賣超日況引擎 + 雲端增量累積分點引擎 + 集保官網qryStock動態Token多週歷史查詢與id=1-5批次分離含真實股數儲存 + 賣超負值正規化 + 操作儀錶板盤中報價版 + 富邦10欄並排表格與精準單日分點統計/明細5欄修正版 + 全市場歷史分點統計追滿N日但日況明細僅抓最新交易日近20日並綁定關注日版 + 全市含上櫃資券/法人/大戶指定基準日區間批次增補引擎版 + 批次增補記憶體主動回收與雲端同步節流防OOM自動Reboot版)
-版本: 202611240715
+(支援含英文後綴台股ETF + TWSE/TPEx官方日K即時補齊 + 大盤加權^TWII與櫃買^TWOII資券與融資金額(億)擷取 + 大盤加權^TWII與櫃買^TWOII八大官股個股前30買賣超(萬元)明細擷取與區間買賣超前50大個股統計及單一個股8家官股行庫逐日買賣超日況引擎 + 雲端增量累積分點引擎 + 集保官網qryStock動態Token多週歷史查詢與id=1-5批次分離含真實股數儲存 + 賣超負值正規化 + 操作儀錶板盤中報價版 + 富邦10欄並排表格與精準單日分點統計/明細5欄修正版 + 全市場歷史分點統計追滿N日但日況明細僅抓最新交易日近20日並綁定關注日版 + 全市含上櫃資券/法人/大戶指定基準日區間批次增補引擎版 + 批次增補記憶體主動回收與雲端同步節流防OOM自動Reboot版 + 修正SeriesGroupBy無abs方法觸發AttributeError版)
+版本: 202611240730
 """
 import os
 import io
@@ -19,7 +19,7 @@ from datetime import datetime, timedelta
 from urllib.parse import urljoin, urlparse, parse_qs, urlencode, urlunparse
 
 MODULE_NAME = "data_fetcher"
-MODULE_VERSION = "202611240715"
+MODULE_VERSION = "202611240730"
 
 from storage import (
     StockChipStorage, COMMON_STOCK_NAMES, load_stock_names_dict,
@@ -1311,6 +1311,7 @@ def fetch_tw_index_gov_broker_bundle(
          (b) 針對區間內買超前 50 大與賣超前 50 大個股，建構每檔個股對應 8 家官股行庫（合庫、土銀、台銀、台企銀、彰銀、第一金、兆豐銀、華南永昌）
              各自的每日買賣超（萬元）序列，供「📈 分點日況」頁籤下拉式選單選取關注個股後一次呈現 8 個官股行庫子圖。
     2. 防呆防錯原因：
+       - 修正 SeriesGroupBy 無 `.abs()` 方法導致的 `AttributeError`：改為先取 `sub_sell["total_wan"].abs()`（pandas Series）再依 `sub_sell["stock_name"]` 執行 `groupby().sum()`；
        - 若關注交易日當日尚無資料，自動向 HiStock 補抓該單日 Top 30 買賣超並寫入本地資料庫（歷史多日資料由參數設定頁籤批次增補累積）；
        - 統一以「萬元」為單位，買超與賣超皆嚴格依累計淨額正負號排序取前 50 名。
     """
@@ -1363,9 +1364,15 @@ def fetch_tw_index_gov_broker_bundle(
             "b_hncb": "sum",
             "total_wan": "sum"
         })
-        # 計算區間內單日正買超加總與單日負賣超加總
-        buy_day_sum = sub_w[sub_w["total_wan"] > 0].groupby("stock_name")["total_wan"].sum().to_dict()
-        sell_day_sum = sub_w[sub_w["total_wan"] < 0].groupby("stock_name")["total_wan"].abs().sum().to_dict()
+        # 計算區間內單日正買超加總與單日負賣超絕對值加總（避免對 SeriesGroupBy 直接呼叫 .abs()）
+        sub_buy_only = sub_w[sub_w["total_wan"] > 0]
+        buy_day_sum = sub_buy_only.groupby("stock_name")["total_wan"].sum().to_dict() if not sub_buy_only.empty else {}
+
+        sub_sell_only = sub_w[sub_w["total_wan"] < 0]
+        sell_day_sum = (
+            sub_sell_only["total_wan"].abs().groupby(sub_sell_only["stock_name"]).sum().to_dict()
+            if not sub_sell_only.empty else {}
+        )
 
         tot_abs = float(agg["total_wan"].abs().sum()) or 1.0
         buy_df = agg[agg["total_wan"] > 0].sort_values("total_wan", ascending=False).head(50)
