@@ -1,7 +1,7 @@
 """
 app.py - 主應用程式介面與生命週期控制
-(三主頁籤架構：操作儀錶板 / 個股 / 參數設定 + 自選與查詢歷史同步 + 盤中均線多空燈號 + 動態chart_id杜絕跨頁籤殘留 + 批次增補指定基準日起往前N日分點統計與明細版 + 分點15:00前對齊前一交易日與分點統計/分點日況雙頁籤版 + 上下雙複合選單自由輸入置頂/下拉選取不改順序及初始K線30根 + 全市含上櫃籌碼指定基準日區間標題與雙鍵並列 + 大戶15週與全市場含上櫃標題及底部目前關注目標列版 + 關注交易日專屬分點日況隔離與增補分點標註僅限最近交易日之近20日版 + 修正主圖高度解包錯位並對齊成交量Y軸0刻度完整顯示版 + 手機窄螢幕個股導覽列與參數設定雙功能鍵強制同列並排版 + 加權^TWII與櫃買^TWOII八大官股個股前50名分點統計與單一個股8家官股行庫逐日買賣超日況及獨立增補清除維護版)
-版本: 202611240720
+(三主頁籤架構：操作儀錶板 / 個股 / 參數設定 + 自選與查詢歷史同步 + 盤中均線多空燈號 + 動態chart_id杜絕跨頁籤殘留 + 批次增補指定基準日起往前N日分點統計與明細版 + 分點15:00前對齊前一交易日與分點統計/分點日況雙頁籤版 + 上下雙複合選單自由輸入置頂/下拉選取不改順序及初始K線30根 + 全市含上櫃籌碼指定基準日區間標題與雙鍵並列 + 大戶15週與全市場含上櫃標題及底部目前關注目標列版 + 關注交易日專屬分點日況隔離與增補分點標註僅限最近交易日之近20日版 + 修正主圖高度解包錯位並對齊成交量Y軸0刻度完整顯示版 + 手機窄螢幕個股導覽列與參數設定雙功能鍵強制同列並排版 + 加權^TWII與櫃買^TWOII八大官股個股前50名分點統計與單一個股8家官股行庫逐日買賣超日況及獨立增補清除維護版 + 明確傳遞is_gov_index與pure_code徹底根治個股誤判八大官股無日況版)
+版本: 202611240745
 """
 
 import os
@@ -13,7 +13,7 @@ import streamlit.components.v1 as components
 import cloud_sync
 
 MODULE_NAME = "app"
-MODULE_VERSION = "202611240720"
+MODULE_VERSION = "202611240745"
 
 
 # 【防呆防錯備註 2026-11-07】：版本控制權由 app.py 作為唯一權威源，動態掃描所有模組最大版本號，杜絕多頭覆寫與重工
@@ -971,7 +971,6 @@ elif selected_main_tab == "⚙️ 參數設定":
     ))
     chip_base_str = chip_base_dt.strftime("%Y-%m-%d")
 
-    # ① 第一列：資券籌碼維護；第二列：批次增補 / 清除 並列
     st.markdown("<div style='font-size:13px; font-weight:700; color:#334155; margin-top:6px; margin-bottom:2px;'>資券籌碼維護</div>", unsafe_allow_html=True)
     with st.container():
         st.markdown("<div class='settings-btn-row-anchor'></div>", unsafe_allow_html=True)
@@ -1003,7 +1002,6 @@ elif selected_main_tab == "⚙️ 參數設定":
         get_cached_figures.clear()
         st.success(summary_ms)
 
-    # ② 第一列：法人籌碼維護；第二列：批次增補 / 清除 並列
     st.markdown("<div style='font-size:13px; font-weight:700; color:#334155; margin-top:6px; margin-bottom:2px;'>法人籌碼維護</div>", unsafe_allow_html=True)
     with st.container():
         st.markdown("<div class='settings-btn-row-anchor'></div>", unsafe_allow_html=True)
@@ -1035,7 +1033,6 @@ elif selected_main_tab == "⚙️ 參數設定":
         get_cached_figures.clear()
         st.success(summary_inst)
 
-    # ③ 第一列：大戶籌碼維護（最多15週）；第二列：批次增補 / 清除 並列
     st.markdown("<div style='font-size:13px; font-weight:700; color:#334155; margin-top:6px; margin-bottom:2px;'>大戶籌碼維護（最多15週）</div>", unsafe_allow_html=True)
     with st.container():
         st.markdown("<div class='settings-btn-row-anchor'></div>", unsafe_allow_html=True)
@@ -1067,7 +1064,6 @@ elif selected_main_tab == "⚙️ 參數設定":
         get_cached_figures.clear()
         st.success(summary_hold)
 
-    # 二段式確認清除
     pending_chip_clr = st.session_state.get("confirm_clear_chip_type", "")
     if pending_chip_clr in ("margin", "institutional", "holding"):
         chip_label_map = {
@@ -1428,7 +1424,9 @@ else:
                 chart_id=chart_id,
                 broker_payload=broker_payload,
                 initial_end_idx=safe_end_idx,
-                is_index=(not has_broker_support)
+                is_index=(not has_broker_support),
+                is_gov_index=is_gov_idx,
+                pure_code=pure_ticker
             )
             components.html(broker_stats_html, height=580, scrolling=True)
 
@@ -1438,7 +1436,9 @@ else:
                 chart_id=chart_id,
                 broker_payload=broker_payload,
                 initial_end_idx=safe_end_idx,
-                is_index=(not has_broker_support)
+                is_index=(not has_broker_support),
+                is_gov_index=is_gov_idx,
+                pure_code=pure_ticker
             )
             components.html(broker_daily_html, height=1320, scrolling=True)
 
