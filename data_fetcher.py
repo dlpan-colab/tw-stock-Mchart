@@ -1,7 +1,7 @@
 """
 data_fetcher.py - 整合技術與籌碼資料擷取模組
-(支援含英文後綴台股ETF + TWSE/TPEx官方日K即時補齊 + 大盤加權^TWII與櫃買^TWOII資券與融資金額(億)擷取 + 大盤加權^TWII與櫃買^TWOII八大官股個股前30買賣超(萬元)明細擷取與區間買賣超前50大個股統計及單一個股8家官股行庫逐日買賣超日況引擎 + 雲端增量累積分點引擎 + 集保官網qryStock動態Token多週歷史查詢與id=1-5批次分離含真實股數儲存 + 賣超負值正規化 + 操作儀錶板盤中報價版 + 富邦10欄並排表格與精準單日分點統計/明細5欄修正版 + 全市場歷史分點統計追滿N日但日況明細僅抓最新交易日近20日並綁定關注日版 + 全市含上櫃資券/法人/大戶指定基準日區間批次增補引擎版 + 批次增補記憶體主動回收與雲端同步節流防OOM自動Reboot版 + 修正SeriesGroupBy無abs方法觸發AttributeError版)
-版本: 202611240730
+(支援含英文後綴台股ETF + TWSE/TPEx官方日K即時補齊 + 大盤加權^TWII與櫃買^TWOII資券與融資金額(億)擷取 + 大盤加權^TWII與櫃買^TWOII八大官股個股前30買賣超(萬元)明細擷取與區間買賣超前50大個股統計及單一個股8家官股行庫逐日買賣超日況引擎 + 雲端增量累積分點引擎 + 集保官網qryStock動態Token多週歷史查詢與id=1-5批次分離含真實股數儲存 + 賣超負值正規化 + 操作儀錶板盤中報價版 + 富邦10欄並排表格與精準單日分點統計/明細5欄修正版 + 全市場歷史分點統計追滿N日但日況明細僅抓最新交易日近20日並綁定關注日版 + 全市含上櫃資券/法人/大戶指定基準日區間批次增補引擎版 + 批次增補記憶體主動回收與雲端同步節流防OOM自動Reboot版 + 純Python原生字典彙總八大官股前50名與8行庫序列徹底消除AttributeError版)
+版本: 202611240742
 """
 import os
 import io
@@ -19,7 +19,7 @@ from datetime import datetime, timedelta
 from urllib.parse import urljoin, urlparse, parse_qs, urlencode, urlunparse
 
 MODULE_NAME = "data_fetcher"
-MODULE_VERSION = "202611240730"
+MODULE_VERSION = "202611240742"
 
 from storage import (
     StockChipStorage, COMMON_STOCK_NAMES, load_stock_names_dict,
@@ -1137,7 +1137,6 @@ def _fetch_histock_broker8_single_day(pure_code: str, target_date_str: str) -> t
         if len(bank_cols_found) < 4:
             continue
 
-        # 判斷此表格為買超排名（第1張表）或賣超排名（第2張表）
         side_label = "buy" if table_seq == 0 else "sell"
         prev_hd = tbl.find_previous(["h2", "h3", "h4"])
         if prev_hd:
@@ -1152,7 +1151,6 @@ def _fetch_histock_broker8_single_day(pure_code: str, target_date_str: str) -> t
             cleaned = [t.strip() for t in tokens if t and t.strip() not in ("★", "☆")]
             if len(cleaned) < 9:
                 return None
-            # 找出股票名稱位置（通常為第 0 個非純數字欄位）
             name_idx = None
             for idx_t, tok in enumerate(cleaned):
                 if not _is_pure_number_or_symbol(tok) and tok not in ("股票", "合計", "合計(萬)"):
@@ -1186,7 +1184,6 @@ def _fetch_histock_broker8_single_day(pure_code: str, target_date_str: str) -> t
                 "total_wan": float(tot_wan),
             }
 
-        # 1. 優先解析緊接之 <ul class="stock-list"> 內所有 <li>
         ul_list = tbl.find_next_sibling("ul", class_="stock-list") or tbl.find_next_sibling("ul")
         if ul_list:
             for li in ul_list.find_all("li", recursive=False):
@@ -1199,7 +1196,6 @@ def _fetch_histock_broker8_single_day(pure_code: str, target_date_str: str) -> t
                 if rec and rec["stock_name"]:
                     stock_records_map[rec["stock_name"]] = rec
 
-        # 2. 兼容後續 <tr> 資料列
         for tr in trs[1:]:
             cells = [re.sub(r"\s+", " ", td.get_text(" ", strip=True)) for td in tr.find_all(["td", "th"])]
             rec = _parse_token_row(cells)
@@ -1262,7 +1258,11 @@ def batch_sync_tw_index_gov_brokers(
         target_dates = trade_dates[start_pos:anchor_pos + 1]
 
         exist_df = storage.load_gov_index_stock_daily_range(target_dates[0], target_dates[-1])
-        exist_counts = exist_df.groupby("trade_date")["stock_name"].count().to_dict() if (exist_df is not None and not exist_df.empty) else {}
+        exist_counts = {}
+        if exist_df is not None and not exist_df.empty:
+            for d_val in exist_df["trade_date"].tolist():
+                dk = str(d_val)[:10]
+                exist_counts[dk] = exist_counts.get(dk, 0) + 1
 
         wrote_any = False
         for d_idx, d_str in enumerate(reversed(target_dates), start=1):
@@ -1311,9 +1311,9 @@ def fetch_tw_index_gov_broker_bundle(
          (b) 針對區間內買超前 50 大與賣超前 50 大個股，建構每檔個股對應 8 家官股行庫（合庫、土銀、台銀、台企銀、彰銀、第一金、兆豐銀、華南永昌）
              各自的每日買賣超（萬元）序列，供「📈 分點日況」頁籤下拉式選單選取關注個股後一次呈現 8 個官股行庫子圖。
     2. 防呆防錯原因：
-       - 修正 SeriesGroupBy 無 `.abs()` 方法導致的 `AttributeError`：改為先取 `sub_sell["total_wan"].abs()`（pandas Series）再依 `sub_sell["stock_name"]` 執行 `groupby().sum()`；
-       - 若關注交易日當日尚無資料，自動向 HiStock 補抓該單日 Top 30 買賣超並寫入本地資料庫（歷史多日資料由參數設定頁籤批次增補累積）；
-       - 統一以「萬元」為單位，買超與賣超皆嚴格依累計淨額正負號排序取前 50 名。
+       - 全程採用純 Python 原生 list / dict 迴圈加總與切片（完全不依賴 pandas groupby / MultiIndex .loc），
+         徹底杜絕任何版本或空資料情境下觸發 `AttributeError`；
+       - 同時支援 `storage` 具備 `load_gov_index_stock_daily_range` 方法或直接查詢本地 SQLite `gov_index_stock_daily` 資料表雙重備援。
     """
     code = str(pure_code or "").strip().upper()
     if not is_tw_index_with_gov_brokers(code) or not trade_dates_tuple:
@@ -1321,22 +1321,47 @@ def fetch_tw_index_gov_broker_bundle(
 
     n_dates = len(trade_dates_tuple)
     safe_idx = min(max(0, int(target_end_idx)), n_dates - 1)
-    end_date_str = trade_dates_tuple[safe_idx]
+    end_date_str = str(trade_dates_tuple[safe_idx])[:10]
     storage = StockChipStorage(code)
 
+    def _query_gov_rows(s_dt: str, e_dt: str) -> list:
+        if hasattr(storage, "load_gov_index_stock_daily_range"):
+            df_q = storage.load_gov_index_stock_daily_range(s_dt, e_dt)
+            if df_q is not None and not df_q.empty:
+                return df_q.to_dict(orient="records")
+            return []
+        import sqlite3
+        if not os.path.exists(storage.db_path):
+            return []
+        try:
+            with sqlite3.connect(storage.db_path) as conn:
+                cur = conn.execute('''
+                    SELECT trade_date, stock_name, source_side,
+                           b_heku, b_land, b_bot, b_tbb, b_ccb, b_first, b_mega, b_hncb, total_wan
+                    FROM gov_index_stock_daily
+                    WHERE trade_date >= ? AND trade_date <= ?
+                    ORDER BY trade_date ASC, stock_name ASC
+                ''', (s_dt, e_dt))
+                cols_q = [d[0] for d in cur.description]
+                return [dict(zip(cols_q, row)) for row in cur.fetchall()]
+        except Exception:
+            return []
+
     # 若當日尚無任何八大官股個股紀錄，自動向 HiStock 補抓當日 Top 30 買賣超個股
-    chk_today = storage.load_gov_index_stock_daily_range(end_date_str, end_date_str)
-    if chk_today is None or chk_today.empty:
+    chk_today_rows = _query_gov_rows(end_date_str, end_date_str)
+    if not chk_today_rows:
         act_d, stk_rows = _fetch_histock_broker8_single_day(code, end_date_str)
-        if stk_rows:
+        if stk_rows and hasattr(storage, "save_gov_index_stock_daily"):
             storage.save_gov_index_stock_daily(act_d or end_date_str, stk_rows, sync_cloud=True)
 
-    earliest_d = trade_dates_tuple[max(0, safe_idx - 60 + 1)]
-    df_all = storage.load_gov_index_stock_daily_range(earliest_d, end_date_str)
-    if df_all is None or df_all.empty:
+    earliest_d = str(trade_dates_tuple[max(0, safe_idx - 60 + 1)])[:10]
+    all_rows = _query_gov_rows(earliest_d, end_date_str)
+    if not all_rows:
         return {}, {}
 
-    avail_dates = sorted(df_all["trade_date"].astype(str).str[:10].unique().tolist())
+    avail_dates = sorted({str(r.get("trade_date", ""))[:10] for r in all_rows if r.get("trade_date")})
+    if not avail_dates:
+        return {}, {}
     valid_gov_dates = [d for d in avail_dates if d <= end_date_str]
     anchor_gov_date = valid_gov_dates[-1] if valid_gov_dates else avail_dates[-1]
 
@@ -1345,47 +1370,79 @@ def fetch_tw_index_gov_broker_bundle(
 
     for w in windows:
         s_idx = max(0, safe_idx - w + 1)
-        s_date_str = trade_dates_tuple[s_idx]
-        sub_w = df_all[(df_all["trade_date"] >= s_date_str) & (df_all["trade_date"] <= anchor_gov_date)].copy()
-        if sub_w.empty and w == 1:
-            sub_w = df_all[df_all["trade_date"] == anchor_gov_date].copy()
-        if sub_w.empty:
+        s_date_str = str(trade_dates_tuple[s_idx])[:10]
+        sub_rows = [
+            r for r in all_rows
+            if s_date_str <= str(r.get("trade_date", ""))[:10] <= anchor_gov_date
+        ]
+        if not sub_rows and w == 1:
+            sub_rows = [
+                r for r in all_rows
+                if str(r.get("trade_date", ""))[:10] == anchor_gov_date
+            ]
+        if not sub_rows:
             continue
 
-        # 依股票名稱加總區間內八大官股買賣超合計（萬元）
-        agg = sub_w.groupby("stock_name", as_index=False).agg({
-            "b_heku": "sum",
-            "b_land": "sum",
-            "b_bot": "sum",
-            "b_tbb": "sum",
-            "b_ccb": "sum",
-            "b_first": "sum",
-            "b_mega": "sum",
-            "b_hncb": "sum",
-            "total_wan": "sum"
-        })
-        # 計算區間內單日正買超加總與單日負賣超絕對值加總（避免對 SeriesGroupBy 直接呼叫 .abs()）
-        sub_buy_only = sub_w[sub_w["total_wan"] > 0]
-        buy_day_sum = sub_buy_only.groupby("stock_name")["total_wan"].sum().to_dict() if not sub_buy_only.empty else {}
+        # 純 Python 原生字典依股票名稱彙總區間內八大官股買賣超（萬元）與逐日明細
+        agg_map = {}
+        daily_by_stock = {}
+        min_d_found = "9999-12-31"
+        max_d_found = "0000-01-01"
 
-        sub_sell_only = sub_w[sub_w["total_wan"] < 0]
-        sell_day_sum = (
-            sub_sell_only["total_wan"].abs().groupby(sub_sell_only["stock_name"]).sum().to_dict()
-            if not sub_sell_only.empty else {}
-        )
+        for r in sub_rows:
+            td = str(r.get("trade_date", ""))[:10]
+            sn = str(r.get("stock_name", "") or "").strip()
+            if not td or not sn:
+                continue
+            if td < min_d_found:
+                min_d_found = td
+            if td > max_d_found:
+                max_d_found = td
 
-        tot_abs = float(agg["total_wan"].abs().sum()) or 1.0
-        buy_df = agg[agg["total_wan"] > 0].sort_values("total_wan", ascending=False).head(50)
-        sell_df = agg[agg["total_wan"] < 0].sort_values("total_wan", ascending=True).head(50)
+            tot_v = float(r.get("total_wan", 0.0) or 0.0)
+            entry = agg_map.get(sn)
+            if entry is None:
+                entry = {"stock_name": sn, "buy_sum": 0.0, "sell_sum": 0.0, "total_wan": 0.0}
+                agg_map[sn] = entry
+            entry["total_wan"] += tot_v
+            if tot_v > 0:
+                entry["buy_sum"] += tot_v
+            elif tot_v < 0:
+                entry["sell_sum"] += abs(tot_v)
+
+            stk_day_map = daily_by_stock.setdefault(sn, {})
+            stk_day_map[td] = {
+                "b_heku": float(r.get("b_heku", 0.0) or 0.0),
+                "b_land": float(r.get("b_land", 0.0) or 0.0),
+                "b_bot": float(r.get("b_bot", 0.0) or 0.0),
+                "b_tbb": float(r.get("b_tbb", 0.0) or 0.0),
+                "b_ccb": float(r.get("b_ccb", 0.0) or 0.0),
+                "b_first": float(r.get("b_first", 0.0) or 0.0),
+                "b_mega": float(r.get("b_mega", 0.0) or 0.0),
+                "b_hncb": float(r.get("b_hncb", 0.0) or 0.0),
+            }
+
+        if not agg_map:
+            continue
+
+        tot_abs = sum(abs(v["total_wan"]) for v in agg_map.values()) or 1.0
+        buy_items = sorted(
+            [v for v in agg_map.values() if v["total_wan"] > 0],
+            key=lambda x: x["total_wan"],
+            reverse=True
+        )[:50]
+        sell_items = sorted(
+            [v for v in agg_map.values() if v["total_wan"] < 0],
+            key=lambda x: x["total_wan"]
+        )[:50]
 
         buy_recs = []
-        for _, r in buy_df.iterrows():
-            s_nm = str(r["stock_name"])
-            nv = int(round(float(r["total_wan"])))
-            b_v = int(round(float(buy_day_sum.get(s_nm, max(0, nv)))))
-            s_v = int(round(float(sell_day_sum.get(s_nm, 0))))
+        for item in buy_items:
+            nv = int(round(item["total_wan"]))
+            b_v = int(round(item["buy_sum"] if item["buy_sum"] > 0 else max(0, nv)))
+            s_v = int(round(item["sell_sum"]))
             buy_recs.append({
-                "name": s_nm,
+                "name": item["stock_name"],
                 "sys": "八大官股",
                 "buy": b_v,
                 "sell": s_v,
@@ -1394,13 +1451,12 @@ def fetch_tw_index_gov_broker_bundle(
             })
 
         sell_recs = []
-        for _, r in sell_df.iterrows():
-            s_nm = str(r["stock_name"])
-            nv = int(round(float(r["total_wan"])))
-            b_v = int(round(float(buy_day_sum.get(s_nm, 0))))
-            s_v = int(round(float(sell_day_sum.get(s_nm, abs(nv)))))
+        for item in sell_items:
+            nv = int(round(item["total_wan"]))
+            b_v = int(round(item["buy_sum"]))
+            s_v = int(round(item["sell_sum"] if item["sell_sum"] > 0 else abs(nv)))
             sell_recs.append({
-                "name": s_nm,
+                "name": item["stock_name"],
                 "sys": "八大官股",
                 "buy": b_v,
                 "sell": s_v,
@@ -1419,30 +1475,23 @@ def fetch_tw_index_gov_broker_bundle(
                     seen_stk.add(sn)
                     cand_stocks.append(sn)
 
-            sub_indexed = sub_w.set_index(["stock_name", "trade_date"])
             for sn in cand_stocks:
-                try:
-                    stk_rows = sub_indexed.loc[sn]
-                    if isinstance(stk_rows, pd.Series):
-                        stk_rows = stk_rows.to_frame().T
-                    stk_rows = stk_rows.sort_index()
-                    d_list = [str(d)[:10] for d in stk_rows.index]
-                    banks_list = []
-                    for b_label, _, col_k in EIGHT_GOV_BROKERS:
-                        vals_list = [int(round(float(v or 0.0))) for v in stk_rows[col_k].tolist()]
-                        banks_list.append({
-                            "bank": b_label,
-                            "total_net": int(sum(vals_list)),
-                            "dates": d_list,
-                            "nets": vals_list
-                        })
-                    stock_8bank_map[sn] = banks_list
-                except Exception:
+                stk_day_map = daily_by_stock.get(sn)
+                if not stk_day_map:
                     continue
+                d_list = sorted(stk_day_map.keys())
+                banks_list = []
+                for b_label, _, col_k in EIGHT_GOV_BROKERS:
+                    vals_list = [int(round(stk_day_map[dt].get(col_k, 0.0))) for dt in d_list]
+                    banks_list.append({
+                        "bank": b_label,
+                        "total_net": int(sum(vals_list)),
+                        "dates": d_list,
+                        "nets": vals_list
+                    })
+                stock_8bank_map[sn] = banks_list
 
-        actual_min_d = str(sub_w["trade_date"].min())[:10]
-        actual_max_d = str(sub_w["trade_date"].max())[:10]
-        lbl = actual_max_d if w == 1 else f"{actual_min_d} ~ {actual_max_d}"
+        lbl = max_d_found if w == 1 else f"{min_d_found} ~ {max_d_found}"
         w_dict = {
             "range_label": lbl,
             "buy": buy_recs,
