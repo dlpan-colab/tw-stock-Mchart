@@ -1,7 +1,7 @@
 """
 data_fetcher.py - 整合技術與籌碼資料擷取模組
-(支援含英文後綴台股ETF + TWSE/TPEx官方日K即時補齊 + 大盤加權^TWII與櫃買^TWOII資券與融資金額(億)擷取 + 大盤加權^TWII與櫃買^TWOII八大官股買賣超統計與日況擷取 + 雲端增量累積分點引擎 + 集保官網qryStock動態Token多週歷史查詢與id=1-5批次分離含真實股數儲存 + 賣超負值正規化 + 操作儀錶板盤中報價版 + 富邦10欄並排表格與精準單日分點統計/明細5欄修正版 + 全市場歷史分點統計追滿N日但日況明細僅抓最新交易日近20日並綁定關注日版 + 全市含上櫃資券/法人/大戶指定基準日區間批次增補引擎版 + 批次增補記憶體主動回收與雲端同步節流防OOM自動Reboot版)
-版本: 202611231830
+(支援含英文後綴台股ETF + TWSE/TPEx官方日K即時補齊 + 大盤加權^TWII與櫃買^TWOII資券與融資金額(億)擷取 + 大盤加權^TWII與櫃買^TWOII八大官股買賣超統計與日況擷取(m=b8修正版) + 雲端增量累積分點引擎 + 集保官網qryStock動態Token多週歷史查詢與id=1-5批次分離含真實股數儲存 + 賣超負值正規化 + 操作儀錶板盤中報價版 + 富邦10欄並排表格與精準單日分點統計/明細5欄修正版 + 全市場歷史分點統計追滿N日但日況明細僅抓最新交易日近20日並綁定關注日版 + 全市含上櫃資券/法人/大戶指定基準日區間批次增補引擎版 + 批次增補記憶體主動回收與雲端同步節流防OOM自動Reboot版)
+版本: 202611231842
 """
 import os
 import io
@@ -19,7 +19,7 @@ from datetime import datetime, timedelta
 from urllib.parse import urljoin, urlparse, parse_qs, urlencode, urlunparse
 
 MODULE_NAME = "data_fetcher"
-MODULE_VERSION = "202611231830"
+MODULE_VERSION = "202611231842"
 
 from storage import (
     StockChipStorage, COMMON_STOCK_NAMES, load_stock_names_dict,
@@ -1093,23 +1093,32 @@ def fetch_dashboard_watchlist_rows(history_list: list) -> list:
 def _fetch_histock_eight_gov_daily_table(pure_code: str) -> pd.DataFrame:
     """
     【修訂說明 2026-11-23】【修改目的與防呆防錯原因】：
-    1. 修改目的：自 HiStock 八大官股券商買賣超總表（上市 https://histock.tw/stock/three.aspx?m=b、
-       上櫃 https://histock.tw/stock/three.aspx?m=b&no=TWOI）擷取最近交易日之各官股行庫每日買賣超明細，
-       回傳標準化 DataFrame（欄位：日期、行庫名稱、買賣超、單位）。
+    1. 修改目的：修正 HiStock 八大官股個別行庫明細正確子頁籤網址為 `m=b8`
+       （上市 https://histock.tw/stock/three.aspx?m=b8、上櫃 https://histock.tw/stock/three.aspx?m=b8&no=TWOI），
+       擷取各官股行庫（台銀、土銀、合庫、第一金、華南永昌、彰銀、兆豐、臺企銀）每日買賣超明細。
     2. 防呆防錯原因：
-       - 上市（^TWII）頁面數值單位為「億元」或「千張/張」，若欄位標題含「億」或數值為小數億元，自動搭配當日加權成交量/金額比例或直接以張數（千張轉張）換算，並於欄位標明實際數值；
-       - 上櫃（^TWOII）頁面八大官股買賣超單位為「萬元」，原數值保留（單位：萬元）供排行與柱狀圖呈現；
-       - 兼容表格轉置（直列為日期、橫欄為 8 家官股行庫；或直列為官股行庫、橫欄為日期）。
+       - 若首選 `m=b8` 未取得有效表格，依序備援 `m=b8&no=TWII` / `m=b8&no=TWOII`；
+       - 同時支援橫欄為 8 家行庫（直列為日期）與直列為行庫（橫欄為日期）兩種表格結構。
     """
     code = str(pure_code or "").strip().upper()
     if not is_tw_index_with_gov_brokers(code):
         return pd.DataFrame()
 
     is_otc = (code == "^TWOII")
-    url = "https://histock.tw/stock/three.aspx?m=b&no=TWOI" if is_otc else "https://histock.tw/stock/three.aspx?m=b"
+    candidate_urls = (
+        [
+            "https://histock.tw/stock/three.aspx?m=b8&no=TWOI",
+            "https://histock.tw/stock/three.aspx?m=b8&no=TWOII",
+        ]
+        if is_otc else
+        [
+            "https://histock.tw/stock/three.aspx?m=b8",
+            "https://histock.tw/stock/three.aspx?m=b8&no=TWII",
+        ]
+    )
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
-        "Referer": "https://histock.tw/"
+        "Referer": "https://histock.tw/stock/three.aspx?m=b"
     }
 
     def _match_gov_bank(col_txt: str) -> str:
@@ -1133,89 +1142,93 @@ def _fetch_histock_eight_gov_daily_table(pure_code: str) -> pd.DataFrame:
 
     def _parse_histock_date(raw_d: str) -> str:
         s = str(raw_d or "").strip().replace("-", "/")
-        parts = s.split("/")
-        if len(parts) == 3 and parts[0].isdigit() and parts[1].isdigit() and parts[2].isdigit():
-            y_n = int(parts[0])
+        m = re.search(r'(\d{2,4})/(\d{1,2})(?:/(\d{1,2}))?', s)
+        if not m:
+            return ""
+        p1, p2, p3 = m.group(1), m.group(2), m.group(3)
+        if p3 is not None:
+            y_n = int(p1)
             if y_n < 1911:
                 y_n += 1911
-            return f"{y_n:04d}-{int(parts[1]):02d}-{int(parts[2]):02d}"
-        if len(parts) == 2 and parts[0].isdigit() and parts[1].isdigit():
-            m_n, d_n = int(parts[0]), int(parts[1])
-            y_n = cur_year if m_n <= now_tw.month + 1 else (cur_year - 1)
-            return f"{y_n:04d}-{m_n:02d}-{d_n:02d}"
-        return ""
-
-    try:
-        res = requests.get(url, headers=headers, timeout=8)
-        if res.status_code != 200 or not res.text:
-            return pd.DataFrame()
-        soup = BeautifulSoup(res.text, "html.parser")
-    except Exception:
-        return pd.DataFrame()
+            return f"{y_n:04d}-{int(p2):02d}-{int(p3):02d}"
+        m_n, d_n = int(p1), int(p2)
+        y_n = cur_year if m_n <= now_tw.month + 1 else (cur_year - 1)
+        return f"{y_n:04d}-{m_n:02d}-{d_n:02d}"
 
     records = []
-    for tbl in soup.find_all("table"):
-        txt_all = tbl.get_text()
-        if not any(k in txt_all for k in ("台銀", "臺銀", "土銀", "合庫", "兆豐", "彰銀", "華南", "第一", "台企", "臺企")):
+    for url in candidate_urls:
+        try:
+            res = requests.get(url, headers=headers, timeout=8)
+            if res.status_code != 200 or not res.text:
+                continue
+            soup = BeautifulSoup(res.text, "html.parser")
+        except Exception:
             continue
-        trs = tbl.find_all("tr")
-        if len(trs) < 2:
-            continue
 
-        header_cells = [re.sub(r"\s+", " ", td.get_text(" ", strip=True)) for td in trs[0].find_all(["th", "td"])]
-        bank_col_map = {}
-        for idx_c, h_txt in enumerate(header_cells):
-            b_std = _match_gov_bank(h_txt)
-            if b_std:
-                bank_col_map[idx_c] = b_std
+        for tbl in soup.find_all("table"):
+            txt_all = tbl.get_text()
+            if not any(k in txt_all for k in ("台銀", "臺銀", "土銀", "合庫", "兆豐", "彰銀", "華南", "第一", "台企", "臺企")):
+                continue
+            trs = tbl.find_all("tr")
+            if len(trs) < 2:
+                continue
 
-        # 情況 A：橫欄為八大官股行庫，直列為日期
-        if len(bank_col_map) >= 4:
-            is_yi_unit = any("億" in h for h in header_cells) or ("億" in txt_all[:300])
-            for tr in trs[1:]:
-                cells = [re.sub(r"\s+", " ", td.get_text(" ", strip=True)) for td in tr.find_all(["td", "th"])]
-                if len(cells) <= max(bank_col_map.keys()):
-                    continue
-                iso_d = _parse_histock_date(cells[0])
-                if not iso_d:
-                    continue
-                for col_i, b_std in bank_col_map.items():
-                    v = _parse_float_val(cells[col_i])
-                    if v is None:
-                        continue
-                    # 上市若網頁以「億元」呈現，換算為約當張數（1億約=2,500張，或依實際整數張保留）；上櫃保留萬元整數
-                    if is_otc:
-                        val_int = int(round(v))
-                    else:
-                        val_int = int(round(v * 1000.0)) if (is_yi_unit and abs(v) < 500) else int(round(v))
-                    records.append((iso_d, b_std, val_int))
-            if records:
-                break
+            header_cells = [re.sub(r"\s+", " ", td.get_text(" ", strip=True)) for td in trs[0].find_all(["th", "td"])]
+            bank_col_map = {}
+            for idx_c, h_txt in enumerate(header_cells):
+                b_std = _match_gov_bank(h_txt)
+                if b_std:
+                    bank_col_map[idx_c] = b_std
 
-        # 情況 B：直列為八大官股行庫，橫欄為日期
-        date_col_map = {}
-        for idx_c, h_txt in enumerate(header_cells):
-            d_iso = _parse_histock_date(h_txt)
-            if d_iso:
-                date_col_map[idx_c] = d_iso
-        if len(date_col_map) >= 2:
-            for tr in trs[1:]:
-                cells = [re.sub(r"\s+", " ", td.get_text(" ", strip=True)) for td in tr.find_all(["td", "th"])]
-                if not cells:
-                    continue
-                b_std = _match_gov_bank(cells[0])
-                if not b_std:
-                    continue
-                for col_i, iso_d in date_col_map.items():
-                    if col_i >= len(cells):
+            # 情況 A：橫欄為八大官股行庫，直列為日期
+            if len(bank_col_map) >= 4:
+                is_yi_unit = any("億" in h for h in header_cells)
+                for tr in trs[1:]:
+                    cells = [re.sub(r"\s+", " ", td.get_text(" ", strip=True)) for td in tr.find_all(["td", "th"])]
+                    if len(cells) <= max(bank_col_map.keys()):
                         continue
-                    v = _parse_float_val(cells[col_i])
-                    if v is None:
+                    iso_d = _parse_histock_date(cells[0])
+                    if not iso_d:
                         continue
-                    val_int = int(round(v)) if is_otc else (int(round(v * 1000.0)) if abs(v) < 500 else int(round(v)))
-                    records.append((iso_d, b_std, val_int))
-            if records:
-                break
+                    for col_i, b_std in bank_col_map.items():
+                        v = _parse_float_val(cells[col_i])
+                        if v is None:
+                            continue
+                        if is_otc:
+                            val_int = int(round(v))
+                        else:
+                            val_int = int(round(v * 1000.0)) if (is_yi_unit and abs(v) < 500) else int(round(v))
+                        records.append((iso_d, b_std, val_int))
+                if records:
+                    break
+
+            # 情況 B：直列為八大官股行庫，橫欄為日期
+            date_col_map = {}
+            for idx_c, h_txt in enumerate(header_cells):
+                d_iso = _parse_histock_date(h_txt)
+                if d_iso:
+                    date_col_map[idx_c] = d_iso
+            if len(date_col_map) >= 2:
+                for tr in trs[1:]:
+                    cells = [re.sub(r"\s+", " ", td.get_text(" ", strip=True)) for td in tr.find_all(["td", "th"])]
+                    if not cells:
+                        continue
+                    b_std = _match_gov_bank(cells[0])
+                    if not b_std:
+                        continue
+                    for col_i, iso_d in date_col_map.items():
+                        if col_i >= len(cells):
+                            continue
+                        v = _parse_float_val(cells[col_i])
+                        if v is None:
+                            continue
+                        val_int = int(round(v)) if is_otc else (int(round(v * 1000.0)) if abs(v) < 500 else int(round(v)))
+                        records.append((iso_d, b_std, val_int))
+                if records:
+                    break
+
+        if records:
+            break
 
     if not records:
         return pd.DataFrame()
@@ -1254,7 +1267,6 @@ def fetch_tw_index_gov_broker_bundle(
     if not avail_dates:
         return {}, {}
 
-    # 若目標基準日略晚於 HiStock 最新公告日，自動對齊 HiStock 已有之最近交易日（且不超過 end_date_str）
     valid_gov_dates = [d for d in avail_dates if d <= end_date_str]
     anchor_gov_date = valid_gov_dates[-1] if valid_gov_dates else avail_dates[-1]
 
@@ -1359,8 +1371,6 @@ def _normalize_mdj_date(raw_str: str) -> str:
 def _parse_int_sheets(val_str: str) -> int:
     """解析張數欄位（去除逗號、空白、+號、全形負號）"""
     s = str(val_str or "").replace(",", "").replace("，", "").replace("+", "").replace("−", "-").replace("－", "-").strip()
-    if s or s in ("-", "--", "—"):
-        pass
     if not s or s in ("-", "--", "—"):
         return 0
     try:
