@@ -1,7 +1,7 @@
 """
 storage.py - 本地 SQLite 資料庫與股票歷史紀錄管理器
-(支援含英文後綴台股ETF與雲端分點增量累積與批次清除分點含加權^TWII及櫃買^TWOII八大官股與大盤融資金額欄位向後相容與多日歷史分點統計全載入及分點統計/日況舊表自動遷移與全市籌碼指定基準日區間清除防呆與集保每週真實總股數動態加總及集保舊表補欄防呆及關注交易日專屬分點日況序列綁定版)
-版本: 202611231825
+(支援含英文後綴台股ETF與雲端分點增量累積與批次清除分點含加權^TWII及櫃買^TWOII八大官股與大盤融資金額欄位向後相容與多日歷史分點統計全載入及分點統計/日況舊表自動遷移與全市籌碼指定基準日區間清除防呆與集保每週真實總股數動態加總及集保舊表補欄防呆及關注交易日專屬分點日況序列綁定與大盤/櫃買八大官股個股明細及前50名排行榜版)
+版本: 202611240705
 """
 
 import os
@@ -18,7 +18,7 @@ from datetime import datetime, timedelta
 import pandas as pd
 
 MODULE_NAME = "storage"
-MODULE_VERSION = "202611231825"
+MODULE_VERSION = "202611240705"
 
 STORAGE_DIR = "."
 HISTORY_FILE = os.path.join(STORAGE_DIR, "stock_history.json")
@@ -540,9 +540,10 @@ def clear_all_stocks_chip_range(chip_type: str, base_date_str: str, lookback_day
 
 def clear_all_broker_data() -> str:
     """
-    【修訂說明 2026-11-23】【修改目的與防呆防錯原因】：
+    【修訂說明 2026-11-24】【修改目的與防呆防錯原因】：
     修改目的：一次性清除本地及雲端 Google Drive 資料夾內所有台股個股/ETF 與加權(^TWII)/櫃買(^TWOII)資料庫（data_*.db）之
-    分點區間統計（broker_range_rank）、分點逐日明細（broker_daily_trades）與關注交易日專屬分點日況序列（broker_focus_daily_series）資料表，並同步回寫雲端。
+    分點區間統計（broker_range_rank）、分點逐日明細（broker_daily_trades）、關注交易日專屬分點日況序列（broker_focus_daily_series）
+    與大盤/櫃買八大官股個股逐日分欄明細（gov_index_stock_daily）資料表，並同步回寫雲端。
     防呆防錯原因：逐表 try/except 刪除避免舊庫缺表報錯，完整保留 daily_k（日線）、institutional_investors（三大法人）、margin_short（資券）與 shareholding_distribution（集保大戶）資料。
     """
     codes_set = set()
@@ -581,7 +582,7 @@ def clear_all_broker_data() -> str:
         try:
             with sqlite3.connect(db_path) as conn:
                 cur = conn.cursor()
-                for tbl in ("broker_range_rank", "broker_daily_trades", "broker_focus_daily_series"):
+                for tbl in ("broker_range_rank", "broker_daily_trades", "broker_focus_daily_series", "gov_index_stock_daily"):
                     try:
                         cur.execute(f"DELETE FROM {tbl}")
                     except Exception:
@@ -593,6 +594,37 @@ def clear_all_broker_data() -> str:
             print(f"[Storage] 清除 {pure_code} 分點資料失敗: {e}")
 
     return f"已成功清除 {cleared_count} 檔標的（含上市/上櫃個股及加權/櫃買八大官股）之分點統計與分點日況明細（日線、法人、資券與集保大戶資料完整保留）。"
+
+
+def clear_tw_index_gov_broker_data() -> str:
+    """
+    【修訂說明 2026-11-24】【修改目的與防呆防錯原因】：
+    1. 修改目的：供「⚙️ 參數設定」頁籤「清除八大官股交易資料」按鈕呼叫，僅清除加權指數（^TWII）與櫃買指數（^TWOII）
+       本地與雲端資料庫中的八大官股交易資料（gov_index_stock_daily、broker_range_rank、broker_daily_trades、broker_focus_daily_series）並回寫雲端。
+    2. 防呆防錯原因：精準限定 ^TWII 與 ^TWOII，不影響任何個股/ETF 分點資料，亦完整保留 ^TWII / ^TWOII 的日線與資券資料。
+    """
+    cleared_count = 0
+    for idx_code in ("^TWII", "^TWOII"):
+        db_path = os.path.join(STORAGE_DIR, f"data_{idx_code}.db")
+        if not os.path.exists(db_path) or os.path.getsize(db_path) == 0:
+            _do_sync_db_pull(idx_code)
+        if not os.path.exists(db_path) or os.path.getsize(db_path) == 0:
+            continue
+        try:
+            with sqlite3.connect(db_path) as conn:
+                cur = conn.cursor()
+                for tbl in ("gov_index_stock_daily", "broker_range_rank", "broker_daily_trades", "broker_focus_daily_series"):
+                    try:
+                        cur.execute(f"DELETE FROM {tbl}")
+                    except Exception:
+                        pass
+                conn.commit()
+            _do_sync_db_push(idx_code)
+            cleared_count += 1
+        except Exception as e:
+            print(f"[Storage] 清除 {idx_code} 八大官股資料失敗: {e}")
+
+    return f"已成功清除加權指數與櫃買指數八大官股交易資料（共更新 {cleared_count} 檔指數資料庫，日線與資券資料完整保留）。"
 
 
 class StockChipStorage:
@@ -755,6 +787,29 @@ class StockChipStorage:
                     sell_sheets INTEGER DEFAULT 0,
                     net_sheets INTEGER DEFAULT 0,
                     PRIMARY KEY (focus_date, window_days, side, rank_no, trade_date)
+                )
+            ''')
+
+            # 【修訂說明 2026-11-24】【修改目的與防呆防錯原因】：
+            # 1. 修改目的：建立大盤加權（^TWII）與櫃買指數（^TWOII）八大官股個股逐日分欄明細資料表 gov_index_stock_daily，
+            #    記錄每個交易日、每檔個股（股票名稱）的 8 家官股行庫各自買賣超（萬元）與合計（萬元），
+            #    支援依關注交易日往前統計近 10/20/60 日買超/賣超前 50 名個股，以及選定單一個股時一次繪製 8 家官股行庫各自每日買賣超柱狀圖。
+            # 2. 防呆防錯原因：以 (trade_date, stock_name) 為主鍵並以 source_side 區分當日買超前30或賣超前30來源，避免跨日或重複寫入覆蓋錯亂。
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS gov_index_stock_daily (
+                    trade_date TEXT,
+                    stock_name TEXT,
+                    source_side TEXT,
+                    b_heku REAL DEFAULT 0.0,
+                    b_land REAL DEFAULT 0.0,
+                    b_bot REAL DEFAULT 0.0,
+                    b_tbb REAL DEFAULT 0.0,
+                    b_ccb REAL DEFAULT 0.0,
+                    b_first REAL DEFAULT 0.0,
+                    b_mega REAL DEFAULT 0.0,
+                    b_hncb REAL DEFAULT 0.0,
+                    total_wan REAL DEFAULT 0.0,
+                    PRIMARY KEY (trade_date, stock_name)
                 )
             ''')
             cursor.execute("DELETE FROM shareholding_distribution WHERE level > 15 OR level < 1")
@@ -944,6 +999,72 @@ class StockChipStorage:
         return df
 
     # =====================================================================
+    # 大盤/櫃買八大官股個股逐日分欄明細儲存與讀取 API（單位：萬元）
+    # =====================================================================
+    def save_gov_index_stock_daily(self, trade_date: str, stock_rows: list, sync_cloud: bool = False):
+        """
+        【修訂說明 2026-11-24】【修改目的與防呆防錯原因】：
+        1. 修改目的：儲存單一交易日（trade_date）加權指數或櫃買指數八大官股買超前30與賣超前30個股之 8 家官股行庫各自買賣超與合計（單位：萬元）。
+        2. 防呆防錯原因：每筆 dict 皆轉換為數值並以 (trade_date, stock_name) 為主鍵寫入 gov_index_stock_daily，遇缺表自動呼叫 _init_db() 修復。
+        """
+        d_str = str(trade_date or "").strip()[:10]
+        if not d_str or not stock_rows:
+            return
+        records = []
+        for item in stock_rows:
+            if not isinstance(item, dict):
+                continue
+            s_name = str(item.get("stock_name", "") or "").strip()
+            if not s_name:
+                continue
+            b_vals = [float(item.get(k, 0.0) or 0.0) for k in ("b_heku", "b_land", "b_bot", "b_tbb", "b_ccb", "b_first", "b_mega", "b_hncb")]
+            t_wan = float(item.get("total_wan", sum(b_vals)) or 0.0)
+            s_side = str(item.get("source_side", "buy") or "buy").lower()
+            records.append((d_str, s_name, s_side, *b_vals, t_wan))
+        if not records:
+            return
+
+        sql_ins = '''
+            INSERT OR REPLACE INTO gov_index_stock_daily
+            (trade_date, stock_name, source_side, b_heku, b_land, b_bot, b_tbb, b_ccb, b_first, b_mega, b_hncb, total_wan)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        '''
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                conn.executemany(sql_ins, records)
+                conn.commit()
+        except sqlite3.OperationalError:
+            self._init_db()
+            with sqlite3.connect(self.db_path) as conn:
+                conn.executemany(sql_ins, records)
+                conn.commit()
+        if sync_cloud:
+            sync_db_push(self.pure_code)
+
+    def load_gov_index_stock_daily_range(self, start_date: str, end_date: str) -> pd.DataFrame:
+        """
+        【修訂說明 2026-11-24】【修改目的與防呆防錯原因】：
+        讀取指定起訖日期區間內（[start_date, end_date]）之八大官股個股逐日 8 行庫買賣超明細（單位：萬元）。
+        """
+        s_d = str(start_date or "").strip()[:10]
+        e_d = str(end_date or "").strip()[:10]
+        if not s_d or not e_d:
+            return pd.DataFrame()
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                df = pd.read_sql_query('''
+                    SELECT trade_date, stock_name, source_side,
+                           b_heku, b_land, b_bot, b_tbb, b_ccb, b_first, b_mega, b_hncb, total_wan
+                    FROM gov_index_stock_daily
+                    WHERE trade_date >= ? AND trade_date <= ?
+                    ORDER BY trade_date ASC, stock_name ASC
+                ''', conn, params=(s_d, e_d))
+            return df
+        except sqlite3.OperationalError:
+            self._init_db()
+            return pd.DataFrame()
+
+    # =====================================================================
     # 雲端分點資料增量累積與讀取 API
     # =====================================================================
     def save_broker_daily_trades(self, broker_name: str, df_trades: pd.DataFrame, sync_cloud: bool = True):
@@ -1113,7 +1234,12 @@ class StockChipStorage:
         return out
 
     def save_broker_range_rank(self, range_date: str, bundle_dict: dict, sync_cloud: bool = True):
-        """儲存指定基準日之 1/10/20/60 日買賣超前 10 名統計快照"""
+        """
+        【修訂說明 2026-11-24】【修改目的與防呆防錯原因】：
+        修改目的：儲存指定基準日之 1/10/20/60 日買賣超統計快照，上限放寬至前 50 名，
+        支援大盤加權與櫃買指數八大官股前 50 名個股排行儲存，同時完全向下相容個股前 10/15 名。
+        防呆防錯原因：以 (range_date, win_days, side, rank) 為主鍵覆寫，避免重疊或殘留舊名次。
+        """
         r_date = str(range_date or "").strip()[:10]
         if not r_date or not isinstance(bundle_dict, dict):
             return
@@ -1125,7 +1251,7 @@ class StockChipStorage:
             r_label = str(w_obj.get("range_label", ""))
             for side in ("buy", "sell"):
                 rows = w_obj.get(side, [])
-                for idx, item in enumerate(rows[:10], start=1):
+                for idx, item in enumerate(rows[:50], start=1):
                     records.append((
                         r_date,
                         int(win_days),
@@ -1133,9 +1259,9 @@ class StockChipStorage:
                         int(idx),
                         str(item.get("name", "")),
                         str(item.get("sys", "")),
-                        int(item.get("buy", 0)),
-                        int(item.get("sell", 0)),
-                        int(item.get("net", 0)),
+                        int(round(float(item.get("buy", 0) or 0))),
+                        int(round(float(item.get("sell", 0) or 0))),
+                        int(round(float(item.get("net", 0) or 0))),
                         str(item.get("ratio", "-")),
                         r_label
                     ))
