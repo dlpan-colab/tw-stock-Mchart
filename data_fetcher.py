@@ -1,7 +1,7 @@
 """
 data_fetcher.py - 整合技術與籌碼資料擷取模組
-(支援含英文後綴台股ETF + TWSE/TPEx官方日K即時補齊 + 大盤加權^TWII與櫃買^TWOII資券與融資金額(億)擷取 + 大盤加權^TWII與櫃買^TWOII八大官股買賣超統計與日況擷取(m=b8修正版) + 雲端增量累積分點引擎 + 集保官網qryStock動態Token多週歷史查詢與id=1-5批次分離含真實股數儲存 + 賣超負值正規化 + 操作儀錶板盤中報價版 + 富邦10欄並排表格與精準單日分點統計/明細5欄修正版 + 全市場歷史分點統計追滿N日但日況明細僅抓最新交易日近20日並綁定關注日版 + 全市含上櫃資券/法人/大戶指定基準日區間批次增補引擎版 + 批次增補記憶體主動回收與雲端同步節流防OOM自動Reboot版)
-版本: 202611231842
+(支援含英文後綴台股ETF + TWSE/TPEx官方日K即時補齊 + 大盤加權^TWII與櫃買^TWOII資券與融資金額(億)擷取 + 大盤加權^TWII與櫃買^TWOII八大官股買賣超統計與日況擷取(broker8.aspx歷史日期回溯與Top30加總版) + 雲端增量累積分點引擎 + 集保官網qryStock動態Token多週歷史查詢與id=1-5批次分離含真實股數儲存 + 賣超負值正規化 + 操作儀錶板盤中報價版 + 富邦10欄並排表格與精準單日分點統計/明細5欄修正版 + 全市場歷史分點統計追滿N日但日況明細僅抓最新交易日近20日並綁定關注日版 + 全市含上櫃資券/法人/大戶指定基準日區間批次增補引擎版 + 批次增補記憶體主動回收與雲端同步節流防OOM自動Reboot版)
+版本: 202611232102
 """
 import os
 import io
@@ -19,7 +19,7 @@ from datetime import datetime, timedelta
 from urllib.parse import urljoin, urlparse, parse_qs, urlencode, urlunparse
 
 MODULE_NAME = "data_fetcher"
-MODULE_VERSION = "202611231842"
+MODULE_VERSION = "202611232102"
 
 from storage import (
     StockChipStorage, COMMON_STOCK_NAMES, load_stock_names_dict,
@@ -43,14 +43,14 @@ GOV_BROKER_PREFIXES = (
 )
 
 EIGHT_GOV_BROKERS = [
-    ("臺灣銀行", ("台銀", "臺銀", "台灣銀行", "臺灣銀行")),
-    ("土地銀行", ("土銀", "土地銀行")),
     ("合作金庫", ("合庫", "合作金庫")),
-    ("第一金", ("第一金", "第一")),
-    ("華南永昌", ("華南", "華南永昌")),
-    ("彰化銀行", ("彰銀", "彰化銀行")),
-    ("兆豐證券", ("兆豐",)),
+    ("土地銀行", ("土銀", "土地銀行")),
+    ("臺灣銀行", ("台銀", "臺銀", "台灣銀行", "臺灣銀行")),
     ("臺灣企銀", ("台企", "臺企", "台灣企銀", "臺灣企銀")),
+    ("彰化銀行", ("彰銀", "彰化銀行")),
+    ("第一金", ("第一金", "第一")),
+    ("兆豐銀", ("兆豐",)),
+    ("華南永昌", ("華南", "華南永昌")),
 ]
 
 
@@ -278,9 +278,6 @@ def sync_chip_data(
     pure_code = str(pure_code).strip().upper()
     storage = StockChipStorage(pure_code)
 
-    # 【修訂說明 2026-11-20】【修改目的與防呆防錯原因】：
-    # 修改目的：開放大盤加權指數 ^TWII（上市）與櫃買指數 ^TWOII（上櫃）同步全市場每日資券與融資金額（億元）。
-    # 防呆防錯原因：若舊版資料庫尚無 margin_money_bal 數值（全為 0），自動重抓補齊融資金額歷史。
     if pure_code in ("^TWII", "^TWOII"):
         if len(df_dates) == 0:
             return (pd.DataFrame(), pd.DataFrame(), pd.DataFrame())
@@ -576,7 +573,6 @@ def fetch_twse_total_margin_data(df_dates: pd.DatetimeIndex, start_date_exclusiv
     except Exception:
         pass
 
-    # 若最新交易日尚未出現在 FinMind，向證交所 MI_MARGN 補齊單日全市場信用交易統計
     if len(df_dates) > 0:
         latest_d_str = df_dates[-1].strftime('%Y-%m-%d')
         if latest_d_str not in rec_map:
@@ -620,12 +616,8 @@ def fetch_twse_total_margin_data(df_dates: pd.DatetimeIndex, start_date_exclusiv
 def fetch_tpex_total_margin_data(df_dates: pd.DatetimeIndex, start_date_exclusive: str = None) -> list:
     """
     【修訂說明 2026-11-20】【修改目的與防呆防錯原因】：
-    1. 修改目的：擷取櫃買指數（^TWOII）全市場彙總信用交易統計（主資料源：嗨投資 https://histock.tw/stock/three.aspx?m=mg&no=TWOI），
-       直接取得彙總表欄位：日期、融資餘額(億)、融資增加(億)、融券餘額(張)、融券增加(張)。
-    2. 防呆防錯原因：
-       - 嚴格區分「張數」與「金額」：上櫃全市場彙總僅提供融券張數（存入 short_diff / short_bal，單位：張）與融資金額（存入 margin_money_diff / margin_money_bal，單位：億元），
-         上櫃全市場無融資總張數，故 margin_diff / margin_bal 明確設為 0.0，絕不將金額誤充當張數。
-       - 兼容 HiStock 日期格式（YYYY/MM/DD、MM/DD 搭配年份推斷、或民國年 YYY/MM/DD）。
+    1. 修改目的：擷取櫃買指數（^TWOII）全市場彙總信用交易統計（主資料源：嗨投資 https://histock.tw/stock/three.aspx?m=mg&no=TWOI）。
+    2. 防呆防錯原因：嚴格區分「張數」與「金額」，上櫃全市場彙總僅提供融券張數與融資金額（億元）。
     """
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
@@ -754,17 +746,6 @@ def fetch_margin_short_data(pure_code: str, df_dates: pd.DatetimeIndex, start_da
 
 
 def fetch_tdcc_holding_history(pure_code: str, weeks: int = 15) -> list:
-    """
-    【修訂說明 2026-11-22】【修改目的與防呆防錯原因】：
-    1. 修改目的：
-       - 自集保官網歷史查詢介面（https://www.tdcc.com.tw/portal/zh/smWeb/qryStock）擷取 1～15 級股權分散表時，
-         一併解析並回傳 5 欄 tuple `(iso_d, lvl, holders, shares, pct)`（包含人數 cols[2] 與真實股數 cols[3]），
-         供本地 SQLite 動態加總最新週真實總發行股數（不受面額變更影響，且隨每週集保自動更新增資/減資/庫藏股）。
-       - 若本地已有該週別但舊紀錄 `shares == 0`，亦自動納入重抓補齊股數欄位。
-    2. 防呆防錯原因：
-       - 若任一週 POST 回應未包含有效之 SYNCHRONIZER_TOKEN 或連線異常，下一輪自動執行 GET 重新取得最新權杖；
-       - 嚴格限定表格首欄為純數字 1 <= level <= 15（排除第 16 差異數與第 17 合計列）。
-    """
     code = str(pure_code or "").strip().upper()
     if not code or code.startswith("^") or not is_tw_stock_or_etf(code):
         return []
@@ -877,12 +858,6 @@ def fetch_tdcc_holding_history(pure_code: str, weeks: int = 15) -> list:
 
 
 def fetch_tdcc_holding_data(pure_code: str) -> list:
-    """
-    【修訂說明 2026-11-22】【修改目的與防呆防錯原因】：
-    1. 修改目的：單一個股查詢時直接呼叫集保官網歷史查詢（fetch_tdcc_holding_history），
-       回傳完整 5 欄 `(date, level, holders, shares, percent)` 供寫入本地資料庫，一併保存每週真實股數。
-    2. 防呆防錯原因：嚴格過濾 1 <= level <= 15，排除第 16（差異數）與第 17（合計）列，防止比例或股數重複加總。
-    """
     hist_recs = fetch_tdcc_holding_history(pure_code, weeks=15)
     if not hist_recs:
         return []
@@ -890,15 +865,6 @@ def fetch_tdcc_holding_data(pure_code: str) -> list:
 
 
 def batch_fetch_and_save_latest_tdcc_holding(target_codes: list = None) -> dict:
-    """
-    【修訂說明 2026-11-22】【修改目的與防呆防錯原因】：
-    1. 修改目的：提供【上市/上櫃】批次作業，下載集保官方開放資料網最新單週全市場總表（id=1-5），
-       一併擷取 `人數` 與 `股數` 寫入 5 欄 `(date, level, holders, shares, percent)` 至 data_{code}.db（shareholding_distribution 資料表）並同步雲端。
-    2. 防呆防錯原因：
-       - 移除無效之 FinMind 免費版集保備援迴圈，避免連線失敗時逐檔空轉等待。
-       - 僅保留 1 <= level <= 15 級距，嚴格排除第 16（其他）、17（合計）列。
-       - 僅針對系統已建立之台股個股/ETF（排除 ^ 開頭指數）寫入，避免無差別產生數千個無效 .db 檔。
-    """
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
     }
@@ -993,13 +959,6 @@ def batch_fetch_and_save_latest_tdcc_holding(target_codes: list = None) -> dict:
 
 
 def fetch_dashboard_watchlist_rows(history_list: list) -> list:
-    """
-    【修訂說明 2026-11-18】【修改目的與防呆防錯原因】：
-    1. 修改目的：為「📊 操作儀錶板」擷取自選／查詢歷史清單之最新成交價、成交量(張)、5日均線、20日均線與市場別。
-    2. 防呆防錯原因：
-       - 過濾排除 ^ 開頭指數，僅顯示台股個股與含英文後綴之 ETF（如 00632R）；
-       - 優先結合本地 SQLite 歷史收盤序列與 Yahoo Finance 盤中即時報價（fast_info / 1d history），確保盤中與盤後均能精準計算 MA5 / MA20 多空燈號，且絕不更動原清單排序。
-    """
     if not history_list:
         return []
 
@@ -1088,47 +1047,43 @@ def fetch_dashboard_watchlist_rows(history_list: list) -> list:
 
 
 # =========================================================================
-# 【大盤加權 ^TWII 與櫃買 ^TWOII 八大官股買賣超統計與日況引擎】- HiStock 嗨投資
+# 【大盤加權 ^TWII 與櫃買 ^TWOII 八大官股買賣超統計與日況引擎】- HiStock broker8.aspx
 # =========================================================================
-def _fetch_histock_eight_gov_daily_table(pure_code: str) -> pd.DataFrame:
+def _fetch_histock_broker8_single_day(pure_code: str, target_date_str: str) -> tuple:
     """
     【修訂說明 2026-11-23】【修改目的與防呆防錯原因】：
-    1. 修改目的：修正 HiStock 八大官股個別行庫明細正確子頁籤網址為 `m=b8`
-       （上市 https://histock.tw/stock/three.aspx?m=b8、上櫃 https://histock.tw/stock/three.aspx?m=b8&no=TWOI），
-       擷取各官股行庫（台銀、土銀、合庫、第一金、華南永昌、彰銀、兆豐、臺企銀）每日買賣超明細。
+    1. 修改目的：向 HiStock 八大官股個別行庫明細頁（上市 https://histock.tw/stock/broker8.aspx?d=YYYY-MM-DD、
+       上櫃 https://histock.tw/stock/broker8.aspx?no=TWOI&d=YYYY-MM-DD）擷取指定日期之
+       「Top 30 八大官股銀行合計買超排名」與「合計賣超排名」表格（欄位：★ | 股票 | 合庫 | 土銀 | 台銀 | 台企銀 | 彰銀 | 第一金 | 兆豐銀 | 華南永昌 | 合計(萬)），
+       加總各官股行庫當日買超/賣超金額（單位：萬元），並回傳 (actual_iso_date, bank_net_dict, bank_buy_dict, bank_sell_dict)。
     2. 防呆防錯原因：
-       - 若首選 `m=b8` 未取得有效表格，依序備援 `m=b8&no=TWII` / `m=b8&no=TWOII`；
-       - 同時支援橫欄為 8 家行庫（直列為日期）與直列為行庫（橫欄為日期）兩種表格結構。
+       - 若指定日期尚無資料或為非交易日，解析頁面標題公告之實際交易日期 actual_iso_date；
+       - 同時累計買超榜與賣超榜各行庫正負數值，合併計算當日淨買賣超（buy - sell，單位：萬元）。
     """
     code = str(pure_code or "").strip().upper()
     if not is_tw_index_with_gov_brokers(code):
-        return pd.DataFrame()
+        return "", {}, {}, {}
 
     is_otc = (code == "^TWOII")
-    candidate_urls = (
-        [
-            "https://histock.tw/stock/three.aspx?m=b8&no=TWOI",
-            "https://histock.tw/stock/three.aspx?m=b8&no=TWOII",
-        ]
-        if is_otc else
-        [
-            "https://histock.tw/stock/three.aspx?m=b8",
-            "https://histock.tw/stock/three.aspx?m=b8&no=TWII",
-        ]
-    )
+    d_clean = str(target_date_str or "").strip()[:10]
+    if is_otc:
+        url = f"https://histock.tw/stock/broker8.aspx?no=TWOI&d={d_clean}" if d_clean else "https://histock.tw/stock/broker8.aspx?no=TWOI"
+    else:
+        url = f"https://histock.tw/stock/broker8.aspx?d={d_clean}" if d_clean else "https://histock.tw/stock/broker8.aspx"
+
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
-        "Referer": "https://histock.tw/stock/three.aspx?m=b"
+        "Referer": "https://histock.tw/stock/broker8.aspx"
     }
 
-    def _match_gov_bank(col_txt: str) -> str:
-        s = str(col_txt or "").strip()
+    def _match_bank(h_txt: str) -> str:
+        s = str(h_txt or "").strip()
         for std_name, aliases in EIGHT_GOV_BROKERS:
             if any(a in s for a in aliases):
                 return std_name
         return ""
 
-    def _parse_float_val(txt: str):
+    def _parse_num(txt: str):
         s = str(txt or "").replace(",", "").replace("+", "").replace("−", "-").replace("－", "-").strip()
         if s in ("", "-", "--", "—", "N/A"):
             return None
@@ -1137,105 +1092,126 @@ def _fetch_histock_eight_gov_daily_table(pure_code: str) -> pd.DataFrame:
         except Exception:
             return None
 
+    try:
+        res = requests.get(url, headers=headers, timeout=8)
+        if res.status_code != 200 or not res.text:
+            return "", {}, {}, {}
+        soup = BeautifulSoup(res.text, "html.parser")
+    except Exception:
+        return "", {}, {}, {}
+
+    actual_iso_date = d_clean
     now_tw = datetime.utcnow() + timedelta(hours=8)
-    cur_year = now_tw.year
+    ref_year = int(d_clean[:4]) if (d_clean and len(d_clean) >= 4 and d_clean[:4].isdigit()) else now_tw.year
+    for hd in soup.find_all(["h2", "h3", "h4"]):
+        htxt = re.sub(r"\s+", " ", hd.get_text(" ", strip=True))
+        if "八大官股" in htxt and ("買超排名" in htxt or "賣超排名" in htxt):
+            m_ymd = re.search(r'(\d{4})[/-](\d{1,2})[/-](\d{1,2})', htxt)
+            if m_ymd:
+                actual_iso_date = f"{int(m_ymd.group(1)):04d}-{int(m_ymd.group(2)):02d}-{int(m_ymd.group(3)):02d}"
+                break
+            m_md = re.search(r'\b(\d{1,2})[/-](\d{1,2})\b', htxt)
+            if m_md:
+                mo_n, da_n = int(m_md.group(1)), int(m_md.group(2))
+                yr_n = ref_year - 1 if (d_clean and int(d_clean[5:7]) == 1 and mo_n == 12) else ref_year
+                actual_iso_date = f"{yr_n:04d}-{mo_n:02d}-{da_n:02d}"
+                break
 
-    def _parse_histock_date(raw_d: str) -> str:
-        s = str(raw_d or "").strip().replace("-", "/")
-        m = re.search(r'(\d{2,4})/(\d{1,2})(?:/(\d{1,2}))?', s)
-        if not m:
-            return ""
-        p1, p2, p3 = m.group(1), m.group(2), m.group(3)
-        if p3 is not None:
-            y_n = int(p1)
-            if y_n < 1911:
-                y_n += 1911
-            return f"{y_n:04d}-{int(p2):02d}-{int(p3):02d}"
-        m_n, d_n = int(p1), int(p2)
-        y_n = cur_year if m_n <= now_tw.month + 1 else (cur_year - 1)
-        return f"{y_n:04d}-{m_n:02d}-{d_n:02d}"
+    bank_buy_sum = {b[0]: 0.0 for b in EIGHT_GOV_BROKERS}
+    bank_sell_sum = {b[0]: 0.0 for b in EIGHT_GOV_BROKERS}
+    found_any_row = False
 
-    records = []
-    for url in candidate_urls:
-        try:
-            res = requests.get(url, headers=headers, timeout=8)
-            if res.status_code != 200 or not res.text:
-                continue
-            soup = BeautifulSoup(res.text, "html.parser")
-        except Exception:
+    for tbl in soup.find_all("table"):
+        trs = tbl.find_all("tr")
+        if len(trs) < 2:
+            continue
+        hdr_cells = [re.sub(r"\s+", " ", td.get_text(" ", strip=True)) for td in trs[0].find_all(["th", "td"])]
+        col_to_bank = {}
+        for c_i, h_s in enumerate(hdr_cells):
+            bn = _match_bank(h_s)
+            if bn:
+                col_to_bank[c_i] = bn
+        if len(col_to_bank) < 4:
             continue
 
-        for tbl in soup.find_all("table"):
-            txt_all = tbl.get_text()
-            if not any(k in txt_all for k in ("台銀", "臺銀", "土銀", "合庫", "兆豐", "彰銀", "華南", "第一", "台企", "臺企")):
+        for tr in trs[1:]:
+            cells = [re.sub(r"\s+", " ", td.get_text(" ", strip=True)) for td in tr.find_all(["td", "th"])]
+            if len(cells) <= max(col_to_bank.keys()):
                 continue
-            trs = tbl.find_all("tr")
-            if len(trs) < 2:
-                continue
+            row_has_val = False
+            for c_i, bn in col_to_bank.items():
+                v = _parse_num(cells[c_i])
+                if v is None:
+                    continue
+                row_has_val = True
+                if v > 0:
+                    bank_buy_sum[bn] += v
+                elif v < 0:
+                    bank_sell_sum[bn] += abs(v)
+            if row_has_val:
+                found_any_row = True
 
-            header_cells = [re.sub(r"\s+", " ", td.get_text(" ", strip=True)) for td in trs[0].find_all(["th", "td"])]
-            bank_col_map = {}
-            for idx_c, h_txt in enumerate(header_cells):
-                b_std = _match_gov_bank(h_txt)
-                if b_std:
-                    bank_col_map[idx_c] = b_std
+    if not found_any_row:
+        return "", {}, {}, {}
 
-            # 情況 A：橫欄為八大官股行庫，直列為日期
-            if len(bank_col_map) >= 4:
-                is_yi_unit = any("億" in h for h in header_cells)
-                for tr in trs[1:]:
-                    cells = [re.sub(r"\s+", " ", td.get_text(" ", strip=True)) for td in tr.find_all(["td", "th"])]
-                    if len(cells) <= max(bank_col_map.keys()):
-                        continue
-                    iso_d = _parse_histock_date(cells[0])
-                    if not iso_d:
-                        continue
-                    for col_i, b_std in bank_col_map.items():
-                        v = _parse_float_val(cells[col_i])
-                        if v is None:
-                            continue
-                        if is_otc:
-                            val_int = int(round(v))
-                        else:
-                            val_int = int(round(v * 1000.0)) if (is_yi_unit and abs(v) < 500) else int(round(v))
-                        records.append((iso_d, b_std, val_int))
-                if records:
-                    break
+    bank_net_int = {}
+    bank_buy_int = {}
+    bank_sell_int = {}
+    for b_name, _ in EIGHT_GOV_BROKERS:
+        b_i = int(round(bank_buy_sum[b_name]))
+        s_i = int(round(bank_sell_sum[b_name]))
+        bank_buy_int[b_name] = b_i
+        bank_sell_int[b_name] = s_i
+        bank_net_int[b_name] = b_i - s_i
 
-            # 情況 B：直列為八大官股行庫，橫欄為日期
-            date_col_map = {}
-            for idx_c, h_txt in enumerate(header_cells):
-                d_iso = _parse_histock_date(h_txt)
-                if d_iso:
-                    date_col_map[idx_c] = d_iso
-            if len(date_col_map) >= 2:
-                for tr in trs[1:]:
-                    cells = [re.sub(r"\s+", " ", td.get_text(" ", strip=True)) for td in tr.find_all(["td", "th"])]
-                    if not cells:
-                        continue
-                    b_std = _match_gov_bank(cells[0])
-                    if not b_std:
-                        continue
-                    for col_i, iso_d in date_col_map.items():
-                        if col_i >= len(cells):
-                            continue
-                        v = _parse_float_val(cells[col_i])
-                        if v is None:
-                            continue
-                        val_int = int(round(v)) if is_otc else (int(round(v * 1000.0)) if abs(v) < 500 else int(round(v)))
-                        records.append((iso_d, b_std, val_int))
-                if records:
-                    break
+    return actual_iso_date or d_clean, bank_net_int, bank_buy_int, bank_sell_int
 
-        if records:
-            break
 
-    if not records:
-        return pd.DataFrame()
+def _ensure_tw_index_gov_history_loaded(
+    pure_code: str,
+    trade_dates_tuple: tuple,
+    target_end_idx: int,
+    lookback_days: int = 20
+) -> StockChipStorage:
+    """
+    【修訂說明 2026-11-23】【修改目的與防呆防錯原因】：
+    1. 修改目的：以 target_end_idx 為基準往前回溯最多 lookback_days 個交易日，
+       逐日查詢 `broker8.aspx?d=YYYY-MM-DD`（上櫃 `no=TWOI&d=YYYY-MM-DD`）並存入本地 SQLite `broker_daily_trades`，
+       讓大盤加權（^TWII）與櫃買（^TWOII）也能擁有歷史多日八大官股逐日進出序列與區間統計。
+    2. 防呆防錯原因：若本地 `broker_daily_trades` 已包含該交易日紀錄，直接跳過不重複請求網路。
+    """
+    code = str(pure_code or "").strip().upper()
+    storage = StockChipStorage(code)
+    if not is_tw_index_with_gov_brokers(code) or not trade_dates_tuple:
+        return storage
 
-    df_out = pd.DataFrame(records, columns=["日期", "分點名稱", "買賣超"])
-    df_out = df_out.drop_duplicates(subset=["日期", "分點名稱"]).sort_values(["日期", "分點名稱"]).reset_index(drop=True)
-    return df_out
+    n_dates = len(trade_dates_tuple)
+    safe_idx = min(max(0, int(target_end_idx)), n_dates - 1)
+    start_idx = max(0, safe_idx - max(1, int(lookback_days)) + 1)
+    win_dates = list(trade_dates_tuple[start_idx:safe_idx + 1])
+    if not win_dates:
+        return storage
+
+    sample_bank = EIGHT_GOV_BROKERS[0][0]
+    existing_df = storage.load_broker_daily_series(sample_bank, win_dates[0], win_dates[-1])
+    existing_d_set = set(existing_df["日期"].tolist()) if (existing_df is not None and not existing_df.empty) else set()
+
+    missing_dates = [d for d in win_dates if d not in existing_d_set]
+    for d_str in reversed(missing_dates[-20:]):
+        act_d, net_m, buy_m, sell_m = _fetch_histock_broker8_single_day(code, d_str)
+        if net_m:
+            save_d = act_d or d_str
+            for b_name, _ in EIGHT_GOV_BROKERS:
+                df_one = pd.DataFrame([{
+                    "日期": save_d,
+                    "買進(張)": int(buy_m.get(b_name, 0)),
+                    "賣出(張)": int(sell_m.get(b_name, 0)),
+                    "買賣超(張)": int(net_m.get(b_name, 0)),
+                }])
+                storage.save_broker_daily_trades(b_name, df_one, sync_cloud=False)
+            time.sleep(0.12)
+
+    return storage
 
 
 def fetch_tw_index_gov_broker_bundle(
@@ -1249,39 +1225,63 @@ def fetch_tw_index_gov_broker_bundle(
     1. 修改目的：為大盤加權（^TWII）與櫃買（^TWOII）建置指定基準日之八大官股分點統計快照（w1/w10/w20/w60）
        與八大官股逐日買賣超序列（供「📊 分點統計」與「📈 分點日況」雙頁籤直接渲染）。
     2. 防呆防錯原因：
-       - 當 HiStock 公開頁面僅提供最近約 15～20 個交易日明細時，依據可用交集區間精準加總各行庫區間淨買賣超並排序買超/賣超列表；
-       - 同時回傳 (day_bundle, per_bank_daily_df_dict) 供寫入 broker_range_rank 與 broker_focus_daily_series。
+       - 先確保最近交易日（及往前最多 20 日）之 `broker8.aspx?d=YYYY-MM-DD` 明細已寫入 `broker_daily_trades`；
+       - 即使目標關注日為較早歷史日（如 11/20），若該日無獨立抓取過，亦即時補抓該單日並彙整至統計與逐日序列。
     """
     code = str(pure_code or "").strip().upper()
     if not is_tw_index_with_gov_brokers(code) or not trade_dates_tuple:
         return {}, {}
 
-    df_gov = _fetch_histock_eight_gov_daily_table(code)
-    if df_gov is None or df_gov.empty:
-        return {}, {}
-
     n_dates = len(trade_dates_tuple)
     safe_idx = min(max(0, int(target_end_idx)), n_dates - 1)
     end_date_str = trade_dates_tuple[safe_idx]
-    avail_dates = sorted(df_gov["日期"].unique().tolist())
-    if not avail_dates:
+    lookback_n = 60 if include_60d else 20
+
+    storage = _ensure_tw_index_gov_history_loaded(code, trade_dates_tuple, safe_idx, lookback_days=min(20, lookback_n))
+
+    sample_bank = EIGHT_GOV_BROKERS[0][0]
+    chk_df = storage.load_broker_daily_series(sample_bank, end_date_str, end_date_str)
+    if chk_df is None or chk_df.empty:
+        act_d, net_m, buy_m, sell_m = _fetch_histock_broker8_single_day(code, end_date_str)
+        if net_m:
+            save_d = act_d or end_date_str
+            for b_name, _ in EIGHT_GOV_BROKERS:
+                df_one = pd.DataFrame([{
+                    "日期": save_d,
+                    "買進(張)": int(buy_m.get(b_name, 0)),
+                    "賣出(張)": int(sell_m.get(b_name, 0)),
+                    "買賣超(張)": int(net_m.get(b_name, 0)),
+                }])
+                storage.save_broker_daily_trades(b_name, df_one, sync_cloud=False)
+
+    earliest_d = trade_dates_tuple[max(0, safe_idx - 60)]
+    all_bank_rows = []
+    per_bank_series = {}
+    for b_name, _ in EIGHT_GOV_BROKERS:
+        b_df = storage.load_broker_daily_series(b_name, earliest_d, end_date_str)
+        if b_df is not None and not b_df.empty:
+            per_bank_series[b_name] = b_df.copy()
+            for _, r in b_df.iterrows():
+                all_bank_rows.append((
+                    str(r["日期"])[:10],
+                    b_name,
+                    int(r.get("買進(張)", 0) or 0),
+                    int(r.get("賣出(張)", 0) or 0),
+                    int(r.get("買賣超(張)", 0) or 0),
+                ))
+
+    if not all_bank_rows:
         return {}, {}
 
+    df_gov = pd.DataFrame(all_bank_rows, columns=["日期", "分點名稱", "買進", "賣出", "買賣超"])
+    df_gov = df_gov.drop_duplicates(subset=["日期", "分點名稱"]).sort_values(["日期", "分點名稱"]).reset_index(drop=True)
+
+    avail_dates = sorted(df_gov["日期"].unique().tolist())
     valid_gov_dates = [d for d in avail_dates if d <= end_date_str]
     anchor_gov_date = valid_gov_dates[-1] if valid_gov_dates else avail_dates[-1]
 
     windows = (1, 10, 20, 60) if include_60d else (1, 10, 20)
     day_bundle = {}
-    per_bank_series = {}
-
-    for b_name, g_df in df_gov.groupby("分點名稱"):
-        g_sorted = g_df.sort_values("日期").copy()
-        per_bank_series[str(b_name)] = pd.DataFrame({
-            "日期": g_sorted["日期"].tolist(),
-            "買進(張)": [max(0, int(v)) for v in g_sorted["買賣超"].tolist()],
-            "賣出(張)": [max(0, -int(v)) for v in g_sorted["買賣超"].tolist()],
-            "買賣超(張)": [int(v) for v in g_sorted["買賣超"].tolist()],
-        })
 
     for w in windows:
         s_idx = max(0, safe_idx - w + 1)
@@ -1292,7 +1292,7 @@ def fetch_tw_index_gov_broker_bundle(
         if sub_w.empty:
             continue
 
-        agg = sub_w.groupby("分點名稱")["買賣超"].sum().reset_index()
+        agg = sub_w.groupby("分點名稱").agg({"買進": "sum", "賣出": "sum", "買賣超": "sum"}).reset_index()
         tot_abs = float(agg["買賣超"].abs().sum()) or 1.0
         buy_df = agg[agg["買賣超"] > 0].sort_values("買賣超", ascending=False)
         sell_df = agg[agg["買賣超"] < 0].sort_values("買賣超", ascending=True)
@@ -1303,8 +1303,8 @@ def fetch_tw_index_gov_broker_bundle(
             buy_recs.append({
                 "name": str(r["分點名稱"]),
                 "sys": "八大官股",
-                "buy": nv,
-                "sell": 0,
+                "buy": int(r["買進"]),
+                "sell": int(r["賣出"]),
                 "net": nv,
                 "ratio": f"{(abs(nv) / tot_abs * 100.0):.1f}%",
             })
@@ -1315,8 +1315,8 @@ def fetch_tw_index_gov_broker_bundle(
             sell_recs.append({
                 "name": str(r["分點名稱"]),
                 "sys": "八大官股",
-                "buy": 0,
-                "sell": abs(nv),
+                "buy": int(r["買進"]),
+                "sell": int(r["賣出"]),
                 "net": nv,
                 "ratio": f"{(abs(nv) / tot_abs * 100.0):.1f}%",
             })
@@ -1337,12 +1337,6 @@ def fetch_tw_index_gov_broker_bundle(
 # 【券商分點進出排行與逐日明細引擎】- 富邦 e點通 (fubon-ebrokerdj.fbs.com.tw)
 # =========================================================================
 def get_default_broker_backfill_base_date(now_dt: datetime = None) -> datetime.date:
-    """
-    【修訂說明 2026-11-18】【修改目的與防呆防錯原因】：
-    1. 修改目的：富邦券商分點於每個交易日 15:00 後才會更新當日分點資料；
-       若查詢時間在 15:00（含）之前，預設基準日自動對齊「前一交易日」（跳過週六日），15:00 之後才對齊當日。
-    2. 防呆防錯原因：避免盤中或收盤後 15:00 前查詢當日分點時，抓到空資料並誤寫入快取。
-    """
     now_tw = now_dt if now_dt is not None else (datetime.utcnow() + timedelta(hours=8))
     base_d = now_tw.date()
     if base_d.weekday() == 5:
@@ -1357,7 +1351,6 @@ def get_default_broker_backfill_base_date(now_dt: datetime = None) -> datetime.d
 
 
 def _normalize_mdj_date(raw_str: str) -> str:
-    """將富邦網頁日期格式（2026/11/13、115/11/13、2026-11-13）統一正規化為 YYYY-MM-DD"""
     s = str(raw_str or "").strip()
     m = re.search(r'(\d{3,4})[/-](\d{1,2})[/-](\d{1,2})', s)
     if not m:
@@ -1369,7 +1362,6 @@ def _normalize_mdj_date(raw_str: str) -> str:
 
 
 def _parse_int_sheets(val_str: str) -> int:
-    """解析張數欄位（去除逗號、空白、+號、全形負號）"""
     s = str(val_str or "").replace(",", "").replace("，", "").replace("+", "").replace("−", "-").replace("－", "-").strip()
     if not s or s in ("-", "--", "—"):
         return 0
@@ -1380,7 +1372,6 @@ def _parse_int_sheets(val_str: str) -> int:
 
 
 def _classify_broker_system(broker_name: str) -> str:
-    """自動標記八大官股體系分點，供前端徽章辨識"""
     name = str(broker_name or "").strip()
     for prefix in GOV_BROKER_PREFIXES:
         if prefix in name:
@@ -1389,7 +1380,6 @@ def _classify_broker_system(broker_name: str) -> str:
 
 
 def _fetch_mdj_html(url: str, timeout: int = 8) -> str:
-    """擷取富邦 DJ 網頁並自動處理 Big5 / CP950 / UTF-8 編碼"""
     try:
         res = requests.get(url, headers=MDJ_HEADERS, timeout=timeout)
         if res.status_code != 200 or not res.content:
@@ -1408,7 +1398,6 @@ def _fetch_mdj_html(url: str, timeout: int = 8) -> str:
 
 
 def _resolve_mdj_broker_detail_url(href: str, page_url: str, stock_code: str, start_date: str, end_date: str) -> str:
-    """將分點名稱超連結解析為完整且帶有區間起訖日參數的單一分點逐日明細網址"""
     if not href or href.lower().startswith("javascript:"):
         return ""
     abs_url = urljoin(page_url, href)
@@ -1423,12 +1412,6 @@ def _resolve_mdj_broker_detail_url(href: str, page_url: str, stock_code: str, st
 
 
 def _parse_fubon_side_block(cells, a_tags, page_url: str, stock_code: str, start_date: str, end_date: str, is_buy_side: bool):
-    """
-    【修訂說明 2026-11-18】【修改目的與防呆防錯原因】：
-    1. 修改目的：解析富邦買賣超 5 欄區塊（[券商分點, 買進, 賣出, 買賣超, 佔比]），嚴格保留數值正負符號：
-       買超側（is_buy_side=True）買賣超為正值（+N），賣超側（is_buy_side=False）買賣超正規化為負值（-N）。
-    2. 防呆防錯原因：修正先前賣超張數存入正值、導致前後端紅綠與負號不一致之缺陷。
-    """
     if len(cells) < 5:
         return None
     b_name = cells[0].strip()
@@ -1468,11 +1451,6 @@ def _parse_fubon_side_block(cells, a_tags, page_url: str, stock_code: str, start
 
 
 def fetch_stock_broker_range_ranking(pure_code: str, start_date: str, end_date: str):
-    """
-    擷取指定個股於 [start_date, end_date] 區間之買超前 15 名與賣超前 15 名券商分點統計。
-    支援富邦「左買超 5 欄＋右賣超 5 欄（共 10 欄並排）」與上下雙表兩種版面。
-    回傳: (df_buy_top15, df_sell_top15)
-    """
     code = str(pure_code or "").strip().upper()
     if not code or code.startswith("^") or not is_tw_stock_or_etf(code):
         return pd.DataFrame(), pd.DataFrame()
@@ -1556,13 +1534,6 @@ def fetch_stock_broker_range_ranking(pure_code: str, start_date: str, end_date: 
 
 
 def fetch_single_broker_daily_series(detail_url: str, start_date: str, end_date: str) -> pd.DataFrame:
-    """
-    【修訂說明 2026-11-22】【修改目的與防呆防錯原因】：
-    1. 修改目的：依富邦單一分點歷史明細網頁（zco0.djhtm）實測固定 5 欄結構
-       ['日期', '買進(張)', '賣出(張)', '買賣總額(張)', '買賣超(張)']（索引 0 至 4），
-       修正為讀取第 5 欄（cells[4]）作為「買賣超(張)」，通案解決所有個股與日期之分點逐日明細正負號與數值解析。
-    2. 防呆防錯原因：嚴格限定 len(cells) == 5 且首欄為有效日期才解析，排除合併多欄之外層容器列（如 106 欄）與底部「期間累計買賣超張數」單欄合計列，避免將第 4 欄恆正之「買賣總額(張)」誤當成買賣超。
-    """
     empty_df = pd.DataFrame(columns=["日期", "買進(張)", "賣出(張)", "買賣超(張)"])
     if not detail_url:
         return empty_df
@@ -1620,15 +1591,6 @@ def batch_sync_all_stocks_brokers(
     lookback_days: int = 1,
     progress_callback=None
 ) -> str:
-    """
-    【修訂說明 2026-11-23】【修改目的與防呆防錯原因】：
-    1. 修改目的：
-       - 同時支援查詢歷史清單中之台股個股/ETF 以及加權指數（`^TWII`）、櫃買指數（`^TWOII`）之八大官股買賣超統計與日況增補；
-       - 分點統計（1 / 10 / 20 日買賣超，`broker_range_rank`）：依使用者指定基準日（`base_date_str`）往前追溯 `lookback_days` 個交易日，逐日追滿所有缺漏交易日統計（冷門股只要有交易日即不因成交量小而跳過）；
-       - 分點日況明細（`broker_focus_daily_series`）：僅針對該標的最新一個交易日（`latest_trade_date`）抓取近 10 日與近 20 日前 5 名之近 20 日逐日明細並綁定 `focus_date = latest_trade_date`。
-       - 每檔完成後主動呼叫 `gc.collect()` 與 `time.sleep(0.25)`，避免 Streamlit Cloud 記憶體累積觸發 OOM 自動 Reboot。
-    2. 防呆防錯原因：已具備完整 `w1/w10/w20` 統計之交易日直接跳過；每檔僅執行一次 `sync_db_push(code)`。
-    """
     hist_list = load_stock_history()
     stock_items = []
     seen_codes = set()
@@ -1648,7 +1610,6 @@ def batch_sync_all_stocks_brokers(
     tot_n = len(stock_items)
     n_days = max(1, int(lookback_days or 1))
     b_norm = _normalize_mdj_date(base_date_str) or str(base_date_str).strip()[:10]
-    print(f"[BrokerBackfill] 啟動批次分點增補：統計基準日={b_norm}，往前={n_days}日（日況明細僅抓最新交易日近20日），共={tot_n}檔")
 
     def _df_to_rank_recs(df_rank):
         if df_rank is None or df_rank.empty:
@@ -1688,18 +1649,20 @@ def batch_sync_all_stocks_brokers(
         latest_trade_idx = len(trade_dates) - 1
         latest_trade_date = trade_dates[latest_trade_idx]
 
-        # 大盤加權（^TWII）與櫃買（^TWOII）八大官股買賣超增補路徑
         if is_tw_index_with_gov_brokers(code):
             if progress_callback:
                 progress_callback(idx_s, tot_n, code, c_name, "擷取八大官股買賣超統計與日況...")
+            valid_pos_g = [i for i, d_s in enumerate(trade_dates) if d_s <= b_norm]
+            anchor_g_idx = valid_pos_g[-1] if valid_pos_g else latest_trade_idx
+            anchor_g_date = trade_dates[anchor_g_idx]
             gov_bundle, gov_series_map = fetch_tw_index_gov_broker_bundle(
                 pure_code=code,
                 trade_dates_tuple=tuple(trade_dates),
-                target_end_idx=latest_trade_idx,
+                target_end_idx=anchor_g_idx,
                 include_60d=False
             )
             if gov_bundle:
-                storage.save_broker_range_rank(latest_trade_date, gov_bundle, sync_cloud=False)
+                storage.save_broker_range_rank(anchor_g_date, gov_bundle, sync_cloud=False)
                 for w_num in (10, 20):
                     w_obj = gov_bundle.get(f"w{w_num}", {})
                     for side_key in ("buy", "sell"):
@@ -1708,7 +1671,7 @@ def batch_sync_all_stocks_brokers(
                             df_s_gov = gov_series_map.get(b_nm)
                             if df_s_gov is not None and not df_s_gov.empty:
                                 storage.save_broker_focus_daily_series(
-                                    focus_date=latest_trade_date,
+                                    focus_date=anchor_g_date,
                                     window_days=w_num,
                                     side=side_key,
                                     rank_no=r_idx,
@@ -1873,11 +1836,6 @@ def batch_sync_all_stocks_brokers(
 # 【全市(含上櫃)資券 / 法人 / 大戶指定基準日區間批次增補引擎】
 # =========================================================================
 def get_default_chip_backfill_base_date(now_dt: datetime = None) -> datetime.date:
-    """
-    【修訂說明 2026-11-21】【修改目的與防呆防錯原因】：
-    1. 修改目的：三大法人與信用交易於每個交易日 16:30 後完備；16:30（含）前預設對齊前一交易日（跳過週六日），16:30 後對齊當日。
-    2. 防呆防錯原因：避免盤中或盤後尚未公告時誤以當日作為預設基準日。
-    """
     now_tw = now_dt if now_dt is not None else (datetime.utcnow() + timedelta(hours=8))
     base_d = now_tw.date()
     if base_d.weekday() == 5:
@@ -1892,7 +1850,6 @@ def get_default_chip_backfill_base_date(now_dt: datetime = None) -> datetime.dat
 
 
 def _get_hist_tw_stock_items() -> list:
-    """取得查詢歷史清單內所有台股個股與 ETF（排除 ^ 開頭指數）"""
     hist_list = load_stock_history()
     stock_items = []
     seen_codes = set()
@@ -1911,13 +1868,6 @@ def batch_sync_all_stocks_margin(
     lookback_days: int = 1,
     progress_callback=None
 ) -> str:
-    """
-    【修訂說明 2026-11-22】【修改目的與防呆防錯原因】：
-    1. 修改目的：依據「籌碼增補基準日（base_date_str）」與「往前增補交易籌碼日數（lookback_days）」，
-       針對所有上市／上櫃個股（含 ETF）補齊 [start_date, base_date_str] 區間內缺失之資券籌碼資料（margin_short）並同步雲端；
-       每檔完成後主動釋放記憶體並節制雲端上傳節奏，避免容器 OOM 重啟。
-    2. 防呆防錯原因：沿用已驗證資料源 FinMind TaiwanStockMarginPurchaseShortSale；已具備該區間完整交易日紀錄者自動跳過。
-    """
     stock_items = _get_hist_tw_stock_items()
     if not stock_items:
         return "目前查詢歷史清單無可增補之上市／上櫃個股或 ETF。"
@@ -1990,13 +1940,6 @@ def batch_sync_all_stocks_institutional(
     lookback_days: int = 1,
     progress_callback=None
 ) -> str:
-    """
-    【修訂說明 2026-11-22】【修改目的與防呆防錯原因】：
-    1. 修改目的：依據「籌碼增補基準日（base_date_str）」與「往前增補交易籌碼日數（lookback_days）」，
-       針對所有上市／上櫃個股（含 ETF）補齊 [start_date, base_date_str] 區間內缺失之三大法人籌碼資料（institutional_investors）並同步雲端；
-       每檔完成後主動釋放記憶體並節制雲端上傳節奏，避免容器 OOM 重啟。
-    2. 防呆防錯原因：沿用已驗證資料源（證交所 T86 / 櫃買 3itrade / FinMind 備援），僅針對區間內缺失交易日發起請求。
-    """
     stock_items = _get_hist_tw_stock_items()
     if not stock_items:
         return "目前查詢歷史清單無可增補之上市／上櫃個股或 ETF。"
@@ -2070,13 +2013,6 @@ def batch_sync_all_stocks_holding(
     lookback_days: int = 1,
     progress_callback=None
 ) -> str:
-    """
-    【修訂說明 2026-11-22】【修改目的與防呆防錯原因】：
-    1. 修改目的：依據「籌碼增補基準日（base_date_str）」與「往前增補交易籌碼日數（lookback_days）」所涵蓋之區間 [start_date, base_date_str]，
-       針對所有上市／上櫃個股（含 ETF）補齊落於該區間內之集保大戶股權分散表（1～15 級，含人數與真實股數）並同步雲端；
-       每檔完成後主動釋放記憶體並節制雲端上傳節奏，避免容器 OOM 重啟。
-    2. 防呆防錯原因：沿用已驗證資料源（集保官網 qryStock 動態 Token 多週歷史查詢），保留完整 5 欄 `(d, lvl, holders, shares, pct)` 寫入資料庫，並嚴格限制 1 <= level <= 15。
-    """
     stock_items = _get_hist_tw_stock_items()
     if not stock_items:
         return "目前查詢歷史清單無可增補之上市／上櫃個股或 ETF。"
