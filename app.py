@@ -1,7 +1,7 @@
 """
 app.py - 主應用程式介面與生命週期控制
-(三主頁籤架構：操作儀錶板 / 個股 / 參數設定 + 自選與查詢歷史同步 + 盤中均線多空燈號 + 動態chart_id杜絕跨頁籤殘留 + 批次增補指定基準日起往前N日分點統計與明細版 + 分點15:00前對齊前一交易日與分點統計/分點日況雙頁籤版 + 上下雙複合選單自由輸入置頂/下拉選取不改順序及初始K線30根 + 全市含上櫃籌碼指定基準日區間標題與雙鍵並列 + 大戶15週與全市場含上櫃標題及底部目前關注目標列版 + 關注交易日專屬分點日況隔離與增補分點標註僅限最近交易日之近20日版 + 修正主圖高度解包錯位並對齊成交量Y軸0刻度完整顯示版 + 手機窄螢幕個股導覽列與參數設定雙功能鍵強制同列並排版)
-版本: 202611222322
+(三主頁籤架構：操作儀錶板 / 個股 / 參數設定 + 自選與查詢歷史同步 + 盤中均線多空燈號 + 動態chart_id杜絕跨頁籤殘留 + 批次增補指定基準日起往前N日分點統計與明細版 + 分點15:00前對齊前一交易日與分點統計/分點日況雙頁籤版 + 上下雙複合選單自由輸入置頂/下拉選取不改順序及初始K線30根 + 全市含上櫃籌碼指定基準日區間標題與雙鍵並列 + 大戶15週與全市場含上櫃標題及底部目前關注目標列版 + 關注交易日專屬分點日況隔離與增補分點標註僅限最近交易日之近20日版 + 修正主圖高度解包錯位並對齊成交量Y軸0刻度完整顯示版 + 手機窄螢幕個股導覽列與參數設定雙功能鍵強制同列並排版 + 加權^TWII與櫃買^TWOII八大官股分點統計與分點日況版)
+版本: 202611231835
 """
 
 import os
@@ -13,7 +13,7 @@ import streamlit.components.v1 as components
 import cloud_sync
 
 MODULE_NAME = "app"
-MODULE_VERSION = "202611222322"
+MODULE_VERSION = "202611231835"
 
 
 # 【防呆防錯備註 2026-11-07】：版本控制權由 app.py 作為唯一權威源，動態掃描所有模組最大版本號，杜絕多頭覆寫與重工
@@ -52,7 +52,8 @@ from storage import (
     clear_recent_institutional_data,
     clear_all_stocks_chip_range,
     clear_all_broker_data,
-    is_tw_stock_or_etf
+    is_tw_stock_or_etf,
+    is_tw_index_with_gov_brokers
 )
 from chart_builder import build_split_figures
 from frontend import (
@@ -66,6 +67,7 @@ from frontend import (
 from data_fetcher import (
     fetch_stock_broker_range_ranking,
     fetch_single_broker_daily_series,
+    fetch_tw_index_gov_broker_bundle,
     fetch_dashboard_watchlist_rows,
     get_default_broker_backfill_base_date,
     get_default_chip_backfill_base_date
@@ -148,36 +150,25 @@ def get_cached_broker_payload(
     include_60d: bool = False
 ) -> dict:
     """
-    【修訂說明 2026-11-22】【修改目的與防呆防錯原因】：
+    【修訂說明 2026-11-23】【修改目的與防呆防錯原因】：
     1. 修改目的：
-       - 分點統計（broker_range_rank）：透過 storage.load_all_broker_range_ranks() 載入所有歷史基準日之 1/10/20/60 日買賣超前 10 名統計快照。
-       - 分點日況（broker_focus_daily_series）：透過 storage.load_all_broker_focus_daily_series() 嚴格依「關注交易日（focus_date）」掛載專屬之 W10/W20/W60 前五名逐日買賣超序列；
-         無專屬逐日序列的歷史關注交易日（如 10/22）不再從共用明細表誤撈邊界重疊日（如 11/20 第 20 日）造成殘影平移。
+       - 同時支援台股個股/ETF（富邦券商分點）與大盤加權指數（^TWII）、櫃買指數（^TWOII）（HiStock 八大官股買賣超）；
+       - 分點統計（broker_range_rank）：載入所有歷史基準日之 1/10/20/60 日買賣超統計快照；
+       - 分點日況（broker_focus_daily_series）：嚴格依「關注交易日（focus_date）」掛載專屬逐日買賣超序列。
     2. 防呆防錯原因：
-       - 僅針對最新一個交易日（latest_trade_date）或當前關注日為最新交易日時補抓逐日明細並寫入 broker_focus_daily_series，歷史基準日僅補抓統計排名，不浪費時間。
+       - 美歐亞等海外指數（^DJI、^IXIC 等）仍直接回傳 {"by_date": {}}，不觸發任何無效爬蟲；
+       - ^TWII 與 ^TWOII 透過 fetch_tw_index_gov_broker_bundle() 取得八大官股統計與逐日序列並持久化至 SQLite 與 Google Drive。
     """
     code = str(stock_id).strip().upper()
-    if not code or code.startswith("^") or not is_tw_stock_or_etf(code) or not trade_dates_tuple:
+    is_gov_idx = is_tw_index_with_gov_brokers(code)
+    is_stk = is_tw_stock_or_etf(code)
+    if not code or (not is_stk and not is_gov_idx) or not trade_dates_tuple:
         return {"by_date": {}}
 
     n_dates = len(trade_dates_tuple)
     safe_idx = min(max(0, int(target_end_idx)), n_dates - 1)
     end_date_str = trade_dates_tuple[safe_idx]
     latest_trade_date_str = trade_dates_tuple[-1]
-
-    def _calc_win_starts(anchor_idx: int) -> dict:
-        anchor_d = trade_dates_tuple[anchor_idx]
-        return {
-            1: anchor_d,
-            10: trade_dates_tuple[max(0, anchor_idx - 10 + 1)],
-            20: trade_dates_tuple[max(0, anchor_idx - 20 + 1)],
-            60: trade_dates_tuple[max(0, anchor_idx - 60 + 1)],
-        }
-
-    win_starts = _calc_win_starts(safe_idx)
-    target_windows = (1, 10, 20, 60) if include_60d else (1, 10, 20)
-    series_windows = (10, 20, 60) if include_60d else (10, 20)
-    earliest_start = win_starts[60] if include_60d else win_starts[20]
 
     storage = StockChipStorage(code)
 
@@ -203,7 +194,6 @@ def get_cached_broker_payload(
             w_obj["top5_sell_series"] = w_focus.get("top5_sell_series", [])
         return bundle
 
-    # 先從本地已下載的 SQLite 載入所有歷史累積基準日之分點統計快照（耗時 < 3ms，零額外連網）
     all_stored_ranks = storage.load_all_broker_range_ranks()
     by_date_map = {}
     for hist_date_str, hist_bundle in all_stored_ranks.items():
@@ -225,6 +215,57 @@ def get_cached_broker_payload(
         if base_ok and not need_60_missing and not need_latest_focus:
             by_date_map[end_date_str] = attach_focus_series_to_bundle(dict(cached_rank), end_date_str)
             return {"by_date": by_date_map}
+
+    # -----------------------------------------------------------------
+    # 分支 A：大盤加權（^TWII）與櫃買（^TWOII）八大官股買賣超統計與日況
+    # -----------------------------------------------------------------
+    if is_gov_idx:
+        gov_bundle, gov_series_map = fetch_tw_index_gov_broker_bundle(
+            pure_code=code,
+            trade_dates_tuple=trade_dates_tuple,
+            target_end_idx=safe_idx,
+            include_60d=include_60d
+        )
+        if gov_bundle:
+            if is_end_latest:
+                for w_num in ((10, 20, 60) if include_60d else (10, 20)):
+                    w_obj = gov_bundle.get(f"w{w_num}", {})
+                    for side_key in ("buy", "sell"):
+                        for r_idx, item in enumerate(w_obj.get(side_key, [])[:5], start=1):
+                            b_nm = item.get("name", "")
+                            df_s_gov = gov_series_map.get(b_nm)
+                            if df_s_gov is not None and not df_s_gov.empty:
+                                storage.save_broker_focus_daily_series(
+                                    focus_date=end_date_str,
+                                    window_days=w_num,
+                                    side=side_key,
+                                    rank_no=r_idx,
+                                    broker_name=b_nm,
+                                    total_net=int(item.get("net", 0)),
+                                    df_trades=df_s_gov,
+                                    sync_cloud=False
+                                )
+                all_focus_series = storage.load_all_broker_focus_daily_series()
+            storage.save_broker_range_rank(end_date_str, gov_bundle, sync_cloud=True)
+            by_date_map[end_date_str] = attach_focus_series_to_bundle(gov_bundle, end_date_str)
+        return {"by_date": by_date_map}
+
+    # -----------------------------------------------------------------
+    # 分支 B：台股個股 / ETF 富邦券商分點統計與日況
+    # -----------------------------------------------------------------
+    def _calc_win_starts(anchor_idx: int) -> dict:
+        anchor_d = trade_dates_tuple[anchor_idx]
+        return {
+            1: anchor_d,
+            10: trade_dates_tuple[max(0, anchor_idx - 10 + 1)],
+            20: trade_dates_tuple[max(0, anchor_idx - 20 + 1)],
+            60: trade_dates_tuple[max(0, anchor_idx - 60 + 1)],
+        }
+
+    win_starts = _calc_win_starts(safe_idx)
+    target_windows = (1, 10, 20, 60) if include_60d else (1, 10, 20)
+    series_windows = (10, 20, 60) if include_60d else (10, 20)
+    earliest_start = win_starts[60] if include_60d else win_starts[20]
 
     def df_to_rank_records(df_rank):
         if df_rank is None or df_rank.empty:
@@ -261,7 +302,6 @@ def get_cached_broker_payload(
         if idx_w < len(fetch_windows) - 1:
             time.sleep(0.15)
 
-    # 僅當關注基準日為最新交易日（end_date_str == latest_trade_date_str）時，抓取並綁定前五名分點近 20 日逐日明細
     if is_end_latest:
         broker_df_cache = {}
         for w in fetch_windows:
@@ -914,11 +954,6 @@ elif selected_main_tab == "⚙️ 參數設定":
         get_cached_dashboard_rows.clear()
         st.success("快取已清除，切換回「📈 個股」頁籤即會重新抓取最新資料。")
 
-    # 【修訂說明 2026-11-21】【修改目的與防呆防錯原因】：
-    # 1. 修改目的：全市(含上櫃)籌碼資料庫維護採用「第一列：類別標題；第二列：批次增補 / 清除 兩功能鍵並列」版面，
-    #    統一依據「籌碼增補基準日」與「往前增補交易籌碼日數」執行資券、法人、大戶三類籌碼之區間批次增補與區間清除，
-    #    並明確標註「大戶籌碼維護（最多15週）」。
-    # 2. 防呆防錯原因：進度條與二段式清除確認框皆渲染在並排按鈕列正下方全寬顯示，避免半欄寬度壓縮文字。
     st.markdown("---")
     st.markdown("**全市(含上櫃)籌碼資料庫維護**")
     default_chip_date = get_default_chip_backfill_base_date()
@@ -1040,7 +1075,7 @@ elif selected_main_tab == "⚙️ 參數設定":
         get_cached_figures.clear()
         st.success(summary_hold)
 
-    # 二段式確認清除（依籌碼增補基準日＋往前增補交易籌碼日數）
+    # 二段式確認清除
     pending_chip_clr = st.session_state.get("confirm_clear_chip_type", "")
     if pending_chip_clr in ("margin", "institutional", "holding"):
         chip_label_map = {
@@ -1072,10 +1107,7 @@ elif selected_main_tab == "⚙️ 參數設定":
                     st.rerun()
 
     st.markdown("---")
-    # 【修訂說明 2026-11-22】【修改目的與防呆防錯原因】：
-    # 修改目的：在「增補分點」功能名稱後方明確標註「(分點買賣超交易日況僅限最近交易日之近20日)」，清楚區分歷史統計與最近交易日之近20日交易日況限制。
-    # 防呆防錯原因：避免使用者誤以為設定往前增補 N 日時可回溯更早基準日之逐日柱狀圖明細。
-    st.markdown("**全市場（含上櫃）分點批次增補與維護(分點買賣超交易日況僅限最近交易日之近20日)**")
+    st.markdown("**全市場（含上櫃及加權/櫃買八大官股）分點批次增補與維護(分點買賣超交易日況僅限最近交易日之近20日)**")
     default_bf_date = get_default_broker_backfill_base_date()
     if isinstance(default_bf_date, str):
         parsed_bf_date = datetime.strptime(default_bf_date[:10], "%Y-%m-%d").date()
@@ -1105,7 +1137,7 @@ elif selected_main_tab == "⚙️ 參數設定":
         with col_bk_add:
             run_bk_sync = st.button("📥 批次增補歷史分點（統計與明細）", key="btn_batch_sync_brokers", use_container_width=True)
         with col_bk_clr:
-            if st.button("🗑️ 清除所有個股分點資料", key="btn_batch_clear_brokers", use_container_width=True):
+            if st.button("🗑️ 清除所有分點資料", key="btn_batch_clear_brokers", use_container_width=True):
                 st.session_state.confirm_clear_brokers = True
                 st.rerun()
 
@@ -1131,7 +1163,7 @@ elif selected_main_tab == "⚙️ 參數設定":
         st.success(summary_msg)
 
     if st.session_state.confirm_clear_brokers:
-        st.warning("⚠️ 確定要清除本地與雲端所有個股之「分點統計與分點日況明細」嗎？（日線、法人、資券與集保大戶資料將完整保留）")
+        st.warning("⚠️ 確定要清除本地與雲端所有標的（含上市/上櫃個股與加權/櫃買八大官股）之「分點統計與分點日況明細」嗎？（日線、法人、資券與集保大戶資料將完整保留）")
         with st.container():
             st.markdown("<div class='settings-btn-row-anchor'></div>", unsafe_allow_html=True)
             cb_yes, cb_no = st.columns(2)
@@ -1244,10 +1276,6 @@ else:
             except Exception:
                 pass
 
-        # 【修訂說明 2026-11-22】【修改目的與防呆防錯原因】：
-        # 修改目的：build_split_figures 第 5 個回傳值為 end_idx（非圖表高度），改為明確指定 actual_top_h（296/336，對齊 chart_builder.py）
-        # 並將 iframe 外框高度設為 actual_top_h + 62，確保 Reboot 初次載入時資訊列與成交量 Y 軸「0」刻度完整顯示不被底部裁切。
-        # 防呆防錯原因：優先讀取 fig_top.layout.height，無則退回 296/336。
         actual_top_h = int(getattr(getattr(fig_top, "layout", None), "height", None) or (296 if st.session_state.is_mobile_mode else 336))
 
         # 上半部共用主圖
@@ -1292,21 +1320,28 @@ else:
             )
             components.html(chip_html, height=chip_h + 85, scrolling=False)
 
-        is_tw_stk = is_tw_stock_or_etf(pure_ticker) and not pure_ticker.startswith("^")
+        is_gov_idx = is_tw_index_with_gov_brokers(pure_ticker)
+        has_broker_support = (is_tw_stock_or_etf(pure_ticker) and not pure_ticker.startswith("^")) or is_gov_idx
         trade_dates_tuple = tuple(d.strftime("%Y-%m-%d") for d in df_res.index)
         end_date_label = trade_dates_tuple[safe_end_idx] if trade_dates_tuple else ""
         req_key = f"{pure_ticker}_{end_date_label}"
         include_60d = req_key in st.session_state.broker_60d_requests
 
-        if is_tw_stk:
-            if not include_60d:
-                if st.button(f"📥 載入近 60 日分點統計與明細（基準日 {end_date_label}）", key=f"btn_load_60d_{chart_id}", use_container_width=True):
-                    st.session_state.broker_60d_requests.add(req_key)
-                    st.rerun()
-            else:
-                st.caption(f"✅ 已載入近 1 / 10 / 20 / 60 日分點統計與逐日明細（基準日 {end_date_label}）")
+        if has_broker_support:
+            if not is_gov_idx:
+                if not include_60d:
+                    if st.button(f"📥 載入近 60 日分點統計與明細（基準日 {end_date_label}）", key=f"btn_load_60d_{chart_id}", use_container_width=True):
+                        st.session_state.broker_60d_requests.add(req_key)
+                        st.rerun()
+                else:
+                    st.caption(f"✅ 已載入近 1 / 10 / 20 / 60 日分點統計與逐日明細（基準日 {end_date_label}）")
 
-            with st.spinner("正在載入雲端與最新券商分點統計與逐日進出序列..."):
+            spinner_txt = (
+                "正在載入加權/櫃買八大官股買賣超統計與日況..."
+                if is_gov_idx else
+                "正在載入雲端與最新券商分點統計與逐日進出序列..."
+            )
+            with st.spinner(spinner_txt):
                 broker_payload = get_cached_broker_payload(
                     stock_id=pure_ticker,
                     trade_dates_tuple=trade_dates_tuple,
@@ -1323,7 +1358,7 @@ else:
                 chart_id=chart_id,
                 broker_payload=broker_payload,
                 initial_end_idx=safe_end_idx,
-                is_index=(not is_tw_stk)
+                is_index=(not has_broker_support)
             )
             components.html(broker_stats_html, height=580, scrolling=True)
 
@@ -1333,7 +1368,7 @@ else:
                 chart_id=chart_id,
                 broker_payload=broker_payload,
                 initial_end_idx=safe_end_idx,
-                is_index=(not is_tw_stk)
+                is_index=(not has_broker_support)
             )
             components.html(broker_daily_html, height=1320, scrolling=True)
 
@@ -1351,9 +1386,6 @@ else:
             btm_options = [btm_cur_label] + btm_options
         btm_sel_idx = btm_options.index(btm_cur_label)
 
-        # 【修訂說明 2026-11-21】【修改目的與防呆防錯原因】：
-        # 修改目的：在底部上／下一檔導覽列正上方顯示「目前關注目標：股票名稱 代號 (市/櫃)」。
-        # 防呆防錯原因：從主圖標題 fig_top.layout.title.text 擷取已驗證之市場別（上市/上櫃/指數/海外），無則依代號前綴退回，避免重複發起網路查詢。
         focus_mkt = "指數" if pure_ticker.startswith("^") else "上市"
         try:
             raw_title_txt = str(getattr(getattr(getattr(fig_top, "layout", None), "title", None), "text", "") or "")
@@ -1404,4 +1436,4 @@ else:
         st.markdown("<div style='height: 54px;'></div>", unsafe_allow_html=True)
     else:
         st.error(f"無法取得 {st.session_state.stock_id} 的資料，請檢查代號是否正確或稍後再試。")
-# EOF app.py
+## EOF app.py
