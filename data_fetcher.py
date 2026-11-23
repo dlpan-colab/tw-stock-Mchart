@@ -1,7 +1,7 @@
 """
 data_fetcher.py - 整合技術與籌碼資料擷取模組
-(支援含英文後綴台股ETF + TWSE/TPEx官方日K即時補齊 + 大盤加權^TWII與櫃買^TWOII資券與融資金額(億)擷取 + 大盤加權^TWII與櫃買^TWOII八大官股買賣超統計與日況擷取(broker8.aspx歷史日期回溯與Top30加總版) + 雲端增量累積分點引擎 + 集保官網qryStock動態Token多週歷史查詢與id=1-5批次分離含真實股數儲存 + 賣超負值正規化 + 操作儀錶板盤中報價版 + 富邦10欄並排表格與精準單日分點統計/明細5欄修正版 + 全市場歷史分點統計追滿N日但日況明細僅抓最新交易日近20日並綁定關注日版 + 全市含上櫃資券/法人/大戶指定基準日區間批次增補引擎版 + 批次增補記憶體主動回收與雲端同步節流防OOM自動Reboot版)
-版本: 202611232102
+(支援含英文後綴台股ETF + TWSE/TPEx官方日K即時補齊 + 大盤加權^TWII與櫃買^TWOII資券與融資金額(億)擷取 + 大盤加權^TWII與櫃買^TWOII八大官股買賣超統計與日況擷取(broker8.aspx ul.stock-list實測DOM解析與Top30加總版) + 雲端增量累積分點引擎 + 集保官網qryStock動態Token多週歷史查詢與id=1-5批次分離含真實股數儲存 + 賣超負值正規化 + 操作儀錶板盤中報價版 + 富邦10欄並排表格與精準單日分點統計/明細5欄修正版 + 全市場歷史分點統計追滿N日但日況明細僅抓最新交易日近20日並綁定關注日版 + 全市含上櫃資券/法人/大戶指定基準日區間批次增補引擎版 + 批次增補記憶體主動回收與雲端同步節流防OOM自動Reboot版)
+版本: 202611232116
 """
 import os
 import io
@@ -19,7 +19,7 @@ from datetime import datetime, timedelta
 from urllib.parse import urljoin, urlparse, parse_qs, urlencode, urlunparse
 
 MODULE_NAME = "data_fetcher"
-MODULE_VERSION = "202611232102"
+MODULE_VERSION = "202611232116"
 
 from storage import (
     StockChipStorage, COMMON_STOCK_NAMES, load_stock_names_dict,
@@ -1052,13 +1052,13 @@ def fetch_dashboard_watchlist_rows(history_list: list) -> list:
 def _fetch_histock_broker8_single_day(pure_code: str, target_date_str: str) -> tuple:
     """
     【修訂說明 2026-11-23】【修改目的與防呆防錯原因】：
-    1. 修改目的：向 HiStock 八大官股個別行庫明細頁（上市 https://histock.tw/stock/broker8.aspx?d=YYYY-MM-DD、
-       上櫃 https://histock.tw/stock/broker8.aspx?no=TWOI&d=YYYY-MM-DD）擷取指定日期之
-       「Top 30 八大官股銀行合計買超排名」與「合計賣超排名」表格（欄位：★ | 股票 | 合庫 | 土銀 | 台銀 | 台企銀 | 彰銀 | 第一金 | 兆豐銀 | 華南永昌 | 合計(萬)），
-       加總各官股行庫當日買超/賣超金額（單位：萬元），並回傳 (actual_iso_date, bank_net_dict, bank_buy_dict, bank_sell_dict)。
+    1. 修改目的：依據 Google Colab 實測驗證之真實 DOM 結構（Table[0]/Table[1] 為表頭列，緊接兄弟標籤為 `<ul class="stock-list">`，
+       內含 30 個 `<li>`，每個 `<li>` 依序為 [股票名稱, 合庫, 土銀, 台銀, 台企銀, 彰銀, 第一金, 兆豐銀, 華南永昌, 合計(萬)]），
+       向 HiStock（上市 https://histock.tw/stock/broker8.aspx?d=YYYY-MM-DD、上櫃 https://histock.tw/stock/broker8.aspx?no=TWOI&d=YYYY-MM-DD）
+       擷取 Top 30 買超排名與 Top 30 賣超排名並加總 8 家官股行庫當日買進、賣出與淨買賣超（單位：萬元）。
     2. 防呆防錯原因：
        - 若指定日期尚無資料或為非交易日，解析頁面標題公告之實際交易日期 actual_iso_date；
-       - 同時累計買超榜與賣超榜各行庫正負數值，合併計算當日淨買賣超（buy - sell，單位：萬元）。
+       - 同時支援表頭對應與預設索引 1..8，並兼容 `<ul class="stock-list">` 與傳統 `<tr>` 列結構。
     """
     code = str(pure_code or "").strip().upper()
     if not is_tw_index_with_gov_brokers(code):
@@ -1123,7 +1123,7 @@ def _fetch_histock_broker8_single_day(pure_code: str, target_date_str: str) -> t
 
     for tbl in soup.find_all("table"):
         trs = tbl.find_all("tr")
-        if len(trs) < 2:
+        if not trs:
             continue
         hdr_cells = [re.sub(r"\s+", " ", td.get_text(" ", strip=True)) for td in trs[0].find_all(["th", "td"])]
         col_to_bank = {}
@@ -1134,6 +1134,40 @@ def _fetch_histock_broker8_single_day(pure_code: str, target_date_str: str) -> t
         if len(col_to_bank) < 4:
             continue
 
+        # 1. 優先解析緊接之 <ul class="stock-list"> 內所有 <li>（Colab 實測：每列 10 個子元素，索引 1..8 為八大行庫）
+        ul_list = tbl.find_next_sibling("ul", class_="stock-list") or tbl.find_next_sibling("ul")
+        if ul_list:
+            for li in ul_list.find_all("li", recursive=False):
+                vals = [
+                    re.sub(r"\s+", " ", el.get_text(strip=True))
+                    for el in li.find_all(["span", "div", "td", "a"], recursive=True)
+                    if el.get_text(strip=True)
+                ]
+                # 去除重複嵌套文字：僅保留葉節點文字
+                leaf_vals = [
+                    re.sub(r"\s+", " ", el.get_text(strip=True))
+                    for el in li.find_all(True, recursive=True)
+                    if not el.find(True) and el.get_text(strip=True)
+                ]
+                row_tokens = leaf_vals if len(leaf_vals) >= 9 else vals
+                if len(row_tokens) < 9:
+                    continue
+                row_has_val = False
+                for idx_b, (b_std, _) in enumerate(EIGHT_GOV_BROKERS, start=1):
+                    if idx_b >= len(row_tokens):
+                        break
+                    v = _parse_num(row_tokens[idx_b])
+                    if v is None:
+                        continue
+                    row_has_val = True
+                    if v > 0:
+                        bank_buy_sum[b_std] += v
+                    elif v < 0:
+                        bank_sell_sum[b_std] += abs(v)
+                if row_has_val:
+                    found_any_row = True
+
+        # 2. 若仍有後續 <tr> 資料列亦一併兼容解析
         for tr in trs[1:]:
             cells = [re.sub(r"\s+", " ", td.get_text(" ", strip=True)) for td in tr.find_all(["td", "th"])]
             if len(cells) <= max(col_to_bank.keys()):
@@ -1173,13 +1207,6 @@ def _ensure_tw_index_gov_history_loaded(
     target_end_idx: int,
     lookback_days: int = 20
 ) -> StockChipStorage:
-    """
-    【修訂說明 2026-11-23】【修改目的與防呆防錯原因】：
-    1. 修改目的：以 target_end_idx 為基準往前回溯最多 lookback_days 個交易日，
-       逐日查詢 `broker8.aspx?d=YYYY-MM-DD`（上櫃 `no=TWOI&d=YYYY-MM-DD`）並存入本地 SQLite `broker_daily_trades`，
-       讓大盤加權（^TWII）與櫃買（^TWOII）也能擁有歷史多日八大官股逐日進出序列與區間統計。
-    2. 防呆防錯原因：若本地 `broker_daily_trades` 已包含該交易日紀錄，直接跳過不重複請求網路。
-    """
     code = str(pure_code or "").strip().upper()
     storage = StockChipStorage(code)
     if not is_tw_index_with_gov_brokers(code) or not trade_dates_tuple:
@@ -1220,14 +1247,6 @@ def fetch_tw_index_gov_broker_bundle(
     target_end_idx: int,
     include_60d: bool = False
 ) -> tuple:
-    """
-    【修訂說明 2026-11-23】【修改目的與防呆防錯原因】：
-    1. 修改目的：為大盤加權（^TWII）與櫃買（^TWOII）建置指定基準日之八大官股分點統計快照（w1/w10/w20/w60）
-       與八大官股逐日買賣超序列（供「📊 分點統計」與「📈 分點日況」雙頁籤直接渲染）。
-    2. 防呆防錯原因：
-       - 先確保最近交易日（及往前最多 20 日）之 `broker8.aspx?d=YYYY-MM-DD` 明細已寫入 `broker_daily_trades`；
-       - 即使目標關注日為較早歷史日（如 11/20），若該日無獨立抓取過，亦即時補抓該單日並彙整至統計與逐日序列。
-    """
     code = str(pure_code or "").strip().upper()
     if not is_tw_index_with_gov_brokers(code) or not trade_dates_tuple:
         return {}, {}
