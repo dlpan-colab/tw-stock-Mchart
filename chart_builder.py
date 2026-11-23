@@ -1,6 +1,6 @@
 """
-chart_builder.py - Plotly 圖表建置模組 (主圖1/2緊緻化、指標頁籤乖離率、籌碼分頁標準字典防快取遺失、主標題藍色加大、副圖左上角內嵌標籤與加權^TWII/櫃買^TWOII緊緻雙列資券千張＋融資金額(億)副圖消除空白及大戶線1%約當張數優先採用集保最新週總張數註明版 + 主圖成交量Y軸0刻度抬升完整顯示版 + 個股籌碼資券副圖棕色券資比與藍色預估融資維持率雙獨立Y軸無刻度折線版)
-版本: 202611222308
+chart_builder.py - Plotly 圖表建置模組 (主圖1/2緊緻化、指標頁籤乖離率、籌碼分頁標準字典防快取遺失、主標題藍色加大、副圖左上角內嵌標籤與加權^TWII/櫃買^TWOII緊緻雙列資券千張＋融資金額(億)副圖消除空白及大戶線1%約當張數優先採用集保最新週總張數註明版 + 主圖成交量Y軸0刻度抬升完整顯示版 + 個股籌碼資券副圖棕色券資比獨立座標與藍綠雙融資維持率共用次座標折線版)
+版本: 202611231812
 """
 
 from typing import Tuple, Optional, Dict
@@ -10,7 +10,7 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
 MODULE_NAME = "chart_builder"
-MODULE_VERSION = "202611222308"
+MODULE_VERSION = "202611231812"
 
 from data_fetcher import fetch_stock_daily_k, fetch_stock_name
 from indicators import calculate_all_indicators
@@ -171,9 +171,11 @@ def build_split_figures(
         mm_r_pad = max(1.5, (mm_r_max - mm_r_min) * 0.15) if mm_r_max > mm_r_min else 3.0
         mmaint_range = [max(0, mm_r_min - mm_r_pad), mm_r_max + mm_r_pad]
     else:
-        # 【修訂說明 2026-11-22】【修改目的與防呆防錯原因】：
-        # 修改目的：個股資券副圖之棕色「券資比%（yaxis5）」與藍色「預估融資維持率%（yaxis9）」各自使用獨立比例尺，
-        # 互不校準、互不壓縮，且兩者皆隱藏刻度標籤（showticklabels=False）。
+        # 【修訂說明 2026-11-23】【修改目的與防呆防錯原因】：
+        # 修改目的：
+        #   1. 棕色「券資比%（yaxis5）」維持獨立比例尺，不與融資維持率互相校準；
+        #   2. 藍色「預估融資維持率%（Margin_Maint_Pct）」與綠色「近60日季融資維持率%（Margin_Maint_60D_Pct）」共用同一右側次座標 yaxis9，
+        #      以兩者合併之最小/最大值計算 mmaint_range，確保雙線在同一尺度下完整呈現且不裁切。
         # 防呆防錯原因：若任一數列全為 NaN（無融券或無融資），自動給定合理預設上下限避免除零異常。
         ratio_clean = sub_df['Short_Margin_Ratio'].dropna() if 'Short_Margin_Ratio' in sub_df.columns else pd.Series(dtype=float)
         r_min = float(ratio_clean.min()) if not ratio_clean.empty else 0.0
@@ -181,7 +183,12 @@ def build_split_figures(
         r_pad = max(0.5, (r_max - r_min) * 0.18) if r_max > r_min else 1.0
         ratio_range = [max(0.0, r_min - r_pad), r_max + r_pad]
 
-        mmaint_clean = sub_df['Margin_Maint_Pct'].dropna() if 'Margin_Maint_Pct' in sub_df.columns else pd.Series(dtype=float)
+        mmaint_parts = []
+        if 'Margin_Maint_Pct' in sub_df.columns and not sub_df['Margin_Maint_Pct'].dropna().empty:
+            mmaint_parts.append(sub_df['Margin_Maint_Pct'].dropna())
+        if 'Margin_Maint_60D_Pct' in sub_df.columns and not sub_df['Margin_Maint_60D_Pct'].dropna().empty:
+            mmaint_parts.append(sub_df['Margin_Maint_60D_Pct'].dropna())
+        mmaint_clean = pd.concat(mmaint_parts) if mmaint_parts else pd.Series(dtype=float)
         mm_r_min = float(mmaint_clean.min()) if not mmaint_clean.empty else 120.0
         mm_r_max = float(mmaint_clean.max()) if not mmaint_clean.empty else 180.0
         mm_r_pad = max(2.0, (mm_r_max - mm_r_min) * 0.18) if mm_r_max > mm_r_min else 5.0
@@ -466,14 +473,20 @@ def build_split_figures(
                 connectgaps=True, hoverinfo='none', name='券資比%'
             ), secondary_y=True, row=4, col=1)
 
-            # 【修訂說明 2026-11-22】【修改目的與防呆防錯原因】：
-            # 修改目的：在個股資券副圖新增冷色系藍色折線「預估融資維持率%」（#2980b9），並綁定獨立疊加 Y 軸 yaxis9（overlaying="y4"），
-            # 使藍色維持率折線與棕色券資比折線（yaxis5）各自擁有獨立垂直座標範圍且均不顯示刻度標籤。
+            # 【修訂說明 2026-11-23】【修改目的與防呆防錯原因】：
+            # 修改目的：在個股資券副圖新增藍色折線「預估融資維持率%」（#2980b9）與綠色折線「近60日季融資維持率%」（#16a085），
+            # 兩者皆綁定同一個獨立疊加 Y 軸 yaxis9（overlaying="y4"），使兩條維持率共用同一垂直尺度比較，且與棕色券資比（yaxis5）完全獨立。
             # 防呆防錯原因：使用 yaxis9 避開既有 y~y8 軸號，xaxis="x4" 精準對齊第 4 列資券副圖 X 軸。
             if 'Margin_Maint_Pct' in df.columns:
                 fig_chip.add_trace(go.Scatter(
                     x=date_str_list, y=df['Margin_Maint_Pct'], line=dict(color='#2980b9', width=1.5),
                     connectgaps=True, hoverinfo='none', name='預估融資維持率%',
+                    xaxis='x4', yaxis='y9'
+                ))
+            if 'Margin_Maint_60D_Pct' in df.columns:
+                fig_chip.add_trace(go.Scatter(
+                    x=date_str_list, y=df['Margin_Maint_60D_Pct'], line=dict(color='#16a085', width=1.5),
+                    connectgaps=True, hoverinfo='none', name='近60日季融資維持率%',
                     xaxis='x4', yaxis='y9'
                 ))
 
@@ -563,4 +576,4 @@ def build_split_figures(
     # 改以標準 Python 字典包裝 fig_tech 與 fig_chip，避免 @st.cache_data 序列化時剝除自訂屬性導致籌碼圖遺失。
     fig_bundle = {"tech": fig_tech, "chip": fig_chip}
     return fig_top, fig_bundle, df, c_name, end_idx, disp_n
-# EOF chart_builder.py
+## EOF chart_builder.py
