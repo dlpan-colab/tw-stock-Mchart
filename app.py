@@ -1,7 +1,7 @@
 """
 app.py - 主應用程式介面與生命週期控制
-(三主頁籤架構：操作儀錶板 / 個股 / 參數設定 + 自選與查詢歷史同步 + 盤中均線多空燈號 + 動態chart_id杜絕跨頁籤殘留 + 批次增補指定基準日起往前N日分點統計與明細版 + 分點15:00前對齊前一交易日與分點統計/分點日況雙頁籤版 + 上下雙複合選單自由輸入置頂/下拉選取不改順序及初始K線30根 + 全市含上櫃籌碼指定基準日區間標題與雙鍵並列 + 大戶15週與全市場含上櫃標題及底部目前關注目標列版 + 關注交易日專屬分點日況隔離與增補分點標註僅限最近交易日之近20日版 + 修正主圖高度解包錯位並對齊成交量Y軸0刻度完整顯示版 + 手機窄螢幕個股導覽列與參數設定雙功能鍵強制同列並排版 + 加權^TWII與櫃買^TWOII八大官股分點統計與分點日況版)
-版本: 202611231835
+(三主頁籤架構：操作儀錶板 / 個股 / 參數設定 + 自選與查詢歷史同步 + 盤中均線多空燈號 + 動態chart_id杜絕跨頁籤殘留 + 批次增補指定基準日起往前N日分點統計與明細版 + 分點15:00前對齊前一交易日與分點統計/分點日況雙頁籤版 + 上下雙複合選單自由輸入置頂/下拉選取不改順序及初始K線30根 + 全市含上櫃籌碼指定基準日區間標題與雙鍵並列 + 大戶15週與全市場含上櫃標題及底部目前關注目標列版 + 關注交易日專屬分點日況隔離與增補分點標註僅限最近交易日之近20日版 + 修正主圖高度解包錯位並對齊成交量Y軸0刻度完整顯示版 + 手機窄螢幕個股導覽列與參數設定雙功能鍵強制同列並排版 + 加權^TWII與櫃買^TWOII八大官股個股前50名分點統計與單一個股8家官股行庫逐日買賣超日況及獨立增補清除維護版)
+版本: 202611240720
 """
 
 import os
@@ -13,7 +13,7 @@ import streamlit.components.v1 as components
 import cloud_sync
 
 MODULE_NAME = "app"
-MODULE_VERSION = "202611231835"
+MODULE_VERSION = "202611240720"
 
 
 # 【防呆防錯備註 2026-11-07】：版本控制權由 app.py 作為唯一權威源，動態掃描所有模組最大版本號，杜絕多頭覆寫與重工
@@ -52,6 +52,7 @@ from storage import (
     clear_recent_institutional_data,
     clear_all_stocks_chip_range,
     clear_all_broker_data,
+    clear_tw_index_gov_broker_data,
     is_tw_stock_or_etf,
     is_tw_index_with_gov_brokers
 )
@@ -150,14 +151,16 @@ def get_cached_broker_payload(
     include_60d: bool = False
 ) -> dict:
     """
-    【修訂說明 2026-11-23】【修改目的與防呆防錯原因】：
+    【修訂說明 2026-11-24】【修改目的與防呆防錯原因】：
     1. 修改目的：
-       - 同時支援台股個股/ETF（富邦券商分點）與大盤加權指數（^TWII）、櫃買指數（^TWOII）（HiStock 八大官股買賣超）；
-       - 分點統計（broker_range_rank）：載入所有歷史基準日之 1/10/20/60 日買賣超統計快照；
-       - 分點日況（broker_focus_daily_series）：嚴格依「關注交易日（focus_date）」掛載專屬逐日買賣超序列。
+       - 同時支援台股個股/ETF（富邦券商分點）與大盤加權指數（^TWII）、櫃買指數（^TWOII）（HiStock 八大官股個股買賣超）；
+       - 針對 ^TWII 與 ^TWOII：呼叫 fetch_tw_index_gov_broker_bundle() 依關注交易日往前計算當日/近10日/近20日/近60日
+         買超前 50 大與賣超前 50 大個股統計（單位：萬元），並掛載各候選個股對應 8 家官股行庫（合庫、土銀、台銀、台企銀、彰銀、第一金、兆豐銀、華南永昌）
+         的每日買賣超序列，供「📈 分點日況」下拉選單選取關注個股後一次繪製 8 個子圖；
+       - 針對個股/ETF：載入所有歷史基準日之 1/10/20/60 日買賣超統計快照，並依關注交易日掛載專屬逐日買賣超序列。
     2. 防呆防錯原因：
        - 美歐亞等海外指數（^DJI、^IXIC 等）仍直接回傳 {"by_date": {}}，不觸發任何無效爬蟲；
-       - ^TWII 與 ^TWOII 透過 fetch_tw_index_gov_broker_bundle() 取得八大官股統計與逐日序列並持久化至 SQLite 與 Google Drive。
+       - ^TWII 與 ^TWOII 每次切換關注交易日皆依累積之 gov_index_stock_daily 即時重算區間前 50 名與 8 行庫子圖序列，確保不遺漏批次增補之歷史交易日。
     """
     code = str(stock_id).strip().upper()
     is_gov_idx = is_tw_index_with_gov_brokers(code)
@@ -172,6 +175,30 @@ def get_cached_broker_payload(
 
     storage = StockChipStorage(code)
 
+    # -----------------------------------------------------------------
+    # 分支 A：大盤加權（^TWII）與櫃買（^TWOII）八大官股個股統計與8行庫日況
+    # -----------------------------------------------------------------
+    if is_gov_idx:
+        by_date_map = {}
+        all_stored_ranks = storage.load_all_broker_range_ranks()
+        for hist_date_str, hist_bundle in all_stored_ranks.items():
+            if hist_date_str != end_date_str:
+                by_date_map[hist_date_str] = dict(hist_bundle)
+
+        gov_bundle, _ = fetch_tw_index_gov_broker_bundle(
+            pure_code=code,
+            trade_dates_tuple=trade_dates_tuple,
+            target_end_idx=safe_idx,
+            include_60d=True
+        )
+        if gov_bundle:
+            storage.save_broker_range_rank(end_date_str, gov_bundle, sync_cloud=False)
+            by_date_map[end_date_str] = gov_bundle
+        return {"by_date": by_date_map}
+
+    # -----------------------------------------------------------------
+    # 分支 B：台股個股 / ETF 富邦券商分點統計與日況
+    # -----------------------------------------------------------------
     def _has_valid_win(bundle_obj: dict, w_num: int) -> bool:
         if not isinstance(bundle_obj, dict):
             return False
@@ -216,43 +243,6 @@ def get_cached_broker_payload(
             by_date_map[end_date_str] = attach_focus_series_to_bundle(dict(cached_rank), end_date_str)
             return {"by_date": by_date_map}
 
-    # -----------------------------------------------------------------
-    # 分支 A：大盤加權（^TWII）與櫃買（^TWOII）八大官股買賣超統計與日況
-    # -----------------------------------------------------------------
-    if is_gov_idx:
-        gov_bundle, gov_series_map = fetch_tw_index_gov_broker_bundle(
-            pure_code=code,
-            trade_dates_tuple=trade_dates_tuple,
-            target_end_idx=safe_idx,
-            include_60d=include_60d
-        )
-        if gov_bundle:
-            if is_end_latest:
-                for w_num in ((10, 20, 60) if include_60d else (10, 20)):
-                    w_obj = gov_bundle.get(f"w{w_num}", {})
-                    for side_key in ("buy", "sell"):
-                        for r_idx, item in enumerate(w_obj.get(side_key, [])[:5], start=1):
-                            b_nm = item.get("name", "")
-                            df_s_gov = gov_series_map.get(b_nm)
-                            if df_s_gov is not None and not df_s_gov.empty:
-                                storage.save_broker_focus_daily_series(
-                                    focus_date=end_date_str,
-                                    window_days=w_num,
-                                    side=side_key,
-                                    rank_no=r_idx,
-                                    broker_name=b_nm,
-                                    total_net=int(item.get("net", 0)),
-                                    df_trades=df_s_gov,
-                                    sync_cloud=False
-                                )
-                all_focus_series = storage.load_all_broker_focus_daily_series()
-            storage.save_broker_range_rank(end_date_str, gov_bundle, sync_cloud=True)
-            by_date_map[end_date_str] = attach_focus_series_to_bundle(gov_bundle, end_date_str)
-        return {"by_date": by_date_map}
-
-    # -----------------------------------------------------------------
-    # 分支 B：台股個股 / ETF 富邦券商分點統計與日況
-    # -----------------------------------------------------------------
     def _calc_win_starts(anchor_idx: int) -> dict:
         anchor_d = trade_dates_tuple[anchor_idx]
         return {
@@ -591,6 +581,8 @@ if "confirm_clear_all" not in st.session_state:
     st.session_state.confirm_clear_all = False
 if "confirm_clear_brokers" not in st.session_state:
     st.session_state.confirm_clear_brokers = False
+if "confirm_clear_gov_brokers" not in st.session_state:
+    st.session_state.confirm_clear_gov_brokers = False
 if "confirm_clear_chip_type" not in st.session_state:
     st.session_state.confirm_clear_chip_type = ""
 if "index_select_box" not in st.session_state:
@@ -1106,8 +1098,86 @@ elif selected_main_tab == "⚙️ 參數設定":
                     st.session_state.confirm_clear_chip_type = ""
                     st.rerun()
 
+    # =====================================================================
+    # 【修訂說明 2026-11-24】【修改目的與防呆防錯原因】：
+    # 1. 修改目的：新增「加權指數／櫃買指數八大官股維護」獨立區塊，提供「八大官股增補基準日」與「往前增補交易日數」，
+    #    並並列設置「📥 批次增補八大官股交易前30個股」與「🗑️ 清除八大官股交易資料」雙功能按鈕。
+    # 2. 防呆防錯原因：二段式確認清除，僅清除 ^TWII 與 ^TWOII 八大官股紀錄並清理快取，完全保留指數日線、資券及其他個股資料。
+    # =====================================================================
     st.markdown("---")
-    st.markdown("**全市場（含上櫃及加權/櫃買八大官股）分點批次增補與維護(分點買賣超交易日況僅限最近交易日之近20日)**")
+    st.markdown("**加權指數／櫃買指數八大官股維護**")
+    default_gov_date = get_default_broker_backfill_base_date()
+    if isinstance(default_gov_date, str):
+        parsed_gov_date = datetime.strptime(default_gov_date[:10], "%Y-%m-%d").date()
+    elif hasattr(default_gov_date, "date"):
+        parsed_gov_date = default_gov_date.date()
+    else:
+        parsed_gov_date = default_gov_date
+
+    gov_base_dt = st.date_input(
+        "八大官股增補基準日（預設15:00前為前一交易日）",
+        value=parsed_gov_date,
+        key="gov_broker_backfill_base_date_input"
+    )
+    gov_days_opt = int(st.number_input(
+        "往前增補交易日數（八大官股）",
+        min_value=1,
+        max_value=365,
+        value=1,
+        step=1,
+        key="gov_broker_backfill_days_input"
+    ))
+
+    with st.container():
+        st.markdown("<div class='settings-btn-row-anchor'></div>", unsafe_allow_html=True)
+        col_gov_add, col_gov_clr = st.columns(2)
+        with col_gov_add:
+            run_gov_sync = st.button("📥 批次增補八大官股交易前30個股", key="btn_batch_sync_gov_brokers", use_container_width=True)
+        with col_gov_clr:
+            if st.button("🗑️ 清除八大官股交易資料", key="btn_batch_clear_gov_brokers", use_container_width=True):
+                st.session_state.confirm_clear_gov_brokers = True
+                st.rerun()
+
+    if run_gov_sync:
+        from data_fetcher import batch_sync_tw_index_gov_brokers
+        gov_d_str = gov_base_dt.strftime("%Y-%m-%d")
+        prog_bar = st.progress(0, text="準備檢查並增補加權／櫃買八大官股交易前30個股...")
+        status_txt = st.empty()
+
+        def _on_gov_progress(cur_i, tot_n, c_code, c_name, st_msg):
+            pct = int(cur_i / max(1, tot_n) * 100)
+            prog_bar.progress(min(100, pct), text=f"[{cur_i}/{tot_n}] {c_code} {c_name} - {st_msg}")
+            status_txt.caption(f"目前處理：{c_code} {c_name}（基準日 {gov_d_str} 往前 {gov_days_opt} 日）")
+
+        summary_gov = batch_sync_tw_index_gov_brokers(
+            base_date_str=gov_d_str,
+            lookback_days=int(gov_days_opt),
+            progress_callback=_on_gov_progress
+        )
+        prog_bar.progress(100, text="八大官股交易前30個股增補完成！")
+        status_txt.empty()
+        get_cached_broker_payload.clear()
+        st.success(summary_gov)
+
+    if st.session_state.confirm_clear_gov_brokers:
+        st.warning("⚠️ 確定要清除加權指數（^TWII）與櫃買指數（^TWOII）本地與雲端之「八大官股交易資料」嗎？（指數日線、資券及其他個股資料將完整保留）")
+        with st.container():
+            st.markdown("<div class='settings-btn-row-anchor'></div>", unsafe_allow_html=True)
+            cg_yes, cg_no = st.columns(2)
+            with cg_yes:
+                if st.button("確定清除八大官股", key="btn_confirm_clear_gov_yes", use_container_width=True):
+                    with st.spinner("正在清除加權與櫃買八大官股資料..."):
+                        res_gov_msg = clear_tw_index_gov_broker_data()
+                    st.session_state.confirm_clear_gov_brokers = False
+                    get_cached_broker_payload.clear()
+                    st.success(res_gov_msg)
+            with cg_no:
+                if st.button("取消清除", key="btn_confirm_clear_gov_no", use_container_width=True):
+                    st.session_state.confirm_clear_gov_brokers = False
+                    st.rerun()
+
+    st.markdown("---")
+    st.markdown("**全市場（含上櫃）分點批次增補與維護(分點買賣超交易日況僅限最近交易日之近20日)**")
     default_bf_date = get_default_broker_backfill_base_date()
     if isinstance(default_bf_date, str):
         parsed_bf_date = datetime.strptime(default_bf_date[:10], "%Y-%m-%d").date()
