@@ -1,7 +1,7 @@
 """
 ftch_broker.py - 富邦券商分點進出排行、逐日明細與全市場分點批次增補模組
 (自 data_fetcher.py 依邏輯職責拆分，維持既有 16:00 更新時機點對齊、最後更新日規則校準與批次增補機制)
-版本: 202611242207
+版本: 202611242330
 """
 
 import re
@@ -23,7 +23,7 @@ from storage import (
 from ftch_kline_chip import fetch_stock_daily_k
 
 MODULE_NAME = "ftch_broker"
-MODULE_VERSION = "202611242207"
+MODULE_VERSION = "202611242330"
 
 MDJ_BASE_DOMAIN = "https://fubon-ebrokerdj.fbs.com.tw"
 MDJ_HEADERS = {
@@ -34,8 +34,10 @@ MDJ_HEADERS = {
 }
 
 GOV_BROKER_PREFIXES = (
-    "合庫", "合作金庫", "土銀", "土地銀行", "台銀", "臺銀", "台灣銀行", "臺灣銀行",
-    "台企", "臺企", "台灣企銀", "臺灣企銀", "彰銀", "彰化銀行", "第一金", "兆豐", "華南永昌"
+    "合庫", "合作金庫", "土銀", "土地銀行",
+    "台銀", "臺銀", "台灣銀行", "臺灣銀行",
+    "台企", "臺企", "台灣企銀", "臺灣企銀",
+    "彰銀", "彰化銀行", "第一金", "兆豐", "華南永昌"
 )
 
 
@@ -52,8 +54,8 @@ def get_default_broker_backfill_base_date(now_dt: datetime = None) -> datetime.d
         base_d -= timedelta(days=2)
     elif now_tw.hour < 16:
         base_d -= timedelta(days=1)
-        while base_d.weekday() >= 5:
-            base_d -= timedelta(days=1)
+    while base_d.weekday() >= 5:
+        base_d -= timedelta(days=1)
     return base_d
 
 
@@ -175,7 +177,6 @@ def _extract_fubon_last_update_info(soup: BeautifulSoup, ref_end_date: str) -> t
     """依據富邦個股分點進出最後更新日解讀規則解析最後更新日與無資料提示。"""
     if soup is None:
         return "", False
-
     full_txt = re.sub(r'\s+', ' ', soup.get_text(" ", strip=True))
     has_no_data_msg = bool(re.search(r'查無.{0,24}券商分點.{0,8}進出明細', full_txt))
 
@@ -216,17 +217,14 @@ def fetch_stock_broker_range_ranking(pure_code: str, start_date: str, end_date: 
     ]
 
     buy_rows, sell_rows = [], []
-
     for url in candidate_urls:
         html = _fetch_mdj_html(url, timeout=8)
         if not html:
             continue
-
         soup = BeautifulSoup(html, "html.parser")
         last_update_iso, has_no_data_msg = _extract_fubon_last_update_info(soup, e_norm)
         if has_no_data_msg or not last_update_iso:
             continue
-
         if s_norm == e_norm:
             if last_update_iso != e_norm:
                 continue
@@ -235,12 +233,10 @@ def fetch_stock_broker_range_ranking(pure_code: str, start_date: str, end_date: 
                 continue
 
         parsed_buy, parsed_sell = [], []
-
         for tbl in soup.find_all("table"):
             txt = tbl.get_text()
             if "買超" not in txt and "賣超" not in txt:
                 continue
-
             table_mode = None
             for tr in tbl.find_all("tr"):
                 tds = tr.find_all(["td", "th"])
@@ -252,7 +248,6 @@ def fetch_stock_broker_range_ranking(pure_code: str, start_date: str, end_date: 
                     right_tds = tds[5:10]
                     left_links = [a for td in left_tds for a in td.find_all("a", href=True)]
                     right_links = [a for td in right_tds for a in td.find_all("a", href=True)]
-
                     b_rec = _parse_fubon_side_block(cells[:5], left_links, url, code, s_norm, e_norm, is_buy_side=True)
                     s_rec = _parse_fubon_side_block(cells[5:10], right_links, url, code, s_norm, e_norm, is_buy_side=False)
                     if b_rec:
@@ -271,8 +266,7 @@ def fetch_stock_broker_range_ranking(pure_code: str, start_date: str, end_date: 
                 if len(cells) >= 5 and table_mode in ("BUY", "SELL"):
                     row_links = tr.find_all("a", href=True)
                     rec = _parse_fubon_side_block(
-                        cells[:5], row_links, url, code, s_norm, e_norm,
-                        is_buy_side=(table_mode == "BUY")
+                        cells[:5], row_links, url, code, s_norm, e_norm, is_buy_side=(table_mode == "BUY")
                     )
                     if rec:
                         if table_mode == "BUY":
@@ -296,6 +290,12 @@ def fetch_stock_broker_range_ranking(pure_code: str, start_date: str, end_date: 
 
 
 def fetch_single_broker_daily_series(detail_url: str, start_date: str, end_date: str) -> pd.DataFrame:
+    """
+    【修訂說明 2026-11-24】【修改目的與防呆防錯原因】：
+    1. 修改目的：富邦單一分點歷史明細（zco0.djhtm）改以自設區間參數 `c=E&d=起始日&e=結束日` 查詢指定日期區間，
+       避免舊參數未能正確限定歷史區間之問題。
+    2. 防呆防錯原因：固定解析 5 欄結構（日期、買進、賣出、買賣總額、買賣超），第 5 欄（cells[4]）為買賣超張數。
+    """
     empty_df = pd.DataFrame(columns=["日期", "買進(張)", "賣出(張)", "買賣超(張)"])
     if not detail_url:
         return empty_df
@@ -305,8 +305,9 @@ def fetch_single_broker_daily_series(detail_url: str, start_date: str, end_date:
 
     parsed = urlparse(detail_url)
     qs = parse_qs(parsed.query)
-    qs["c"] = [s_norm]
-    qs["d"] = [e_norm]
+    qs["c"] = ["E"]
+    qs["d"] = [s_norm]
+    qs["e"] = [e_norm]
     target_url = urlunparse((parsed.scheme, parsed.netloc, parsed.path, parsed.params, urlencode(qs, doseq=True), parsed.fragment))
 
     html = _fetch_mdj_html(target_url, timeout=8)
@@ -315,7 +316,6 @@ def fetch_single_broker_daily_series(detail_url: str, start_date: str, end_date:
 
     soup = BeautifulSoup(html, "html.parser")
     daily_records = []
-
     for tr in soup.find_all("tr"):
         cells = [re.sub(r'\s+', ' ', td.get_text(strip=True)) for td in tr.find_all(["td", "th"])]
         if len(cells) != 5:
@@ -367,7 +367,12 @@ def batch_sync_all_stocks_brokers(
     lookback_days: int = 1,
     progress_callback=None
 ) -> str:
-    """專責批次增補查詢歷史清單內所有上市／上櫃個股與 ETF 的券商分點統計與日況明細。"""
+    """
+    【修訂說明 2026-11-24】【修改目的與防呆防錯原因】：
+    1. 修改目的：批次增補指定基準日往前 N 個交易日時，同步為區間內各符合更新時機點之交易日補抓近 10／20 日前 5 名買賣超分點日況，
+       讓切換至歷史關注交易日時也能顯示分點日況柱狀圖。
+    2. 防呆防錯原因：對尚未過 16:00 更新時機點之交易日僅在已取得資料時寫入，避免無效重複請求。
+    """
     hist_list = load_stock_history()
     stock_items = []
     seen_codes = set()
@@ -387,7 +392,6 @@ def batch_sync_all_stocks_brokers(
     tot_n = len(stock_items)
     n_days = max(1, int(lookback_days or 1))
     b_norm = _normalize_mdj_date(base_date_str) or str(base_date_str).strip()[:10]
-    allow_latest_day_series = is_broker_daily_data_ready_for_date(b_norm)
 
     def _df_to_rank_recs(df_rank):
         if df_rank is None or df_rank.empty:
@@ -418,15 +422,11 @@ def batch_sync_all_stocks_brokers(
             k_res = fetch_stock_daily_k(code, period="1y", force_refresh=False)
             if k_res and k_res[0] is not None:
                 df_k = k_res[0]
-
         if df_k is None or df_k.empty:
             gc.collect()
             continue
 
         trade_dates = [d.strftime("%Y-%m-%d") for d in df_k.index]
-        latest_trade_idx = len(trade_dates) - 1
-        latest_trade_date = trade_dates[latest_trade_idx]
-
         valid_pos = [i for i, d_s in enumerate(trade_dates) if d_s <= b_norm]
         if not valid_pos:
             gc.collect()
@@ -435,18 +435,34 @@ def batch_sync_all_stocks_brokers(
         anchor_pos = valid_pos[-1]
         start_pos = max(0, anchor_pos - n_days + 1)
         target_indices = list(range(anchor_pos, start_pos - 1, -1))
+        all_focus_map = storage.load_all_broker_focus_daily_series()
 
         pending_bundles = []
-        latest_rank_dfs = {}
+        wrote_focus_series = False
 
         for t_idx in target_indices:
             end_d_str = trade_dates[t_idx]
             existing_bundle = storage.load_broker_range_rank(end_d_str)
-            if isinstance(existing_bundle, dict) and all(
-                isinstance(existing_bundle.get(f"w{w}"), dict)
-                and (existing_bundle[f"w{w}"].get("buy") or existing_bundle[f"w{w}"].get("sell"))
+            has_rank_snapshot = isinstance(existing_bundle, dict) and all(
+                isinstance(existing_bundle.get(f"w{w}"), dict) and (existing_bundle[f"w{w}"].get("buy") or existing_bundle[f"w{w}"].get("sell"))
                 for w in (1, 10, 20)
-            ):
+            )
+
+            day_focus_map = all_focus_map.get(end_d_str, {})
+            w10_b = day_focus_map.get("w10", {}).get("top5_buy_series") or []
+            w10_s = day_focus_map.get("w10", {}).get("top5_sell_series") or []
+            w20_b = day_focus_map.get("w20", {}).get("top5_buy_series") or []
+            w20_s = day_focus_map.get("w20", {}).get("top5_sell_series") or []
+            day_ready = is_broker_daily_data_ready_for_date(end_d_str)
+
+            need_w10 = (not w10_b and not w10_s) or (
+                day_ready and not _series_reaches_target_date(w10_b, end_d_str) and not _series_reaches_target_date(w10_s, end_d_str)
+            )
+            need_w20 = (not w20_b and not w20_s) or (
+                day_ready and not _series_reaches_target_date(w20_b, end_d_str) and not _series_reaches_target_date(w20_s, end_d_str)
+            )
+
+            if has_rank_snapshot and not need_w10 and not need_w20:
                 skipped_days_total += 1
                 continue
 
@@ -458,7 +474,6 @@ def batch_sync_all_stocks_brokers(
                 10: trade_dates[max(0, t_idx - 10 + 1)],
                 20: trade_dates[max(0, t_idx - 20 + 1)],
             }
-
             rank_dfs = {}
             for w in (1, 10, 20):
                 df_b, df_s = fetch_stock_broker_range_ranking(code, win_starts[w], end_d_str)
@@ -467,9 +482,6 @@ def batch_sync_all_stocks_brokers(
                     df_b, df_s = fetch_stock_broker_range_ranking(code, win_starts[w], end_d_str)
                 rank_dfs[w] = (df_b, df_s)
                 time.sleep(0.08)
-
-            if end_d_str == latest_trade_date:
-                latest_rank_dfs = rank_dfs
 
             day_bundle = dict(existing_bundle) if isinstance(existing_bundle, dict) else {}
             has_any = False
@@ -488,77 +500,52 @@ def batch_sync_all_stocks_brokers(
             if has_any:
                 pending_bundles.append((end_d_str, day_bundle))
 
-        existing_focus_map = storage.load_all_broker_focus_daily_series().get(latest_trade_date, {})
-        w10_b = existing_focus_map.get("w10", {}).get("top5_buy_series") or []
-        w10_s = existing_focus_map.get("w10", {}).get("top5_sell_series") or []
-        w20_b = existing_focus_map.get("w20", {}).get("top5_buy_series") or []
-        w20_s = existing_focus_map.get("w20", {}).get("top5_sell_series") or []
-
-        need_latest_w10 = (not w10_b and not w10_s) or (
-            allow_latest_day_series
-            and not _series_reaches_target_date(w10_b, latest_trade_date)
-            and not _series_reaches_target_date(w10_s, latest_trade_date)
-        )
-        need_latest_w20 = (not w20_b and not w20_s) or (
-            allow_latest_day_series
-            and not _series_reaches_target_date(w20_b, latest_trade_date)
-            and not _series_reaches_target_date(w20_s, latest_trade_date)
-        )
-        wrote_focus_series = False
-
-        if need_latest_w10 or need_latest_w20:
-            latest_s10 = trade_dates[max(0, latest_trade_idx - 10 + 1)]
-            latest_s20 = trade_dates[max(0, latest_trade_idx - 20 + 1)]
             win_pairs = []
-            if need_latest_w10:
-                win_pairs.append((10, latest_s10))
-            if need_latest_w20:
-                win_pairs.append((20, latest_s20))
+            if need_w10:
+                win_pairs.append((10, win_starts[10]))
+            if need_w20:
+                win_pairs.append((20, win_starts[20]))
 
-            for w_num, s_start in win_pairs:
-                if w_num not in latest_rank_dfs:
-                    df_b, df_s = fetch_stock_broker_range_ranking(code, s_start, latest_trade_date)
-                    latest_rank_dfs[w_num] = (df_b, df_s)
-                    time.sleep(0.08)
-
-            broker_df_cache = {}
-            for w_num, s_start in win_pairs:
-                df_b, df_s = latest_rank_dfs.get(w_num, (None, None))
-                for side_key, df_side in (("buy", df_b), ("sell", df_s)):
-                    if df_side is None or df_side.empty:
-                        continue
-                    for rank_idx, (_, row) in enumerate(df_side.head(5).iterrows(), start=1):
-                        b_name = str(row.get("分點名稱", "")).strip()
-                        d_url = str(row.get("明細網址", "")).strip()
-                        tot_net = int(row.get("買賣超(張)", 0) or 0)
-                        if not b_name or not d_url:
+            if win_pairs:
+                earliest_w_start = min(s_st for _, s_st in win_pairs)
+                broker_df_cache = {}
+                for w_num, s_start in win_pairs:
+                    df_b, df_s = rank_dfs.get(w_num, (None, None))
+                    for side_key, df_side in (("buy", df_b), ("sell", df_s)):
+                        if df_side is None or df_side.empty:
                             continue
-                        if b_name not in broker_df_cache:
-                            if progress_callback:
-                                progress_callback(idx_s, tot_n, code, c_name, f"補抓最新交易日({latest_trade_date})分點日況：{b_name}...")
-                            df_fresh = fetch_single_broker_daily_series(d_url, latest_s20, latest_trade_date)
-                            broker_df_cache[b_name] = df_fresh
-                            if df_fresh is not None and not df_fresh.empty:
-                                storage.save_broker_daily_trades(b_name, df_fresh, sync_cloud=False)
-                            time.sleep(0.06)
-                        df_cached_b = broker_df_cache.get(b_name)
-                        if df_cached_b is not None and not df_cached_b.empty:
-                            df_win = df_cached_b[
-                                (df_cached_b["日期"] >= s_start) & (df_cached_b["日期"] <= latest_trade_date)
-                            ].copy()
-                            if not df_win.empty:
-                                storage.save_broker_focus_daily_series(
-                                    focus_date=latest_trade_date,
-                                    window_days=w_num,
-                                    side=side_key,
-                                    rank_no=rank_idx,
-                                    broker_name=b_name,
-                                    total_net=tot_net,
-                                    df_trades=df_win,
-                                    sync_cloud=False
-                                )
-                                wrote_focus_series = True
-            broker_df_cache.clear()
+                        for rank_idx, (_, row) in enumerate(df_side.head(5).iterrows(), start=1):
+                            b_name = str(row.get("分點名稱", "")).strip()
+                            d_url = str(row.get("明細網址", "")).strip()
+                            tot_net = int(row.get("買賣超(張)", 0) or 0)
+                            if not b_name or not d_url:
+                                continue
+                            if b_name not in broker_df_cache:
+                                if progress_callback:
+                                    progress_callback(idx_s, tot_n, code, c_name, f"補抓 {end_d_str} 分點日況：{b_name}...")
+                                df_fresh = fetch_single_broker_daily_series(d_url, earliest_w_start, end_d_str)
+                                broker_df_cache[b_name] = df_fresh
+                                if df_fresh is not None and not df_fresh.empty:
+                                    storage.save_broker_daily_trades(b_name, df_fresh, sync_cloud=False)
+                                time.sleep(0.06)
+                            df_cached_b = broker_df_cache.get(b_name)
+                            if df_cached_b is not None and not df_cached_b.empty:
+                                df_win = df_cached_b[
+                                    (df_cached_b["日期"] >= s_start) & (df_cached_b["日期"] <= end_d_str)
+                                ].copy()
+                                if not df_win.empty:
+                                    storage.save_broker_focus_daily_series(
+                                        focus_date=end_d_str,
+                                        window_days=w_num,
+                                        side=side_key,
+                                        rank_no=rank_idx,
+                                        broker_name=b_name,
+                                        total_net=tot_net,
+                                        df_trades=df_win,
+                                        sync_cloud=False
+                                    )
+                                    wrote_focus_series = True
+                broker_df_cache.clear()
 
         if pending_bundles or wrote_focus_series:
             for end_d_str, day_bundle in pending_bundles:
@@ -568,11 +555,11 @@ def batch_sync_all_stocks_brokers(
             updated_stocks += 1
             time.sleep(0.25)
 
-        del df_k, pending_bundles, latest_rank_dfs
+        del df_k, pending_bundles
         gc.collect()
 
     summary = (
-        f"批次分點增補完成（統計基準日 {b_norm} 往前 {n_days} 個交易日；日況明細僅限最新交易日近20日）："
+        f"批次分點增補完成（統計基準日 {b_norm} 往前 {n_days} 個交易日）："
         f"共檢查 {tot_n} 檔個股，實際補齊 {updated_stocks} 檔（新增 {updated_days_total} 筆交易日統計快照），"
         f"略過已存在完整快照 {skipped_days_total} 筆。"
     )
