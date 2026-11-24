@@ -1,7 +1,7 @@
 """
 data_fetcher.py - 整合技術與籌碼資料擷取模組
-(支援含英文後綴台股ETF + TWSE/TPEx官方日K即時補齊 + 大盤加權^TWII與櫃買^TWOII資券與融資金額(億)擷取 + 大盤加權^TWII與櫃買^TWOII八大官股個股前30買賣超(萬元)明細擷取與區間買賣超前50大個股統計及單一個股8家官股行庫逐日買賣超日況引擎 + 雲端增量累積分點引擎 + 集保官網qryStock動態Token多週歷史查詢與id=1-5批次分離含真實股數儲存 + 賣超負值正規化 + 操作儀錶板盤中報價版 + 富邦10欄並排表格與精準單日分點統計/明細5欄修正版 + 全市場歷史分點統計追滿N日但日況明細僅抓最新交易日近20日並綁定關注日版 + 全市含上櫃資券/法人/大戶指定基準日區間批次增補引擎版 + 批次增補記憶體主動回收與雲端同步節流防OOM自動Reboot版 + 純Python原生字典彙總八大官股前50名與8行庫序列徹底消除AttributeError版 + 分點16:00時機點對齊與w20最新交易日缺漏自動補抓第20根版 + 富邦分點網頁實際日期嚴格校準防跨日錯存及八大官股前景同步推送防遺失版)
-版本: 202611241435
+(支援含英文後綴台股ETF + TWSE/TPEx官方日K即時補齊 + 大盤加權^TWII與櫃買^TWOII資券與融資金額(億)擷取 + 大盤加權^TWII與櫃買^TWOII八大官股個股前30買賣超(萬元)明細擷取與區間買賣超前50大個股統計及單一個股8家官股行庫逐日買賣超日況引擎 + 雲端增量累積分點引擎 + 集保官網qryStock動態Token多週歷史查詢與id=1-5批次分離含真實股數儲存 + 賣超負值正規化 + 操作儀錶板盤中報價版 + 富邦10欄並排表格與精準單日分點統計/明細5欄修正版 + 全市場歷史分點統計追滿N日但日況明細僅抓最新交易日近20日並綁定關注日版 + 全市含上櫃資券/法人/大戶指定基準日區間批次增補引擎版 + 批次增補記憶體主動回收與雲端同步節流防OOM自動Reboot版 + 純Python原生字典彙總八大官股前50名與8行庫序列徹底消除AttributeError版 + 分點16:00時機點對齊與w20最新交易日缺漏自動補抓第20根版 + 富邦分點最後更新日規則校準與查無明細防呆版)
+版本: 202611242056
 """
 import os
 import io
@@ -19,7 +19,7 @@ from datetime import datetime, timedelta
 from urllib.parse import urljoin, urlparse, parse_qs, urlencode, urlunparse
 
 MODULE_NAME = "data_fetcher"
-MODULE_VERSION = "202611241435"
+MODULE_VERSION = "202611242056"
 
 # 【修訂說明 2026-11-24】【修改目的與防呆防錯原因】：
 # 修改目的：匯入 _do_sync_db_push 供八大官股批次增補完成後執行前景同步推送至 Google Drive。
@@ -1622,63 +1622,56 @@ def _parse_fubon_side_block(cells, a_tags, page_url: str, stock_code: str, start
     }
 
 
-def _extract_fubon_page_date_range(soup: BeautifulSoup) -> tuple:
+def _extract_fubon_last_update_info(soup: BeautifulSoup, ref_end_date: str) -> tuple:
     """
     【修訂說明 2026-11-24】【修改目的與防呆防錯原因】：
-    1. 修改目的：嚴格解析富邦 `zco.djhtm` 頁面標題、表頭與輸入框（input value）內嵌之實際資料起迄日期
-       （支援西元年 `2026/11/23 ~ 2026/11/23` 與民國年 `115/11/23 ~ 115/11/23`），回傳 `(page_start_iso, page_end_iso)`。
+    1. 修改目的：依據「富邦個股分點進出最後更新日解讀規則」，解析 `zco.djhtm` 網頁右上方標示的
+       「最後更新日」（代表查詢區間內實際有資料的最近交易日，支援 `2026/11/23` 與 `11/23` 兩種格式），
+       並偵測頁面是否明確顯示「查無...券商分點-進出明細」，回傳 `(last_update_iso, has_no_data_msg)`。
     2. 防呆防錯原因：
-       - 若網頁回傳內容不含任何有效起迄日期標示，直接回傳 `("", "")`，由上層 `fetch_stock_broker_range_ranking` 拒絕存檔，
-         徹底杜絕未校準資料源日期就以查詢日存檔之跨日污染。
+       - 若網頁明確顯示「查無...券商分點-進出明細」，直接標記 `has_no_data_msg=True`，供上層拒絕寫入；
+       - 當「最後更新日」僅顯示 `MM/DD`（如 `11/24`）時，依 `ref_end_date` 推算正確年份（含跨年 1 月對 12 月修正）。
     """
     if soup is None:
-        return "", ""
+        return "", False
 
     full_txt = re.sub(r'\s+', ' ', soup.get_text(" ", strip=True))
-    m_rng = re.search(
-        r'(?:資料日期|統計期間|查詢區間|日期)[：:\s]*(\d{3,4}[/-]\d{1,2}[/-]\d{1,2})\s*[~～\-至]\s*(\d{3,4}[/-]\d{1,2}[/-]\d{1,2})',
-        full_txt
-    )
-    if m_rng:
-        return _normalize_mdj_date(m_rng.group(1)), _normalize_mdj_date(m_rng.group(2))
+    has_no_data_msg = bool(re.search(r'查無.{0,24}券商分點.{0,8}進出明細', full_txt))
 
-    m_single = re.search(r'(?:資料日期|統計日期|日期)[：:\s]*(\d{3,4}[/-]\d{1,2}[/-]\d{1,2})', full_txt)
-    if m_single:
-        d_iso = _normalize_mdj_date(m_single.group(1))
-        return d_iso, d_iso
+    ref_year = datetime.now().year
+    ref_month = datetime.now().month
+    if ref_end_date and len(ref_end_date) >= 7 and ref_end_date[:4].isdigit():
+        ref_year = int(ref_end_date[:4])
+        if ref_end_date[5:7].isdigit():
+            ref_month = int(ref_end_date[5:7])
 
-    for tag in soup.find_all(["td", "th", "div", "span", "caption", "p", "b", "font"]):
-        t_str = re.sub(r'\s+', ' ', tag.get_text(" ", strip=True))
-        if len(t_str) > 100:
-            continue
-        m_t = re.search(r'(\d{3,4}[/-]\d{1,2}[/-]\d{1,2})\s*[~～\-至]\s*(\d{3,4}[/-]\d{1,2}[/-]\d{1,2})', t_str)
-        if m_t:
-            return _normalize_mdj_date(m_t.group(1)), _normalize_mdj_date(m_t.group(2))
+    last_update_iso = ""
+    m_ymd = re.search(r'最後更新日[：:\s]*(\d{3,4})[/-](\d{1,2})[/-](\d{1,2})', full_txt)
+    if m_ymd:
+        last_update_iso = _normalize_mdj_date(f"{m_ymd.group(1)}/{m_ymd.group(2)}/{m_ymd.group(3)}")
+    else:
+        m_md = re.search(r'最後更新日[：:\s]*(\d{1,2})[/-](\d{1,2})', full_txt)
+        if m_md:
+            mo_n = int(m_md.group(1))
+            da_n = int(m_md.group(2))
+            yr_n = ref_year - 1 if (ref_month == 1 and mo_n == 12) else ref_year
+            last_update_iso = f"{yr_n:04d}-{mo_n:02d}-{da_n:02d}"
 
-    # 檢查頁面隱藏/顯示日期輸入框（如 name="e" / "f" 或 "c" / "d"）
-    inp_dates = {}
-    for inp in soup.find_all("input"):
-        nm = str(inp.get("name", "") or "").strip().lower()
-        val = _normalize_mdj_date(inp.get("value", ""))
-        if nm in ("c", "d", "e", "f") and val:
-            inp_dates[nm] = val
-    if "e" in inp_dates and "f" in inp_dates:
-        return inp_dates["e"], inp_dates["f"]
-    if "c" in inp_dates and "d" in inp_dates:
-        return inp_dates["c"], inp_dates["d"]
-
-    return "", ""
+    return last_update_iso, has_no_data_msg
 
 
 def fetch_stock_broker_range_ranking(pure_code: str, start_date: str, end_date: str):
     """
     【修訂說明 2026-11-24】【修改目的與防呆防錯原因】：
     1. 修改目的：查詢富邦 `zco.djhtm` 指定區間 `[start_date, end_date]` 之買超與賣超排行前 15 名，
-       嚴格透過 `_extract_fubon_page_date_range(soup)` 校準網頁回傳實際標示起迄日期 `(page_start_d, page_end_d)`。
+       並依據「富邦個股分點進出最後更新日解讀規則」驗證頁面回傳有效性：
+       - 若頁面提示「查無...券商分點-進出明細」，立即捨棄不存檔；
+       - 若為單日查詢（`s_norm == e_norm`）：要求 `last_update_iso == e_norm` 才接受（杜絕未公布當日時誤存前一日數據）；
+       - 若為區間查詢（`s_norm < e_norm`）：要求 `s_norm <= last_update_iso <= e_norm` 才接受（當區間尾日尚無資料時，
+         富邦最後更新日會落在區間內實際有資料的最近交易日，仍屬有效區間統計）。
     2. 防呆防錯原因：
-       - 若網頁無法解析出明確日期（`not page_end_d`），或回傳截止日不等於目標日（`page_end_d != e_norm`），
-         或單日查詢時起始日不等於目標日（`s_norm == e_norm and page_start_d != s_norm`），立即捨棄該回應，絕不以查詢日臆測存檔；
-       - 移除不帶日期參數的預設首頁備援網址 `zco_{code}.djhtm`，防止富邦網站自動帶入前一交易日造成跨日錯存。
+       - 同時支援 `e/f` 與 `c/d` 兩組富邦查詢區間參數，移除無日期參數預設首頁網址，確保不會誤抓未指定區間之預設快照；
+       - 當 `last_update_iso` 為空（網頁異常或非預期頁面）時一律捨棄，絕不以查詢日臆測寫入。
     """
     code = str(pure_code or "").strip().upper()
     if not code or code.startswith("^") or not is_tw_stock_or_etf(code):
@@ -1700,11 +1693,16 @@ def fetch_stock_broker_range_ranking(pure_code: str, start_date: str, end_date: 
             continue
 
         soup = BeautifulSoup(html, "html.parser")
-        page_start_d, page_end_d = _extract_fubon_page_date_range(soup)
-        if not page_end_d or page_end_d != e_norm:
+        last_update_iso, has_no_data_msg = _extract_fubon_last_update_info(soup, e_norm)
+        if has_no_data_msg or not last_update_iso:
             continue
-        if s_norm == e_norm and (not page_start_d or page_start_d != s_norm):
-            continue
+
+        if s_norm == e_norm:
+            if last_update_iso != e_norm:
+                continue
+        else:
+            if not (s_norm <= last_update_iso <= e_norm):
+                continue
 
         parsed_buy, parsed_sell = [], []
 
