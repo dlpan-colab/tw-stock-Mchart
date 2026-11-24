@@ -1,7 +1,7 @@
 """
 storage.py - 本地 SQLite 資料庫與股票歷史紀錄管理器
-(支援含英文後綴台股ETF與雲端分點增量累積與批次清除分點含加權^TWII及櫃買^TWOII八大官股與大盤融資金額欄位向後相容與多日歷史分點統計全載入及分點統計/日況舊表自動遷移與全市籌碼指定基準日區間清除防呆與集保每週真實總股數動態加總及集保舊表補欄防呆及關注交易日專屬分點日況序列綁定與大盤/櫃買八大官股個股明細及前50名排行榜版)
-版本: 202611240705
+(支援含英文後綴台股ETF與雲端分點增量累積與批次清除分點含加權^TWII及櫃買^TWOII八大官股與大盤融資金額欄位向後相容與多日歷史分點統計全載入及分點統計/日況舊表自動遷移與全市籌碼指定基準日區間清除防呆與集保每週真實總股數動態加總及集保舊表補欄防呆及關注交易日專屬分點日況序列綁定與大盤/櫃買八大官股個股明細及前50名排行榜及指定基準日區間分點精準清除版)
+版本: 202611241435
 """
 
 import os
@@ -18,7 +18,7 @@ from datetime import datetime, timedelta
 import pandas as pd
 
 MODULE_NAME = "storage"
-MODULE_VERSION = "202611240705"
+MODULE_VERSION = "202611241435"
 
 STORAGE_DIR = "."
 HISTORY_FILE = os.path.join(STORAGE_DIR, "stock_history.json")
@@ -535,6 +535,77 @@ def clear_all_stocks_chip_range(chip_type: str, base_date_str: str, lookback_day
     return (
         f"已完成清除基準日 {b_norm} 往前 {n_days} 個交易日區間之{label_zh}："
         f"共更新 {cleared_stocks} 檔個股（刪除 {deleted_rows_total} 筆紀錄，區間外歷史資料及其他籌碼完整保留）。"
+    )
+
+
+def clear_all_stocks_broker_range(base_date_str: str, lookback_days: int = 1) -> str:
+    """
+    【修訂說明 2026-11-24】【修改目的與防呆防錯原因】：
+    1. 修改目的：供「⚙️ 參數設定 → 全市場（含上櫃）分點批次增補與維護」之「🧹 清除指定期間分點」按鈕呼叫，
+       依「增補基準日（base_date_str）」往前推算「往前增補交易日數（lookback_days）」個交易日區間，
+       精準清除所有上市／上櫃個股與 ETF 在該交易日區間內之分點統計（broker_range_rank）、
+       分點逐日明細（broker_daily_trades）與關注交易日專屬分點日況序列（broker_focus_daily_series），並前景同步至雲端。
+    2. 防呆防錯原因：
+       - 優先依各個股 daily_k 交易日序列精準定位往前 lookback_days 個交易日之起始日 start_date_str；
+       - 僅刪除 [start_date_str, b_norm] 區間內之分點資料，完全保留區間外累積之歷史分點資料、加權/櫃買八大官股資料以及日線/法人/資券/大戶資料。
+    """
+    b_norm = str(base_date_str or "").strip()[:10]
+    n_days = max(1, int(lookback_days or 1))
+    try:
+        base_dt = datetime.strptime(b_norm, "%Y-%m-%d")
+    except Exception:
+        base_dt = datetime.now()
+        b_norm = base_dt.strftime("%Y-%m-%d")
+
+    fallback_start_str = (base_dt - timedelta(days=max(n_days * 2, n_days + 4))).strftime("%Y-%m-%d")
+
+    all_codes = _collect_all_stock_codes_local_and_cloud()
+    if not all_codes:
+        return "目前無任何已收集之上市／上櫃個股資料庫。"
+
+    cleared_stocks = 0
+    deleted_rows_total = 0
+    for pure_code in all_codes:
+        db_path = os.path.join(STORAGE_DIR, f"data_{pure_code}.db")
+        if not os.path.exists(db_path) or os.path.getsize(db_path) == 0:
+            _do_sync_db_pull(pure_code)
+        if not os.path.exists(db_path) or os.path.getsize(db_path) == 0:
+            continue
+        try:
+            with sqlite3.connect(db_path) as conn:
+                cur = conn.cursor()
+                k_rows = cur.execute(
+                    "SELECT date FROM daily_k WHERE date <= ? ORDER BY date DESC LIMIT ?",
+                    (b_norm, n_days)
+                ).fetchall()
+                if k_rows:
+                    start_date_str = str(k_rows[-1][0])[:10]
+                else:
+                    start_date_str = fallback_start_str
+
+                affected_stk = 0
+                for sql_del in (
+                    "DELETE FROM broker_range_rank WHERE range_date >= ? AND range_date <= ?",
+                    "DELETE FROM broker_daily_trades WHERE trade_date >= ? AND trade_date <= ?",
+                    "DELETE FROM broker_focus_daily_series WHERE focus_date >= ? AND focus_date <= ?",
+                ):
+                    try:
+                        cur.execute(sql_del, (start_date_str, b_norm))
+                        if cur.rowcount and cur.rowcount > 0:
+                            affected_stk += cur.rowcount
+                    except Exception:
+                        pass
+                conn.commit()
+            if affected_stk > 0:
+                _do_sync_db_push(pure_code)
+                cleared_stocks += 1
+                deleted_rows_total += affected_stk
+        except Exception as e:
+            print(f"[Storage] 清除 {pure_code} 指定期間分點失敗: {e}")
+
+    return (
+        f"已完成清除基準日 {b_norm} 往前 {n_days} 個交易日區間之分點資料："
+        f"共更新 {cleared_stocks} 檔個股（刪除 {deleted_rows_total} 筆紀錄，區間外歷史分點及其他籌碼完整保留）。"
     )
 
 
