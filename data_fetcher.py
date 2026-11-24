@@ -1,7 +1,7 @@
 """
 data_fetcher.py - 整合技術與籌碼資料擷取模組
-(支援含英文後綴台股ETF + TWSE/TPEx官方日K即時補齊 + 大盤加權^TWII與櫃買^TWOII資券與融資金額(億)擷取 + 大盤加權^TWII與櫃買^TWOII八大官股個股前30買賣超(萬元)明細擷取與區間買賣超前50大個股統計及單一個股8家官股行庫逐日買賣超日況引擎 + 雲端增量累積分點引擎 + 集保官網qryStock動態Token多週歷史查詢與id=1-5批次分離含真實股數儲存 + 賣超負值正規化 + 操作儀錶板盤中報價版 + 富邦10欄並排表格與精準單日分點統計/明細5欄修正版 + 全市場歷史分點統計追滿N日但日況明細僅抓最新交易日近20日並綁定關注日版 + 全市含上櫃資券/法人/大戶指定基準日區間批次增補引擎版 + 批次增補記憶體主動回收與雲端同步節流防OOM自動Reboot版 + 純Python原生字典彙總八大官股前50名與8行庫序列徹底消除AttributeError版 + 分點16:00時機點對齊與w20最新交易日缺漏自動補抓第20根版 + 富邦分點網頁實際日期驗證防跨日錯存及八大官股前景同步推送防遺失版)
-版本: 202611241315
+(支援含英文後綴台股ETF + TWSE/TPEx官方日K即時補齊 + 大盤加權^TWII與櫃買^TWOII資券與融資金額(億)擷取 + 大盤加權^TWII與櫃買^TWOII八大官股個股前30買賣超(萬元)明細擷取與區間買賣超前50大個股統計及單一個股8家官股行庫逐日買賣超日況引擎 + 雲端增量累積分點引擎 + 集保官網qryStock動態Token多週歷史查詢與id=1-5批次分離含真實股數儲存 + 賣超負值正規化 + 操作儀錶板盤中報價版 + 富邦10欄並排表格與精準單日分點統計/明細5欄修正版 + 全市場歷史分點統計追滿N日但日況明細僅抓最新交易日近20日並綁定關注日版 + 全市含上櫃資券/法人/大戶指定基準日區間批次增補引擎版 + 批次增補記憶體主動回收與雲端同步節流防OOM自動Reboot版 + 純Python原生字典彙總八大官股前50名與8行庫序列徹底消除AttributeError版 + 分點16:00時機點對齊與w20最新交易日缺漏自動補抓第20根版 + 富邦分點網頁實際日期嚴格校準防跨日錯存及八大官股前景同步推送防遺失版)
+版本: 202611241435
 """
 import os
 import io
@@ -19,7 +19,7 @@ from datetime import datetime, timedelta
 from urllib.parse import urljoin, urlparse, parse_qs, urlencode, urlunparse
 
 MODULE_NAME = "data_fetcher"
-MODULE_VERSION = "202611241315"
+MODULE_VERSION = "202611241435"
 
 # 【修訂說明 2026-11-24】【修改目的與防呆防錯原因】：
 # 修改目的：匯入 _do_sync_db_push 供八大官股批次增補完成後執行前景同步推送至 Google Drive。
@@ -1625,33 +1625,47 @@ def _parse_fubon_side_block(cells, a_tags, page_url: str, stock_code: str, start
 def _extract_fubon_page_date_range(soup: BeautifulSoup) -> tuple:
     """
     【修訂說明 2026-11-24】【修改目的與防呆防錯原因】：
-    1. 修改目的：解析富邦 `zco.djhtm` 頁面標題與表頭內嵌之實際資料區間起迄日（如 `資料日期：2026/11/20 ~ 2026/11/20` 或 `115/11/20 ~ 115/11/20`），
-       回傳 `(page_start_iso, page_end_iso)`。
-    2. 防呆防錯原因：當富邦網頁因日期參數無效或當日尚未公布而自動回傳最新已公布交易日（如 11/20）資料時，
-       可比對 `page_end_iso` 與目標 `end_date`，避免將 11/20 數據錯存為 11/23 快照（根治問題 2）。
+    1. 修改目的：嚴格解析富邦 `zco.djhtm` 頁面標題、表頭與輸入框（input value）內嵌之實際資料起迄日期
+       （支援西元年 `2026/11/23 ~ 2026/11/23` 與民國年 `115/11/23 ~ 115/11/23`），回傳 `(page_start_iso, page_end_iso)`。
+    2. 防呆防錯原因：
+       - 若網頁回傳內容不含任何有效起迄日期標示，直接回傳 `("", "")`，由上層 `fetch_stock_broker_range_ranking` 拒絕存檔，
+         徹底杜絕未校準資料源日期就以查詢日存檔之跨日污染。
     """
     if soup is None:
         return "", ""
+
     full_txt = re.sub(r'\s+', ' ', soup.get_text(" ", strip=True))
     m_rng = re.search(
-        r'(?:資料日期|統計期間|日期)[：:\s]*(\d{3,4}[/-]\d{1,2}[/-]\d{1,2})\s*[~～\-至]\s*(\d{3,4}[/-]\d{1,2}[/-]\d{1,2})',
+        r'(?:資料日期|統計期間|查詢區間|日期)[：:\s]*(\d{3,4}[/-]\d{1,2}[/-]\d{1,2})\s*[~～\-至]\s*(\d{3,4}[/-]\d{1,2}[/-]\d{1,2})',
         full_txt
     )
     if m_rng:
         return _normalize_mdj_date(m_rng.group(1)), _normalize_mdj_date(m_rng.group(2))
 
-    m_single = re.search(r'(?:資料日期|日期)[：:\s]*(\d{3,4}[/-]\d{1,2}[/-]\d{1,2})', full_txt)
+    m_single = re.search(r'(?:資料日期|統計日期|日期)[：:\s]*(\d{3,4}[/-]\d{1,2}[/-]\d{1,2})', full_txt)
     if m_single:
         d_iso = _normalize_mdj_date(m_single.group(1))
         return d_iso, d_iso
 
-    for tag in soup.find_all(["td", "th", "div", "span", "caption"]):
+    for tag in soup.find_all(["td", "th", "div", "span", "caption", "p", "b", "font"]):
         t_str = re.sub(r'\s+', ' ', tag.get_text(" ", strip=True))
-        if len(t_str) > 80:
+        if len(t_str) > 100:
             continue
         m_t = re.search(r'(\d{3,4}[/-]\d{1,2}[/-]\d{1,2})\s*[~～\-至]\s*(\d{3,4}[/-]\d{1,2}[/-]\d{1,2})', t_str)
         if m_t:
             return _normalize_mdj_date(m_t.group(1)), _normalize_mdj_date(m_t.group(2))
+
+    # 檢查頁面隱藏/顯示日期輸入框（如 name="e" / "f" 或 "c" / "d"）
+    inp_dates = {}
+    for inp in soup.find_all("input"):
+        nm = str(inp.get("name", "") or "").strip().lower()
+        val = _normalize_mdj_date(inp.get("value", ""))
+        if nm in ("c", "d", "e", "f") and val:
+            inp_dates[nm] = val
+    if "e" in inp_dates and "f" in inp_dates:
+        return inp_dates["e"], inp_dates["f"]
+    if "c" in inp_dates and "d" in inp_dates:
+        return inp_dates["c"], inp_dates["d"]
 
     return "", ""
 
@@ -1659,12 +1673,12 @@ def _extract_fubon_page_date_range(soup: BeautifulSoup) -> tuple:
 def fetch_stock_broker_range_ranking(pure_code: str, start_date: str, end_date: str):
     """
     【修訂說明 2026-11-24】【修改目的與防呆防錯原因】：
-    1. 修改目的：查詢富邦 `zco.djhtm` 指定區間 `[start_date, end_date]` 之買超與賣超排行前 15 名；
-       新增 `_extract_fubon_page_date_range(soup)` 驗證網頁實際回傳之截止日期 `page_end_d`。
+    1. 修改目的：查詢富邦 `zco.djhtm` 指定區間 `[start_date, end_date]` 之買超與賣超排行前 15 名，
+       嚴格透過 `_extract_fubon_page_date_range(soup)` 校準網頁回傳實際標示起迄日期 `(page_start_d, page_end_d)`。
     2. 防呆防錯原因：
-       - 單日查詢（`s_norm == e_norm`）或區間查詢若富邦網頁未帶出日期參數而回傳預設最新交易日（`page_end_d != e_norm`），
-         立即捨棄該回應並嘗試下一組備援網址；若所有候補網址皆無法回傳 `e_norm` 當日資料，回傳空 DataFrame 而不錯存他日數據。
-       - 排除無日期參數之備援網址 `zco_{code}.djhtm` 在單日查詢時的跨日污染。
+       - 若網頁無法解析出明確日期（`not page_end_d`），或回傳截止日不等於目標日（`page_end_d != e_norm`），
+         或單日查詢時起始日不等於目標日（`s_norm == e_norm and page_start_d != s_norm`），立即捨棄該回應，絕不以查詢日臆測存檔；
+       - 移除不帶日期參數的預設首頁備援網址 `zco_{code}.djhtm`，防止富邦網站自動帶入前一交易日造成跨日錯存。
     """
     code = str(pure_code or "").strip().upper()
     if not code or code.startswith("^") or not is_tw_stock_or_etf(code):
@@ -1677,8 +1691,6 @@ def fetch_stock_broker_range_ranking(pure_code: str, start_date: str, end_date: 
         f"{MDJ_BASE_DOMAIN}/z/zc/zco/zco.djhtm?a={code}&e={s_norm}&f={e_norm}",
         f"{MDJ_BASE_DOMAIN}/z/zc/zco/zco.djhtm?a={code}&c={s_norm}&d={e_norm}",
     ]
-    if s_norm != e_norm:
-        candidate_urls.append(f"{MDJ_BASE_DOMAIN}/z/zc/zco/zco_{code}.djhtm")
 
     buy_rows, sell_rows = [], []
 
@@ -1689,9 +1701,9 @@ def fetch_stock_broker_range_ranking(pure_code: str, start_date: str, end_date: 
 
         soup = BeautifulSoup(html, "html.parser")
         page_start_d, page_end_d = _extract_fubon_page_date_range(soup)
-        if page_end_d and e_norm and page_end_d != e_norm:
+        if not page_end_d or page_end_d != e_norm:
             continue
-        if s_norm == e_norm and page_start_d and page_start_d != s_norm:
+        if s_norm == e_norm and (not page_start_d or page_start_d != s_norm):
             continue
 
         parsed_buy, parsed_sell = [], []
