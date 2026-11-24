@@ -1,7 +1,7 @@
 """
 app.py - 主應用程式介面與生命週期控制
-(三主頁籤架構：操作儀錶板 / 個股 / 參數設定 + 自選與查詢歷史同步 + 盤中均線多空燈號 + 動態chart_id杜絕跨頁籤殘留 + 批次增補指定基準日起往前N日分點統計與明細版 + 分點16:00前對齊前一交易日與分點統計/分點日況雙頁籤版 + 上下雙複合選單自由輸入置頂/下拉選取不改順序及初始K線30根 + 全市含上櫃籌碼指定基準日區間標題與雙鍵並列 + 大戶15週與全市場含上櫃標題及底部目前關注目標列版 + 關注交易日專屬分點日況隔離與增補分點標註僅限最近交易日之近20日版 + 修正主圖高度解包錯位並對齊成交量Y軸0刻度完整顯示版 + 手機窄螢幕個股導覽列與參數設定雙功能鍵強制同列並排版 + 加權^TWII與櫃買^TWOII八大官股個股前50名分點統計與單一個股8家官股行庫逐日買賣超日況及獨立增補清除維護版 + 明確傳遞is_gov_index與pure_code徹底根治個股誤判八大官股無日況版 + w20最新交易日缺漏第20根自動補抓並對齊16:00更新時機點版 + 批次增補八大官股後自動回填各歷史交易日快取包支援十字線跨日切換版)
-版本: 202611241410
+(三主頁籤架構：操作儀錶板 / 個股 / 參數設定 + 自選與查詢歷史同步 + 盤中均線多空燈號 + 動態chart_id杜絕跨頁籤殘留 + 批次增補指定基準日起往前N日分點統計與明細版 + 分點16:00前對齊前一交易日與分點統計/分點日況雙頁籤版 + 上下雙複合選單自由輸入置頂/下拉選取不改順序及初始K線30根 + 全市含上櫃籌碼指定基準日區間標題與雙鍵並列 + 大戶15週與全市場含上櫃標題及底部目前關注目標列版 + 關注交易日專屬分點日況隔離與增補分點標註僅限最近交易日之近20日版 + 修正主圖高度解包錯位並對齊成交量Y軸0刻度完整顯示版 + 手機窄螢幕個股導覽列與參數設定多功能鍵強制同列並排版 + 加權^TWII與櫃買^TWOII八大官股個股前50名分點統計與單一個股8家官股行庫逐日買賣超日況及獨立增補清除維護版 + 明確傳遞is_gov_index與pure_code徹底根治個股誤判八大官股無日況版 + w20最新交易日缺漏第20根自動補抓並對齊16:00更新時機點版 + 批次增補八大官股後自動回填各歷史交易日快取包支援十字線跨日切換及新增清除指定期間分點三鍵並列版)
+版本: 202611241435
 """
 
 import os
@@ -13,7 +13,7 @@ import streamlit.components.v1 as components
 import cloud_sync
 
 MODULE_NAME = "app"
-MODULE_VERSION = "202611241410"
+MODULE_VERSION = "202611241435"
 
 
 # 【防呆防錯備註 2026-11-07】：版本控制權由 app.py 作為唯一權威源，動態掃描所有模組最大版本號，杜絕多頭覆寫與重工
@@ -51,6 +51,7 @@ from storage import (
     clear_recent_margin_data,
     clear_recent_institutional_data,
     clear_all_stocks_chip_range,
+    clear_all_stocks_broker_range,
     clear_all_broker_data,
     clear_tw_index_gov_broker_data,
     is_tw_stock_or_etf,
@@ -155,13 +156,13 @@ def get_cached_broker_payload(
     【修訂說明 2026-11-24】【修改目的與防呆防錯原因】：
     1. 修改目的：
        - 大盤加權（^TWII）與櫃買（^TWOII）分支（分支 A）：
-         自本地 SQLite `gov_index_stock_daily` 讀取已增補的所有歷史交易日八大官股明細，針對每個已存在八大官股資料的交易日（最近 20 個交易日區間內），
+         自本地 SQLite `gov_index_stock_daily` 讀取已增補的所有歷史交易日八大官股明細，針對每個已存在八大官股資料的交易日（最近 25 個交易日區間內），
          以純本地記憶體計算組裝 `by_date_map[d_str]`（含 w1 / w10 / w20 / w60 前50名買賣超個股與8家官股行庫序列），
-         讓使用者在 K 線圖左右滑動十字線切換關注交易日（如 2026-11-23、2026-11-20）時，「分點統計」與「分點日況」可即時顯示該交易日之八大官股數據；
+         讓使用者在 K 線圖左右滑動十字線切換關注交易日時，「分點統計」與「分點日況」可即時顯示該交易日之八大官股數據；
        - 台股個股/ETF 分支（分支 B）：完整保留原富邦券商分點統計與日況檢核邏輯。
     2. 防呆防錯原因：
-       - 歷史交易日組裝僅針對 `gov_index_stock_daily` 資料庫中**已存在紀錄的日期**進行純本地聚合（不對歷史日發起外部 HTTP 請求），僅當 `end_date_str`（當日）缺漏且符合公布時機時才向 HiStock 補抓單日；
-       - 避免 `batch_sync_tw_index_gov_brokers` 僅寫入 `gov_index_stock_daily` 而未回填 `broker_range_rank` 時，前端切到前幾日顯示「尚無資料」。
+       - 歷史交易日組裝僅針對 `gov_index_stock_daily` 資料庫中已存在紀錄的日期進行純本地聚合（不對歷史日發起外部 HTTP 請求）；
+       - 若關注交易日為今日且未滿 16:00，避免在富邦尚未公布當日分點明細前反覆觸發無效重抓。
     """
     code = str(stock_id).strip().upper()
     is_gov_idx = is_tw_index_with_gov_brokers(code)
@@ -186,7 +187,6 @@ def get_cached_broker_payload(
             if hist_date_str != end_date_str and not force_refresh:
                 by_date_map[hist_date_str] = dict(hist_bundle)
 
-        # 查詢最近 30 個交易日內於 gov_index_stock_daily 已有資料之交易日，確保十字線滑動至歷史日（如 11/23、11/20）皆有完整統計與日況
         lookback_start_idx = max(0, safe_idx - 25)
         lookback_start_str = str(trade_dates_tuple[lookback_start_idx])[:10]
         df_gov_avail = storage.load_gov_index_stock_daily_range(lookback_start_str, end_date_str)
@@ -506,9 +506,9 @@ st.markdown("""
         white-space: nowrap !important;
     }
 
-    /* 【修訂說明 2026-11-22】【修改目的與防呆防錯原因】：
-       修改目的：強制「⚙️ 參數設定」頁籤內所有「批次增補 / 清除」雙按鈕列在手機窄螢幕（<640px）保持同列水平並排；
-       防呆防錯原因：以 .settings-btn-row-anchor 錨點限定作用於並排功能鍵列，不影響全寬表單元件。 */
+    /* 【修訂說明 2026-11-24】【修改目的與防呆防錯原因】：
+       修改目的：強制「⚙️ 參數設定」頁籤內所有「批次增補 / 清除指定期間 / 清除」多功能按鈕列在手機窄螢幕（<640px）保持同列水平並排；
+       防呆防錯原因：以 flex: 1 1 0 均分 2 鍵或 3 鍵並排寬度，不影響全寬表單元件。 */
     div[data-testid="stVerticalBlock"]:has(.settings-btn-row-anchor) [data-testid="stHorizontalBlock"] {
         display: flex !important;
         flex-direction: row !important;
@@ -520,15 +520,15 @@ st.markdown("""
     div[data-testid="stVerticalBlock"]:has(.settings-btn-row-anchor) [data-testid="stHorizontalBlock"] > [data-testid="stColumn"],
     div[data-testid="stVerticalBlock"]:has(.settings-btn-row-anchor) [data-testid="stHorizontalBlock"] > div {
         flex: 1 1 0 !important;
-        width: 50% !important;
+        width: auto !important;
         min-width: 0 !important;
-        max-width: 50% !important;
+        max-width: none !important;
     }
     div[data-testid="stVerticalBlock"]:has(.settings-btn-row-anchor) [data-testid="stHorizontalBlock"] button {
         width: 100% !important;
         min-width: 0 !important;
         padding: 5px 4px !important;
-        font-size: 12px !important;
+        font-size: 11.5px !important;
         white-space: nowrap !important;
         overflow: hidden !important;
         text-overflow: ellipsis !important;
@@ -625,6 +625,8 @@ if "confirm_clear_all" not in st.session_state:
     st.session_state.confirm_clear_all = False
 if "confirm_clear_brokers" not in st.session_state:
     st.session_state.confirm_clear_brokers = False
+if "confirm_clear_brokers_range" not in st.session_state:
+    st.session_state.confirm_clear_brokers_range = False
 if "confirm_clear_gov_brokers" not in st.session_state:
     st.session_state.confirm_clear_gov_brokers = False
 if "confirm_clear_chip_type" not in st.session_state:
@@ -1216,6 +1218,12 @@ elif selected_main_tab == "⚙️ 參數設定":
                     st.session_state.confirm_clear_gov_brokers = False
                     st.rerun()
 
+    # =====================================================================
+    # 【修訂說明 2026-11-24】【修改目的與防呆防錯原因】：
+    # 1. 修改目的：在「📥 批次增補歷史分點（統計與明細）」與「🗑️ 清除所有分點資料」中間新增「🧹 清除指定期間分點」按鈕（三鍵並列），
+    #    指定期間定義與批次增補完全一致（增補基準日 backfill_base_dt 往前 backfill_days_opt 個交易日）。
+    # 2. 防呆防錯原因：二段式確認防誤觸，僅清除指定期間之個股分點資料並清理快取，區間外歷史資料完整保留。
+    # =====================================================================
     st.markdown("---")
     st.markdown("**全市場（含上櫃）分點批次增補與維護(分點買賣超交易日況僅限最近交易日之近20日)**")
     default_bf_date = get_default_broker_backfill_base_date()
@@ -1239,21 +1247,27 @@ elif selected_main_tab == "⚙️ 參數設定":
         step=1,
         key="broker_backfill_days_input"
     ))
+    base_d_str = backfill_base_dt.strftime("%Y-%m-%d")
 
     st.markdown("<div style='font-size:13px; font-weight:700; color:#334155; margin-top:6px; margin-bottom:2px;'>增補分點(分點買賣超交易日況僅限最近交易日之近20日)</div>", unsafe_allow_html=True)
     with st.container():
         st.markdown("<div class='settings-btn-row-anchor'></div>", unsafe_allow_html=True)
-        col_bk_add, col_bk_clr = st.columns(2)
+        col_bk_add, col_bk_rng_clr, col_bk_clr = st.columns(3)
         with col_bk_add:
             run_bk_sync = st.button("📥 批次增補歷史分點（統計與明細）", key="btn_batch_sync_brokers", use_container_width=True)
+        with col_bk_rng_clr:
+            if st.button("🧹 清除指定期間分點", key="btn_batch_clear_brokers_range", use_container_width=True):
+                st.session_state.confirm_clear_brokers_range = True
+                st.session_state.confirm_clear_brokers = False
+                st.rerun()
         with col_bk_clr:
             if st.button("🗑️ 清除所有分點資料", key="btn_batch_clear_brokers", use_container_width=True):
                 st.session_state.confirm_clear_brokers = True
+                st.session_state.confirm_clear_brokers_range = False
                 st.rerun()
 
     if run_bk_sync:
         from data_fetcher import batch_sync_all_stocks_brokers
-        base_d_str = backfill_base_dt.strftime("%Y-%m-%d")
         prog_bar = st.progress(0, text="準備檢查歷史紀錄與增補分點資料...")
         status_txt = st.empty()
 
@@ -1271,6 +1285,28 @@ elif selected_main_tab == "⚙️ 參數設定":
         status_txt.empty()
         get_cached_broker_payload.clear()
         st.success(summary_msg)
+
+    if st.session_state.confirm_clear_brokers_range:
+        st.warning(
+            f"⚠️ 確定要清除所有上市／上櫃個股於增補基準日 **{base_d_str}** 往前 **{backfill_days_opt}** 個交易日區間內之「**分點統計與分點日況明細**」嗎？（區間外歷史分點、八大官股及日線/法人/資券/大戶資料將完整保留）"
+        )
+        with st.container():
+            st.markdown("<div class='settings-btn-row-anchor'></div>", unsafe_allow_html=True)
+            cbr_yes, cbr_no = st.columns(2)
+            with cbr_yes:
+                if st.button("確定清除指定期間分點", key="btn_confirm_clear_brokers_range_yes", use_container_width=True):
+                    with st.spinner(f"正在清除基準日 {base_d_str} 往前 {backfill_days_opt} 日之分點資料..."):
+                        res_rng_msg = clear_all_stocks_broker_range(
+                            base_date_str=base_d_str,
+                            lookback_days=int(backfill_days_opt)
+                        )
+                    st.session_state.confirm_clear_brokers_range = False
+                    get_cached_broker_payload.clear()
+                    st.success(res_rng_msg)
+            with cbr_no:
+                if st.button("取消清除", key="btn_confirm_clear_brokers_range_no", use_container_width=True):
+                    st.session_state.confirm_clear_brokers_range = False
+                    st.rerun()
 
     if st.session_state.confirm_clear_brokers:
         st.warning("⚠️ 確定要清除本地與雲端所有標的（含上市/上櫃個股與加權/櫃買八大官股）之「分點統計與分點日況明細」嗎？（日線、法人、資券與集保大戶資料將完整保留）")
