@@ -1,7 +1,7 @@
 """
 app.py - 主應用程式介面與生命週期控制
-(三主頁籤架構：操作儀錶板 / 個股 / 參數設定 + 自選與查詢歷史同步 + 盤中均線多空燈號 + 動態chart_id杜絕跨頁籤殘留 + 批次增補指定基準日起往前N日分點統計與明細版 + 分點15:00前對齊前一交易日與分點統計/分點日況雙頁籤版 + 上下雙複合選單自由輸入置頂/下拉選取不改順序及初始K線30根 + 全市含上櫃籌碼指定基準日區間標題與雙鍵並列 + 大戶15週與全市場含上櫃標題及底部目前關注目標列版 + 關注交易日專屬分點日況隔離與增補分點標註僅限最近交易日之近20日版 + 修正主圖高度解包錯位並對齊成交量Y軸0刻度完整顯示版 + 手機窄螢幕個股導覽列與參數設定雙功能鍵強制同列並排版 + 加權^TWII與櫃買^TWOII八大官股個股前50名分點統計與單一個股8家官股行庫逐日買賣超日況及獨立增補清除維護版 + 明確傳遞is_gov_index與pure_code徹底根治個股誤判八大官股無日況版)
-版本: 202611240745
+(三主頁籤架構：操作儀錶板 / 個股 / 參數設定 + 自選與查詢歷史同步 + 盤中均線多空燈號 + 動態chart_id杜絕跨頁籤殘留 + 批次增補指定基準日起往前N日分點統計與明細版 + 分點16:00前對齊前一交易日與分點統計/分點日況雙頁籤版 + 上下雙複合選單自由輸入置頂/下拉選取不改順序及初始K線30根 + 全市含上櫃籌碼指定基準日區間標題與雙鍵並列 + 大戶15週與全市場含上櫃標題及底部目前關注目標列版 + 關注交易日專屬分點日況隔離與增補分點標註僅限最近交易日之近20日版 + 修正主圖高度解包錯位並對齊成交量Y軸0刻度完整顯示版 + 手機窄螢幕個股導覽列與參數設定雙功能鍵強制同列並排版 + 加權^TWII與櫃買^TWOII八大官股個股前50名分點統計與單一個股8家官股行庫逐日買賣超日況及獨立增補清除維護版 + 明確傳遞is_gov_index與pure_code徹底根治個股誤判八大官股無日況版 + w20最新交易日缺漏第20根自動補抓並對齊16:00更新時機點版)
+版本: 202611241205
 """
 
 import os
@@ -13,7 +13,7 @@ import streamlit.components.v1 as components
 import cloud_sync
 
 MODULE_NAME = "app"
-MODULE_VERSION = "202611240745"
+MODULE_VERSION = "202611241205"
 
 
 # 【防呆防錯備註 2026-11-07】：版本控制權由 app.py 作為唯一權威源，動態掃描所有模組最大版本號，杜絕多頭覆寫與重工
@@ -71,7 +71,8 @@ from data_fetcher import (
     fetch_tw_index_gov_broker_bundle,
     fetch_dashboard_watchlist_rows,
     get_default_broker_backfill_base_date,
-    get_default_chip_backfill_base_date
+    get_default_chip_backfill_base_date,
+    is_broker_daily_data_ready_for_date
 )
 
 INDEX_MAP = {
@@ -154,13 +155,11 @@ def get_cached_broker_payload(
     【修訂說明 2026-11-24】【修改目的與防呆防錯原因】：
     1. 修改目的：
        - 同時支援台股個股/ETF（富邦券商分點）與大盤加權指數（^TWII）、櫃買指數（^TWOII）（HiStock 八大官股個股買賣超）；
-       - 針對 ^TWII 與 ^TWOII：呼叫 fetch_tw_index_gov_broker_bundle() 依關注交易日往前計算當日/近10日/近20日/近60日
-         買超前 50 大與賣超前 50 大個股統計（單位：萬元），並掛載各候選個股對應 8 家官股行庫（合庫、土銀、台銀、台企銀、彰銀、第一金、兆豐銀、華南永昌）
-         的每日買賣超序列，供「📈 分點日況」下拉選單選取關注個股後一次繪製 8 個子圖；
-       - 針對個股/ETF：載入所有歷史基準日之 1/10/20/60 日買賣超統計快照，並依關注交易日掛載專屬逐日買賣超序列。
+       - 針對個股/ETF：新增 `_series_reaches_target_date` 檢查，驗證已儲存之 `w10` / `w20` 分點日況序列末端日期是否已達關注交易日（`end_date_str`）；
+         若 `is_broker_daily_data_ready_for_date(end_date_str)` 為 True（過去交易日或今日已過 16:00）但序列僅有 19 根柱子（未含當日），自動觸發補抓並覆寫更新第 20 根柱狀體。
     2. 防呆防錯原因：
-       - 美歐亞等海外指數（^DJI、^IXIC 等）仍直接回傳 {"by_date": {}}，不觸發任何無效爬蟲；
-       - ^TWII 與 ^TWOII 每次切換關注交易日皆依累積之 gov_index_stock_daily 即時重算區間前 50 名與 8 行庫子圖序列，確保不遺漏批次增補之歷史交易日。
+       - 若關注交易日為今日且未滿 16:00，避免在富邦尚未公布當日分點明細前反覆觸發無效重抓；
+       - 美歐亞等海外指數（^DJI、^IXIC 等）仍直接回傳 {"by_date": {}}，不觸發任何無效爬蟲。
     """
     code = str(stock_id).strip().upper()
     is_gov_idx = is_tw_index_with_gov_brokers(code)
@@ -207,6 +206,19 @@ def get_cached_broker_payload(
             return False
         return bool(w_item.get("buy") or w_item.get("sell"))
 
+    def _series_reaches_target_date(series_list: list, target_dt_str: str) -> bool:
+        if not isinstance(series_list, list) or not series_list or not target_dt_str:
+            return False
+        for item in series_list:
+            if not isinstance(item, dict):
+                continue
+            d_arr = item.get("dates") or []
+            if d_arr:
+                max_d = max(str(x)[:10] for x in d_arr if x)
+                if max_d >= target_dt_str:
+                    return True
+        return False
+
     all_focus_series = storage.load_all_broker_focus_daily_series()
 
     def attach_focus_series_to_bundle(bundle: dict, target_date_str: str) -> dict:
@@ -229,9 +241,13 @@ def get_cached_broker_payload(
         by_date_map[hist_date_str] = attach_focus_series_to_bundle(dict(hist_bundle), hist_date_str)
 
     cached_rank = None if force_refresh else all_stored_ranks.get(end_date_str)
-    has_focus_for_end = bool(
-        all_focus_series.get(end_date_str, {}).get("w20", {}).get("top5_buy_series")
-        or all_focus_series.get(end_date_str, {}).get("w20", {}).get("top5_sell_series")
+    end_w20_b = all_focus_series.get(end_date_str, {}).get("w20", {}).get("top5_buy_series") or []
+    end_w20_s = all_focus_series.get(end_date_str, {}).get("w20", {}).get("top5_sell_series") or []
+    ready_for_end_date = is_broker_daily_data_ready_for_date(end_date_str)
+    has_focus_for_end = bool(end_w20_b or end_w20_s) and (
+        not ready_for_end_date
+        or _series_reaches_target_date(end_w20_b, end_date_str)
+        or _series_reaches_target_date(end_w20_s, end_date_str)
     )
     is_end_latest = (end_date_str == latest_trade_date_str)
 
@@ -1111,7 +1127,7 @@ elif selected_main_tab == "⚙️ 參數設定":
         parsed_gov_date = default_gov_date
 
     gov_base_dt = st.date_input(
-        "八大官股增補基準日（預設15:00前為前一交易日）",
+        "八大官股增補基準日（預設16:00前為前一交易日）",
         value=parsed_gov_date,
         key="gov_broker_backfill_base_date_input"
     )
@@ -1183,7 +1199,7 @@ elif selected_main_tab == "⚙️ 參數設定":
         parsed_bf_date = default_bf_date
 
     backfill_base_dt = st.date_input(
-        "增補基準日（預設15:00前為前一交易日）",
+        "增補基準日（預設16:00前為前一交易日）",
         value=parsed_bf_date,
         key="broker_backfill_base_date_input"
     )
