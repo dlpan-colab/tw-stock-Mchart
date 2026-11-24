@@ -1,7 +1,7 @@
 """
 app_broker_cache.py - 個股分點與大盤八大官股快取組裝模組
-(自 app.py 依邏輯職責拆分，維持既有八大官股跨日本地聚合與個股富邦分點統計/日況快取機制)
-版本: 202611242246
+(自 app.py 依邏輯職責拆分，開放歷史關注交易日補抓與顯示近 10/20 日個股分點逐日明細)
+版本: 202611250715
 """
 
 import time
@@ -20,7 +20,7 @@ from data_fetcher import (
 )
 
 MODULE_NAME = "app_broker_cache"
-MODULE_VERSION = "202611242246"
+MODULE_VERSION = "202611250715"
 
 
 @st.cache_data(ttl=600, show_spinner=False)
@@ -32,15 +32,13 @@ def get_cached_broker_payload(
     include_60d: bool = False
 ) -> dict:
     """
-    【修訂說明 2026-11-24】【修改目的與防呆防錯原因】：
-    1. 修改目的：
-       - 大盤加權（^TWII）與櫃買（^TWOII）分支（分支 A）：
-         自本地 SQLite `gov_index_stock_daily` 讀取已增補的所有歷史交易日八大官股明細，針對每個已存在八大官股資料的交易日（最近 25 個交易日區間內），
-         以純本地記憶體計算組裝 `by_date_map[d_str]`（含 w1 / w10 / w20 / w60 前50名買賣超個股與8家官股行庫序列）；
-       - 台股個股/ETF 分支（分支 B）：完整保留原富邦券商分點統計與日況檢核邏輯。
+    【修訂說明 2026-11-25】【修改目的與防呆防錯原因】：
+    1. 修改目的：移除台股個股/ETF 分支中「僅限最新交易日（`is_end_latest`）才抓取與組裝前 5 名分點日況」的限制，
+       讓使用者切換至任一歷史關注交易日（如 2026-11-23）時，若該日尚無 `w10` / `w20` 分點日況序列，
+       可自動依該關注交易日往回計算區間並補抓前 5 名買賣超分點逐日明細，使「分點日況」頁籤顯示對應柱狀圖。
     2. 防呆防錯原因：
-       - 歷史交易日組裝僅針對 `gov_index_stock_daily` 資料庫中已存在紀錄的日期進行純本地聚合；
-       - 若關注交易日為今日且未滿 16:00，避免在富邦尚未公布當日分點明細前反覆觸發無效重抓。
+       - 若關注交易日尚未達 16:00 更新時機點且尚無明細，避免無效重複請求；
+       - 針對歷史關注交易日僅寫入本地 SQLite（`sync_cloud=False`）並合併回傳，不覆寫既有最新交易日快取。
     """
     code = str(stock_id).strip().upper()
     is_gov_idx = is_tw_index_with_gov_brokers(code)
@@ -102,7 +100,7 @@ def get_cached_broker_payload(
         return {"by_date": by_date_map}
 
     # -----------------------------------------------------------------
-    # 分支 B：台股個股 / ETF 富邦券商分點統計與日況
+    # 分支 B：台股個股 / ETF 富邦券商分點統計與日況（支援最新日與歷史關注日）
     # -----------------------------------------------------------------
     def _has_valid_win(bundle_obj: dict, w_num: int) -> bool:
         if not isinstance(bundle_obj, dict):
@@ -160,8 +158,8 @@ def get_cached_broker_payload(
     if cached_rank is not None:
         base_ok = all(_has_valid_win(cached_rank, w) for w in (1, 10, 20))
         need_60_missing = include_60d and (not _has_valid_win(cached_rank, 60))
-        need_latest_focus = is_end_latest and (not has_focus_for_end)
-        if base_ok and not need_60_missing and not need_latest_focus:
+        need_focus = (not has_focus_for_end) and (ready_for_end_date or not is_end_latest)
+        if base_ok and not need_60_missing and not need_focus:
             by_date_map[end_date_str] = attach_focus_series_to_bundle(dict(cached_rank), end_date_str)
             return {"by_date": by_date_map}
 
@@ -196,7 +194,7 @@ def get_cached_broker_payload(
 
     if cached_rank is not None and not force_refresh:
         fetch_windows = [w for w in target_windows if not _has_valid_win(cached_rank, w)]
-        if not fetch_windows and is_end_latest and not has_focus_for_end:
+        if not fetch_windows and (not has_focus_for_end):
             fetch_windows = [10, 20]
         elif not fetch_windows:
             fetch_windows = list(target_windows)
@@ -214,7 +212,8 @@ def get_cached_broker_payload(
         if idx_w < len(fetch_windows) - 1:
             time.sleep(0.15)
 
-    if is_end_latest:
+    should_fetch_focus = ready_for_end_date or (not is_end_latest)
+    if should_fetch_focus:
         broker_df_cache = {}
         for w in fetch_windows:
             if w not in series_windows:
@@ -271,7 +270,7 @@ def get_cached_broker_payload(
             }
 
     if has_any_rank or day_bundle:
-        storage.save_broker_range_rank(end_date_str, day_bundle, sync_cloud=True)
+        storage.save_broker_range_rank(end_date_str, day_bundle, sync_cloud=is_end_latest)
         by_date_map[end_date_str] = attach_focus_series_to_bundle(day_bundle, end_date_str)
 
     return {"by_date": by_date_map}
