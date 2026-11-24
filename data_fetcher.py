@@ -1,7 +1,7 @@
 """
 data_fetcher.py - 整合技術與籌碼資料擷取模組
-(支援含英文後綴台股ETF + TWSE/TPEx官方日K即時補齊 + 大盤加權^TWII與櫃買^TWOII資券與融資金額(億)擷取 + 大盤加權^TWII與櫃買^TWOII八大官股個股前30買賣超(萬元)明細擷取與區間買賣超前50大個股統計及單一個股8家官股行庫逐日買賣超日況引擎 + 雲端增量累積分點引擎 + 集保官網qryStock動態Token多週歷史查詢與id=1-5批次分離含真實股數儲存 + 賣超負值正規化 + 操作儀錶板盤中報價版 + 富邦10欄並排表格與精準單日分點統計/明細5欄修正版 + 全市場歷史分點統計追滿N日但日況明細僅抓最新交易日近20日並綁定關注日版 + 全市含上櫃資券/法人/大戶指定基準日區間批次增補引擎版 + 批次增補記憶體主動回收與雲端同步節流防OOM自動Reboot版 + 純Python原生字典彙總八大官股前50名與8行庫序列徹底消除AttributeError版)
-版本: 202611240742
+(支援含英文後綴台股ETF + TWSE/TPEx官方日K即時補齊 + 大盤加權^TWII與櫃買^TWOII資券與融資金額(億)擷取 + 大盤加權^TWII與櫃買^TWOII八大官股個股前30買賣超(萬元)明細擷取與區間買賣超前50大個股統計及單一個股8家官股行庫逐日買賣超日況引擎 + 雲端增量累積分點引擎 + 集保官網qryStock動態Token多週歷史查詢與id=1-5批次分離含真實股數儲存 + 賣超負值正規化 + 操作儀錶板盤中報價版 + 富邦10欄並排表格與精準單日分點統計/明細5欄修正版 + 全市場歷史分點統計追滿N日但日況明細僅抓最新交易日近20日並綁定關注日版 + 全市含上櫃資券/法人/大戶指定基準日區間批次增補引擎版 + 批次增補記憶體主動回收與雲端同步節流防OOM自動Reboot版 + 純Python原生字典彙總八大官股前50名與8行庫序列徹底消除AttributeError版 + 分點16:00時機點對齊與w20最新交易日缺漏自動補抓第20根版)
+版本: 202611240851
 """
 import os
 import io
@@ -19,7 +19,7 @@ from datetime import datetime, timedelta
 from urllib.parse import urljoin, urlparse, parse_qs, urlencode, urlunparse
 
 MODULE_NAME = "data_fetcher"
-MODULE_VERSION = "202611240742"
+MODULE_VERSION = "202611240851"
 
 from storage import (
     StockChipStorage, COMMON_STOCK_NAMES, load_stock_names_dict,
@@ -1051,16 +1051,7 @@ def fetch_dashboard_watchlist_rows(history_list: list) -> list:
 # =========================================================================
 def _fetch_histock_broker8_single_day(pure_code: str, target_date_str: str) -> tuple:
     """
-    【修訂說明 2026-11-24】【修改目的與防呆防錯原因】：
-    1. 修改目的：向 HiStock（上市 https://histock.tw/stock/broker8.aspx?d=YYYY-MM-DD、上櫃 https://histock.tw/stock/broker8.aspx?no=TWOI&d=YYYY-MM-DD）
-       擷取當日八大官股「買超排名 Top 30」與「賣超排名 Top 30」共最多 60 檔個股的 8 家官股行庫各自買賣超（萬元）與合計（萬元），
-       回傳 (actual_iso_date, stock_rows_list)，其中 stock_rows_list 每筆為：
-       {"stock_name": 股票名稱, "source_side": "buy"/"sell", "b_heku": ..., "b_land": ..., "b_bot": ...,
-        "b_tbb": ..., "b_ccb": ..., "b_first": ..., "b_mega": ..., "b_hncb": ..., "total_wan": 合計(萬)}。
-    2. 防呆防錯原因：
-       - 同步解析表頭標題（買超排名 vs 賣超排名）與欄位對應（合庫、土銀、台銀、台企銀、彰銀、第一金、兆豐銀、華南永昌、合計(萬)）；
-       - 若頁面日期標題與請求日期不同（遇假日順延），自動回傳頁面公告之實際交易日期 actual_iso_date；
-       - 同時兼容 `<ul class="stock-list"><li>` 葉節點（含 ★ 星號前綴防呆過濾）與傳統 `<tr>` 資料列。
+    向 HiStock 擷取當日八大官股買超與賣超排名個股之 8 家官股行庫買賣超（萬元）與合計（萬元）。
     """
     code = str(pure_code or "").strip().upper()
     if not is_tw_index_with_gov_brokers(code):
@@ -1213,16 +1204,6 @@ def batch_sync_tw_index_gov_brokers(
     lookback_days: int = 1,
     progress_callback=None
 ) -> str:
-    """
-    【修訂說明 2026-11-24】【修改目的與防呆防錯原因】：
-    1. 修改目的：供「⚙️ 參數設定」頁籤「批次增補八大官股交易前30個股」按鈕呼叫，
-       依據「八大官股增補基準日（base_date_str）」與「往前增補交易日數（lookback_days）」，
-       針對加權指數（^TWII）與櫃買指數（^TWOII）逐交易日擷取 HiStock 八大官股買超前 30 與賣超前 30 個股明細（單位：萬元），
-       寫入 gov_index_stock_daily 並同步推送 Google Drive 雲端資料庫。
-    2. 防呆防錯原因：
-       - 若指定交易日已存在完整的買超與賣超前 30 筆紀錄（>= 50 筆個股）則自動略過，避免重複爬蟲；
-       - 每檔指數僅在最後執行一次 sync_db_push，降低雲端 API 負載並主動回收記憶體。
-    """
     n_days = max(1, int(lookback_days or 1))
     b_norm = _normalize_mdj_date(base_date_str) or str(base_date_str).strip()[:10]
     targets = [("^TWII", "加權指數"), ("^TWOII", "櫃買指數")]
@@ -1302,19 +1283,6 @@ def fetch_tw_index_gov_broker_bundle(
     target_end_idx: int,
     include_60d: bool = False
 ) -> tuple:
-    """
-    【修訂說明 2026-11-24】【修改目的與防呆防錯原因】：
-    1. 修改目的：
-       - 針對大盤加權指數（^TWII）與櫃買指數（^TWOII），依據關注交易日（target_end_idx）往前推算
-         當日（w1）、近 10 日（w10）、近 20 日（w20）、近 60 日（w60）：
-         (a) 彙總 gov_index_stock_daily 中各檔個股之八大官股累計買賣超（單位：萬元），輸出買超前 50 名與賣超前 50 名個股排行；
-         (b) 針對區間內買超前 50 大與賣超前 50 大個股，建構每檔個股對應 8 家官股行庫（合庫、土銀、台銀、台企銀、彰銀、第一金、兆豐銀、華南永昌）
-             各自的每日買賣超（萬元）序列，供「📈 分點日況」頁籤下拉式選單選取關注個股後一次呈現 8 個官股行庫子圖。
-    2. 防呆防錯原因：
-       - 全程採用純 Python 原生 list / dict 迴圈加總與切片（完全不依賴 pandas groupby / MultiIndex .loc），
-         徹底杜絕任何版本或空資料情境下觸發 `AttributeError`；
-       - 同時支援 `storage` 具備 `load_gov_index_stock_daily_range` 方法或直接查詢本地 SQLite `gov_index_stock_daily` 資料表雙重備援。
-    """
     code = str(pure_code or "").strip().upper()
     if not is_tw_index_with_gov_brokers(code) or not trade_dates_tuple:
         return {}, {}
@@ -1347,7 +1315,6 @@ def fetch_tw_index_gov_broker_bundle(
         except Exception:
             return []
 
-    # 若當日尚無任何八大官股個股紀錄，自動向 HiStock 補抓當日 Top 30 買賣超個股
     chk_today_rows = _query_gov_rows(end_date_str, end_date_str)
     if not chk_today_rows:
         act_d, stk_rows = _fetch_histock_broker8_single_day(code, end_date_str)
@@ -1383,7 +1350,6 @@ def fetch_tw_index_gov_broker_bundle(
         if not sub_rows:
             continue
 
-        # 純 Python 原生字典依股票名稱彙總區間內八大官股買賣超（萬元）與逐日明細
         agg_map = {}
         daily_by_stock = {}
         min_d_found = "9999-12-31"
@@ -1464,7 +1430,6 @@ def fetch_tw_index_gov_broker_bundle(
                 "ratio": f"{(abs(nv) / tot_abs * 100.0):.1f}%",
             })
 
-        # 針對近 10 / 20 / 60 日買超前 50 大與賣超前 50 大個股，建構每檔個股對應 8 家官股行庫各自的逐日買賣超序列（萬元）
         stock_8bank_map = {}
         if w in (10, 20, 60):
             cand_stocks = []
@@ -1508,17 +1473,42 @@ def fetch_tw_index_gov_broker_bundle(
 # 【券商分點進出排行與逐日明細引擎】- 富邦 e點通 (fubon-ebrokerdj.fbs.com.tw)
 # =========================================================================
 def get_default_broker_backfill_base_date(now_dt: datetime = None) -> datetime.date:
+    """
+    【修訂說明 2026-11-24】【修改目的與防呆防錯原因】：
+    1. 修改目的：富邦券商分點資料以每日 16:00 以後為更新當日時機點；
+       台灣時間 16:00 前預設對齊前一交易日，16:00（含）以後才對齊當日。
+    2. 防呆防錯原因：避免盤後 15:00～16:00 分點尚未公布完成時誤將基準日設為未公布之當日。
+    """
     now_tw = now_dt if now_dt is not None else (datetime.utcnow() + timedelta(hours=8))
     base_d = now_tw.date()
     if base_d.weekday() == 5:
         base_d -= timedelta(days=1)
     elif base_d.weekday() == 6:
         base_d -= timedelta(days=2)
-    elif now_tw.hour < 15:
+    elif now_tw.hour < 16:
         base_d -= timedelta(days=1)
         while base_d.weekday() >= 5:
             base_d -= timedelta(days=1)
     return base_d
+
+
+def is_broker_daily_data_ready_for_date(target_date_str: str, now_dt: datetime = None) -> bool:
+    """
+    【修訂說明 2026-11-24】【修改目的與防呆防錯原因】：
+    1. 修改目的：判斷指定交易日 `target_date_str` 是否已過分點當日更新時機點（台灣時間 16:00）。
+    2. 防呆防錯原因：若查詢日為今日且未滿 16:00，避免在未到 16:00 時反覆觸發無效重抓；
+       若查詢日為過去交易日（如 2026-11-23）或今日已過 16:00，則應包含該日明細。
+    """
+    d_str = str(target_date_str or "").strip()[:10]
+    if not d_str:
+        return False
+    now_tw = now_dt if now_dt is not None else (datetime.utcnow() + timedelta(hours=8))
+    today_str = now_tw.strftime("%Y-%m-%d")
+    if d_str < today_str:
+        return True
+    if d_str == today_str:
+        return now_tw.hour >= 16
+    return False
 
 
 def _normalize_mdj_date(raw_str: str) -> str:
@@ -1757,6 +1747,25 @@ def fetch_single_broker_daily_series(detail_url: str, start_date: str, end_date:
     return df_res
 
 
+def _series_reaches_target_date(series_list: list, target_date_str: str) -> bool:
+    """
+    【修訂說明 2026-11-24】【修改目的與防呆防錯原因】：
+    1. 修改目的：檢查前 5 名分點日況序列中，是否有至少一檔分點序列的最新日期已達 `target_date_str`（如 2026-11-23）。
+    2. 防呆防錯原因：避免先前快取只有 19 根柱子（最後日期停在 11-20）卻被誤判為已完整而漏抓第 20 根。
+    """
+    if not isinstance(series_list, list) or not series_list or not target_date_str:
+        return False
+    for item in series_list:
+        if not isinstance(item, dict):
+            continue
+        d_arr = item.get("dates") or []
+        if d_arr:
+            max_d = max(str(x)[:10] for x in d_arr if x)
+            if max_d >= target_date_str:
+                return True
+    return False
+
+
 def batch_sync_all_stocks_brokers(
     base_date_str: str,
     lookback_days: int = 1,
@@ -1764,8 +1773,9 @@ def batch_sync_all_stocks_brokers(
 ) -> str:
     """
     【修訂說明 2026-11-24】【修改目的與防呆防錯原因】：
-    修改目的：專責批次增補查詢歷史清單內所有上市／上櫃個股與 ETF 的券商分點統計與日況明細（加權與櫃買八大官股由專屬 batch_sync_tw_index_gov_brokers 獨立處理）。
-    防呆防錯原因：排除 ^ 開頭指數代號，避免與八大官股增補流程混雜或覆寫。
+    1. 修改目的：專責批次增補查詢歷史清單內所有上市／上櫃個股與 ETF 的券商分點統計與日況明細；
+       若最新交易日已達 16:00（或為歷史交易日）但 `w20` 日況序列尚未包含該日，自動重抓補齊第 20 根柱狀體。
+    2. 防呆防錯原因：排除 ^ 開頭指數代號，避免與八大官股增補流程混雜或覆寫。
     """
     hist_list = load_stock_history()
     stock_items = []
@@ -1786,6 +1796,7 @@ def batch_sync_all_stocks_brokers(
     tot_n = len(stock_items)
     n_days = max(1, int(lookback_days or 1))
     b_norm = _normalize_mdj_date(base_date_str) or str(base_date_str).strip()[:10]
+    allow_latest_day_series = is_broker_daily_data_ready_for_date(b_norm)
 
     def _df_to_rank_recs(df_rank):
         if df_rank is None or df_rank.empty:
@@ -1887,13 +1898,20 @@ def batch_sync_all_stocks_brokers(
                 pending_bundles.append((end_d_str, day_bundle))
 
         existing_focus_map = storage.load_all_broker_focus_daily_series().get(latest_trade_date, {})
-        need_latest_w10 = not (
-            existing_focus_map.get("w10", {}).get("top5_buy_series")
-            or existing_focus_map.get("w10", {}).get("top5_sell_series")
+        w10_b = existing_focus_map.get("w10", {}).get("top5_buy_series") or []
+        w10_s = existing_focus_map.get("w10", {}).get("top5_sell_series") or []
+        w20_b = existing_focus_map.get("w20", {}).get("top5_buy_series") or []
+        w20_s = existing_focus_map.get("w20", {}).get("top5_sell_series") or []
+
+        need_latest_w10 = (not w10_b and not w10_s) or (
+            allow_latest_day_series
+            and not _series_reaches_target_date(w10_b, latest_trade_date)
+            and not _series_reaches_target_date(w10_s, latest_trade_date)
         )
-        need_latest_w20 = not (
-            existing_focus_map.get("w20", {}).get("top5_buy_series")
-            or existing_focus_map.get("w20", {}).get("top5_sell_series")
+        need_latest_w20 = (not w20_b and not w20_s) or (
+            allow_latest_day_series
+            and not _series_reaches_target_date(w20_b, latest_trade_date)
+            and not _series_reaches_target_date(w20_s, latest_trade_date)
         )
         wrote_focus_series = False
 
