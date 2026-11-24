@@ -1,4 +1,3 @@
-frontend.py 拆分檔案
 """
 frontend.py - 前端 HTML/CSS 渲染模組（主圖、指標、籌碼與分點總入口）
 (依邏輯職責拆分為 frnt_broker.py 與本主圖/指標/籌碼渲染總入口，維持 100% 向後相容匯出)
