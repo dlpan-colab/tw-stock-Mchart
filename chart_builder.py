@@ -1,6 +1,7 @@
 """
-chart_builder.py - Plotly 圖表建置模組 (主圖1/2緊緻化、指標頁籤乖離率、籌碼分頁標準字典防快取遺失、主標題藍色加大、副圖左上角內嵌標籤與加權^TWII/櫃買^TWOII緊緻雙列資券千張＋融資金額(億)副圖消除空白及大戶線1%約當張數優先採用集保最新週總張數註明版 + 主圖成交量Y軸0刻度抬升完整顯示版 + 個股籌碼資券副圖棕色券資比獨立座標與藍綠雙融資維持率共用次座標折線版)
-版本: 202611231812
+chart_builder.py - Plotly 圖表建置模組（主圖、指標頁籤與籌碼總入口）
+(依邏輯職責拆分為 chrt_chip.py 與本主圖/指標建置總入口，維持 100% 向後相容回傳結構)
+版本: 202611242230
 """
 
 from typing import Tuple, Optional, Dict
@@ -10,10 +11,11 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
 MODULE_NAME = "chart_builder"
-MODULE_VERSION = "202611231812"
+MODULE_VERSION = "202611242230"
 
 from data_fetcher import fetch_stock_daily_k, fetch_stock_name
 from indicators import calculate_all_indicators
+from chrt_chip import build_chip_figure
 
 
 def build_split_figures(
@@ -94,9 +96,6 @@ def build_split_figures(
 
     vol_colors = ['#eb4d4b' if c >= o else '#2ecc71' for c, o in zip(df['Close'], df['Open'])]
     osc_colors = ['#eb4d4b' if val >= 0 else '#2ecc71' for val in df['OSC'].fillna(0)]
-    m_colors = ['#eb4d4b' if val >= 0 else '#2ecc71' for val in df['Margin_Diff'].fillna(0)]
-    s_colors = ['#f1c40f' if val >= 0 else '#3498db' for val in df['Short_Diff'].fillna(0)]
-    mm_colors = ['#eb4d4b' if val >= 0 else '#2ecc71' for val in df['Margin_Money_Diff'].fillna(0)]
 
     sub_obv = sub_df['OBV'].dropna()
     sub_obv_ma = sub_df['OBV_MA20'].dropna()
@@ -121,86 +120,8 @@ def build_split_figures(
         bias_min, bias_max = -5.0, 5.0
     bias_pad = (bias_max - bias_min) * 0.15 if bias_max > bias_min else 2.0
 
-    def calc_inst_range(series):
-        s_clean = series.dropna()
-        if s_clean.empty or (s_clean == 0).all():
-            return [-100, 100]
-        max_abs = max(abs(float(s_clean.min())), abs(float(s_clean.max())))
-        return [-max_abs * 1.25, max_abs * 1.25] if max_abs > 0 else [-100, 100]
-
-    fn_range = calc_inst_range(sub_df['Foreign_Net'])
-    tn_range = calc_inst_range(sub_df['Trust_Net'])
-    dn_range = calc_inst_range(sub_df['Dealer_Net'])
-
-    ms_vals = pd.concat([sub_df['Margin_Diff'], sub_df['Short_Diff']]).dropna()
-    ms_max_abs = max(abs(float(ms_vals.min())), abs(float(ms_vals.max()))) if not ms_vals.empty else 0
-    ms_range = [-ms_max_abs * 1.25, ms_max_abs * 1.25] if ms_max_abs > 0 else [-100, 100]
-
-    mm_vals = sub_df['Margin_Money_Diff'].dropna() if 'Margin_Money_Diff' in sub_df.columns else pd.Series(dtype=float)
-    mm_max_abs = max(abs(float(mm_vals.min())), abs(float(mm_vals.max()))) if not mm_vals.empty else 0
-    mm_range = [-mm_max_abs * 1.25, mm_max_abs * 1.25] if mm_max_abs > 0 else [-10, 10]
-
-    def calc_holding_range(series):
-        s_clean = series.dropna()
-        if s_clean.empty:
-            return [0, 100]
-        c_min, c_max = float(s_clean.min()), float(s_clean.max())
-        pad = max(0.15, (c_max - c_min) * 0.15) if c_max > c_min else 0.5
-        return [c_min - pad, c_max + pad]
-
-    m1_range = calc_holding_range(sub_df['Major1_Pct'])
-    m2_range = calc_holding_range(sub_df['Major2_Pct'])
-
-    raw_upper = str(raw_ticker).strip().upper()
-    is_tw_index = raw_upper in ("^TWII", "^TWOII")
-    mkt_prefix = "上櫃" if raw_upper == "^TWOII" else "上市"
-
-    if is_tw_index:
-        maint_vals = pd.concat([
-            sub_df['Margin_Maint_Pct'].dropna() if 'Margin_Maint_Pct' in sub_df.columns else pd.Series(dtype=float),
-            sub_df['Short_Maint_Pct'].dropna() if 'Short_Maint_Pct' in sub_df.columns else pd.Series(dtype=float)
-        ])
-        r_min = float(maint_vals.min()) if not maint_vals.empty else 120.0
-        r_max = float(maint_vals.max()) if not maint_vals.empty else 230.0
-        r_pad = max(2.0, (r_max - r_min) * 0.15) if r_max > r_min else 5.0
-        ratio_range = [max(0, r_min - r_pad), r_max + r_pad]
-
-        mmaint_clean = sub_df['Margin_Maint_Pct'].dropna() if 'Margin_Maint_Pct' in sub_df.columns else pd.Series(dtype=float)
-        mm_r_min = float(mmaint_clean.min()) if not mmaint_clean.empty else 130.0
-        mm_r_max = float(mmaint_clean.max()) if not mmaint_clean.empty else 180.0
-        mm_r_pad = max(1.5, (mm_r_max - mm_r_min) * 0.15) if mm_r_max > mm_r_min else 3.0
-        mmaint_range = [max(0, mm_r_min - mm_r_pad), mm_r_max + mm_r_pad]
-    else:
-        # 【修訂說明 2026-11-23】【修改目的與防呆防錯原因】：
-        # 修改目的：
-        #   1. 棕色「券資比%（yaxis5）」維持獨立比例尺，不與融資維持率互相校準；
-        #   2. 藍色「預估融資維持率%（Margin_Maint_Pct）」與綠色「近60日季融資維持率%（Margin_Maint_60D_Pct）」共用同一右側次座標 yaxis9，
-        #      以兩者合併之最小/最大值計算 mmaint_range，確保雙線在同一尺度下完整呈現且不裁切。
-        # 防呆防錯原因：若任一數列全為 NaN（無融券或無融資），自動給定合理預設上下限避免除零異常。
-        ratio_clean = sub_df['Short_Margin_Ratio'].dropna() if 'Short_Margin_Ratio' in sub_df.columns else pd.Series(dtype=float)
-        r_min = float(ratio_clean.min()) if not ratio_clean.empty else 0.0
-        r_max = float(ratio_clean.max()) if not ratio_clean.empty else 10.0
-        r_pad = max(0.5, (r_max - r_min) * 0.18) if r_max > r_min else 1.0
-        ratio_range = [max(0.0, r_min - r_pad), r_max + r_pad]
-
-        mmaint_parts = []
-        if 'Margin_Maint_Pct' in sub_df.columns and not sub_df['Margin_Maint_Pct'].dropna().empty:
-            mmaint_parts.append(sub_df['Margin_Maint_Pct'].dropna())
-        if 'Margin_Maint_60D_Pct' in sub_df.columns and not sub_df['Margin_Maint_60D_Pct'].dropna().empty:
-            mmaint_parts.append(sub_df['Margin_Maint_60D_Pct'].dropna())
-        mmaint_clean = pd.concat(mmaint_parts) if mmaint_parts else pd.Series(dtype=float)
-        mm_r_min = float(mmaint_clean.min()) if not mmaint_clean.empty else 120.0
-        mm_r_max = float(mmaint_clean.max()) if not mmaint_clean.empty else 180.0
-        mm_r_pad = max(2.0, (mm_r_max - mm_r_min) * 0.18) if mm_r_max > mm_r_min else 5.0
-        mmaint_range = [max(0.0, mm_r_min - mm_r_pad), mm_r_max + mm_r_pad]
-
-    # 【修訂說明 2026-11-22】【修改目的與防呆防錯原因】：
-    # 修改目的：主圖高度設為 296/336，並於成交量 yaxis2 底部設定負值緩衝（-vol_upper * 0.08），將「0」刻度線向上抬升，
-    # 配合底部邊距 b=34，確保成交量 Y 軸「0」刻度文字完整呈現不被 iframe 底緣裁切。
-    # 防呆防錯原因：維持 K 線與成交量高度比例（0.70 : 0.30），不影響任何指標與數值計算。
     top_height = 296 if is_mobile else 336
     tech_height = 540 if is_mobile else 580
-    chip_height = (380 if is_mobile else 420) if is_tw_index else (760 if is_mobile else 800)
 
     # =====================================================================
     # 1. 上半部共用主圖（K線 + 成交量）
@@ -248,10 +169,6 @@ def build_split_figures(
             hoverinfo='none'
         ), row=1, col=1)
 
-    # 【修訂說明 2026-11-22】【修改目的與防呆防錯原因】：
-    # 修改目的：成交量柱狀圖加上同色 0.8px 邊框線（marker_line_width=0.8），確保當可視區間存在極端爆量（如 50 萬張）時，
-    # 量縮交易日（數千張）即使柱高不足 1px 仍能清晰顯示紅/綠柱體，不致在圖表上隱形消失。
-    # 防呆防錯原因：僅增強視覺最小渲染高度，不更動 Volume_Sheets 原始數據。
     fig_top.add_trace(go.Bar(
         x=date_str_list,
         y=df['Volume_Sheets'],
@@ -371,209 +288,23 @@ def build_split_figures(
         )
 
     # =====================================================================
-    # 3. 頁籤 2【籌碼】副圖：
-    #    - 大盤加權(^TWII) / 櫃買(^TWOII)：緊緻雙列（資券千張/維持率 + 融資金額億/融資維持率），消除空白
-    #    - 個股/ETF：6 列（外資、投信、自營、資券、大戶1、大戶2）
+    # 3. 頁籤 2【籌碼】副圖（委由 chrt_chip 建置）
     # =====================================================================
-    is_index = str(raw_ticker).startswith("^")
-    if is_tw_index:
-        fig_chip = make_subplots(
-            rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.08,
-            row_heights=[0.54, 0.46],
-            specs=[[{"secondary_y": True}], [{"secondary_y": True}]]
-        )
+    fig_chip = build_chip_figure(
+        df=df,
+        sub_df=sub_df,
+        date_str_list=date_str_list,
+        start_idx=start_idx,
+        end_idx=end_idx,
+        month_ticks_vals=month_ticks_vals,
+        month_ticks_text=month_ticks_text,
+        raw_ticker=raw_ticker,
+        major1_thresh=major1_thresh,
+        major2_thresh=major2_thresh,
+        shares_outstanding=shares_outstanding,
+        is_mobile=is_mobile,
+    )
 
-        # 第 1 列：上市/上櫃資券（千張）增減柱狀＋融資/融券維持率雙折線
-        fig_chip.add_trace(go.Bar(
-            x=date_str_list, y=df['Margin_Diff'], marker_color=m_colors,
-            name=f'{mkt_prefix}融資', width=0.4, offset=-0.4, hoverinfo='none'
-        ), secondary_y=False, row=1, col=1)
-        fig_chip.add_trace(go.Bar(
-            x=date_str_list, y=df['Short_Diff'], marker_color=s_colors,
-            name=f'{mkt_prefix}融券', width=0.4, offset=0.0, hoverinfo='none'
-        ), secondary_y=False, row=1, col=1)
-        fig_chip.add_hline(y=0, line_color='rgba(150,150,150,0.7)', line_width=1, secondary_y=False, row=1, col=1)
-
-        fig_chip.add_trace(go.Scatter(
-            x=date_str_list, y=df['Margin_Maint_Pct'], line=dict(color='#e67e22', width=1.6),
-            connectgaps=True, hoverinfo='none', name='融資維持率%'
-        ), secondary_y=True, row=1, col=1)
-        fig_chip.add_trace(go.Scatter(
-            x=date_str_list, y=df['Short_Maint_Pct'], line=dict(color='#8e44ad', width=1.6),
-            connectgaps=True, hoverinfo='none', name='融券維持率%'
-        ), secondary_y=True, row=1, col=1)
-
-        # 第 2 列：上市/上櫃融資金額增減（億）單一柱狀圖＋融資維持率折線
-        fig_chip.add_trace(go.Bar(
-            x=date_str_list, y=df['Margin_Money_Diff'], marker_color=mm_colors,
-            name=f'{mkt_prefix}融資金額增減(億)', hoverinfo='none'
-        ), secondary_y=False, row=2, col=1)
-        fig_chip.add_hline(y=0, line_color='rgba(150,150,150,0.7)', line_width=1, secondary_y=False, row=2, col=1)
-        fig_chip.add_trace(go.Scatter(
-            x=date_str_list, y=df['Margin_Maint_Pct'], line=dict(color='#e67e22', width=1.6),
-            connectgaps=True, hoverinfo='none', name='融資維持率%'
-        ), secondary_y=True, row=2, col=1)
-
-        fig_chip.update_layout(
-            font=dict(size=12), template='plotly_white', hovermode=False, dragmode='pan',
-            showlegend=False, height=chip_height,
-            margin=dict(l=80, r=15, t=6, b=24, autoexpand=False),
-            xaxis_rangeslider_visible=False
-        )
-        fig_chip.update_xaxes(
-            type='category', range=[start_idx - 0.5, end_idx + 0.5], domain=[0, 1],
-            showspikes=False, tickfont=dict(size=11), row=1, col=1
-        )
-        fig_chip.update_xaxes(
-            type='category', range=[start_idx - 0.5, end_idx + 0.5], domain=[0, 1],
-            showticklabels=True, tickvals=month_ticks_vals, ticktext=month_ticks_text,
-            tickfont=dict(size=11), row=2, col=1
-        )
-        fig_chip.update_yaxes(title_text='', range=ms_range, fixedrange=True, showspikes=False, tickfont=dict(size=11), secondary_y=False, row=1, col=1)
-        fig_chip.update_yaxes(title_text='', range=ratio_range, showgrid=False, showticklabels=False, fixedrange=True, showspikes=False, tickfont=dict(size=11), secondary_y=True, row=1, col=1)
-        fig_chip.update_yaxes(title_text='', range=mm_range, fixedrange=True, showspikes=False, tickfont=dict(size=11), secondary_y=False, row=2, col=1)
-        fig_chip.update_yaxes(title_text='', range=mmaint_range, showgrid=False, showticklabels=False, fixedrange=True, showspikes=False, tickfont=dict(size=11), secondary_y=True, row=2, col=1)
-
-        chip_pane_labels = [
-            ('y domain', f'{mkt_prefix}資券(千張)/維持率'),
-            ('y3 domain', f'{mkt_prefix}融資金額(億)/融資維持率'),
-        ]
-    else:
-        fig_chip = make_subplots(
-            rows=6, cols=1, shared_xaxes=True, vertical_spacing=0.03,
-            row_heights=[0.15, 0.15, 0.15, 0.21, 0.17, 0.17],
-            specs=[[{}], [{}], [{}], [{"secondary_y": True}], [{"secondary_y": True}], [{}]]
-        )
-
-        if not is_index:
-            f_colors = ['#eb4d4b' if x >= 0 else '#2ecc71' for x in df['Foreign_Net'].fillna(0)]
-            fig_chip.add_trace(go.Bar(x=date_str_list, y=df['Foreign_Net'], marker_color=f_colors, hoverinfo='none'), row=1, col=1)
-            fig_chip.add_hline(y=0, line_color='rgba(150,150,150,0.7)', line_width=1, row=1, col=1)
-
-            t_colors = ['#eb4d4b' if x >= 0 else '#2ecc71' for x in df['Trust_Net'].fillna(0)]
-            fig_chip.add_trace(go.Bar(x=date_str_list, y=df['Trust_Net'], marker_color=t_colors, hoverinfo='none'), row=2, col=1)
-            fig_chip.add_hline(y=0, line_color='rgba(150,150,150,0.7)', line_width=1, row=2, col=1)
-
-            d_colors = ['#eb4d4b' if x >= 0 else '#2ecc71' for x in df['Dealer_Net'].fillna(0)]
-            fig_chip.add_trace(go.Bar(x=date_str_list, y=df['Dealer_Net'], marker_color=d_colors, hoverinfo='none'), row=3, col=1)
-            fig_chip.add_hline(y=0, line_color='rgba(150,150,150,0.7)', line_width=1, row=3, col=1)
-
-            fig_chip.add_trace(go.Bar(
-                x=date_str_list, y=df['Margin_Diff'], marker_color=m_colors,
-                name='融資', width=0.4, offset=-0.4, hoverinfo='none'
-            ), secondary_y=False, row=4, col=1)
-            fig_chip.add_trace(go.Bar(
-                x=date_str_list, y=df['Short_Diff'], marker_color=s_colors,
-                name='融券', width=0.4, offset=0.0, hoverinfo='none'
-            ), secondary_y=False, row=4, col=1)
-            fig_chip.add_hline(y=0, line_color='rgba(150,150,150,0.7)', line_width=1, secondary_y=False, row=4, col=1)
-
-            fig_chip.add_trace(go.Scatter(
-                x=date_str_list, y=df['Short_Margin_Ratio'], line=dict(color='#e67e22', width=1.5),
-                connectgaps=True, hoverinfo='none', name='券資比%'
-            ), secondary_y=True, row=4, col=1)
-
-            # 【修訂說明 2026-11-23】【修改目的與防呆防錯原因】：
-            # 修改目的：在個股資券副圖新增藍色折線「預估融資維持率%」（#2980b9）與綠色折線「近60日季融資維持率%」（#16a085），
-            # 兩者皆綁定同一個獨立疊加 Y 軸 yaxis9（overlaying="y4"），使兩條維持率共用同一垂直尺度比較，且與棕色券資比（yaxis5）完全獨立。
-            # 防呆防錯原因：使用 yaxis9 避開既有 y~y8 軸號，xaxis="x4" 精準對齊第 4 列資券副圖 X 軸。
-            if 'Margin_Maint_Pct' in df.columns:
-                fig_chip.add_trace(go.Scatter(
-                    x=date_str_list, y=df['Margin_Maint_Pct'], line=dict(color='#2980b9', width=1.5),
-                    connectgaps=True, hoverinfo='none', name='預估融資維持率%',
-                    xaxis='x4', yaxis='y9'
-                ))
-            if 'Margin_Maint_60D_Pct' in df.columns:
-                fig_chip.add_trace(go.Scatter(
-                    x=date_str_list, y=df['Margin_Maint_60D_Pct'], line=dict(color='#16a085', width=1.5),
-                    connectgaps=True, hoverinfo='none', name='近60日季融資維持率%',
-                    xaxis='x4', yaxis='y9'
-                ))
-
-            fig_chip.add_trace(go.Scatter(
-                x=date_str_list, y=df['Major1_Pct'], line=dict(color='#e74c3c', width=1.5),
-                connectgaps=True, hoverinfo='none'
-            ), secondary_y=False, row=5, col=1)
-
-            fig_chip.add_trace(go.Scatter(
-                x=date_str_list, y=df['Major2_Pct'], line=dict(color='#3498db', width=1.5),
-                connectgaps=True, hoverinfo='none'
-            ), row=6, col=1)
-
-        fig_chip.update_layout(
-            font=dict(size=12), template='plotly_white', hovermode=False, dragmode='pan',
-            showlegend=False, height=chip_height,
-            margin=dict(l=80, r=15, t=8, b=24, autoexpand=False),
-            xaxis_rangeslider_visible=False,
-            yaxis9=dict(
-                overlaying='y4',
-                side='right',
-                range=mmaint_range,
-                showgrid=False,
-                showticklabels=False,
-                zeroline=False,
-                fixedrange=True,
-                showspikes=False
-            )
-        )
-        for r in range(1, 7):
-            fig_chip.update_xaxes(
-                type='category', range=[start_idx - 0.5, end_idx + 0.5], domain=[0, 1],
-                showspikes=False, tickfont=dict(size=11), row=r, col=1
-            )
-        fig_chip.update_xaxes(
-            type='category', range=[start_idx - 0.5, end_idx + 0.5], domain=[0, 1],
-            showticklabels=True, tickvals=month_ticks_vals, ticktext=month_ticks_text,
-            tickfont=dict(size=11), row=6, col=1
-        )
-        fig_chip.update_yaxes(title_text='', range=fn_range, fixedrange=True, showspikes=False, tickfont=dict(size=11), row=1, col=1)
-        fig_chip.update_yaxes(title_text='', range=tn_range, fixedrange=True, showspikes=False, tickfont=dict(size=11), row=2, col=1)
-        fig_chip.update_yaxes(title_text='', range=dn_range, fixedrange=True, showspikes=False, tickfont=dict(size=11), row=3, col=1)
-        fig_chip.update_yaxes(title_text='', range=ms_range, fixedrange=True, showspikes=False, tickfont=dict(size=11), secondary_y=False, row=4, col=1)
-        fig_chip.update_yaxes(title_text='', range=ratio_range, showgrid=False, showticklabels=False, fixedrange=True, showspikes=False, tickfont=dict(size=11), secondary_y=True, row=4, col=1)
-        fig_chip.update_yaxes(title_text='', range=m1_range, fixedrange=True, showspikes=False, tickfont=dict(size=11), secondary_y=False, row=5, col=1)
-        fig_chip.update_yaxes(title_text='', range=[0, 100], showgrid=False, showticklabels=False, fixedrange=True, showspikes=False, tickfont=dict(size=11), secondary_y=True, row=5, col=1)
-        fig_chip.update_yaxes(title_text='', range=m2_range, fixedrange=True, showspikes=False, tickfont=dict(size=11), row=6, col=1)
-
-        # 【修訂說明 2026-11-22】【修改目的與防呆防錯原因】：
-        # 修改目的：在「≥{major1_thresh}」大戶線 1 左上角標籤後方加上 1% 持股對應約當張數註明：(1%約=xxxx張)，
-        # 優先採用 indicators.py 依最新週集保真實總股數算出的 df['Total_Shares']（單位：張），再備援 shares_outstanding / 1000.0。
-        # 防呆防錯原因：確保新查詢個股在第一次同步抓完集保資料當下即可直接顯示 (1%約=xxxx張)，不必等第二次重整。
-        m1_pane_label = f'≥{major1_thresh}'
-        resolved_total_sheets = 0.0
-        if 'Total_Shares' in df.columns and not df['Total_Shares'].empty:
-            ts_val = float(df['Total_Shares'].iloc[-1] or 0.0)
-            if ts_val > 0:
-                resolved_total_sheets = ts_val
-        if resolved_total_sheets <= 0 and shares_outstanding and float(shares_outstanding) > 0:
-            resolved_total_sheets = float(shares_outstanding) / 1000.0
-        if resolved_total_sheets > 0:
-            one_pct_sheets = int(round(resolved_total_sheets * 0.01))
-            if one_pct_sheets >= 1:
-                m1_pane_label = f'≥{major1_thresh}(1%約={one_pct_sheets:,}張)'
-
-        chip_pane_labels = [
-            ('y domain', '外資'),
-            ('y2 domain', '投信'),
-            ('y3 domain', '自營'),
-            ('y4 domain', '資券'),
-            ('y6 domain', m1_pane_label),
-            ('y8 domain', f'≥{major2_thresh}'),
-        ]
-
-    for y_ref_str, lbl_c in chip_pane_labels:
-        fig_chip.add_annotation(
-            x=0.006, y=0.98, xref='paper', yref=y_ref_str,
-            xanchor='left', yanchor='top',
-            text=f'<b>{lbl_c}</b>',
-            font=dict(size=11, color='#1e293b'),
-            bgcolor='rgba(255,255,255,0.82)',
-            borderpad=2,
-            showarrow=False
-        )
-
-    # 【防呆防錯備註 2026-11-13】：
-    # 改以標準 Python 字典包裝 fig_tech 與 fig_chip，避免 @st.cache_data 序列化時剝除自訂屬性導致籌碼圖遺失。
     fig_bundle = {"tech": fig_tech, "chip": fig_chip}
     return fig_top, fig_bundle, df, c_name, end_idx, disp_n
 ## EOF chart_builder.py
