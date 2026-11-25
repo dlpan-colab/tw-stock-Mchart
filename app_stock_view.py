@@ -1,13 +1,12 @@
 """
 app_stock_view.py - 主頁籤 2「📈 個股」介面渲染模組
 (自 app.py 依邏輯職責拆分，維持上下雙複合選單、共用主圖與四大子頁籤互動機制，並整合四鍵同列與清除置頂查詢個股紀錄)
-版本: 202611252135
+版本: 202611252258
 """
 
 import re
 import streamlit as st
 import streamlit.components.v1 as components
-
 import cloud_sync
 from storage import (
     load_stock_history,
@@ -29,7 +28,7 @@ from frontend import (
 from app_broker_cache import get_cached_broker_payload
 
 MODULE_NAME = "app_stock_view"
-MODULE_VERSION = "202611252135"
+MODULE_VERSION = "202611252258"
 
 
 def render_stock_tab(
@@ -43,12 +42,10 @@ def render_stock_tab(
     """
     【修訂說明 2026-11-25】【修改目的與防呆防錯原因】：
     1. 修改目的：
-       - 「清除查詢個股紀錄」固定僅清除歷史查詢清單置頂第一筆（`history_codes[0]`），
-         完全移除清空全部歷史紀錄之分支與二次確認提示。
+       - 當 `st.session_state.force_refresh` 為 True 時，讀取 `st.session_state.get("force_refresh_cfg")` 並傳入 `get_figures_fn`
+         與 `get_cached_broker_payload(..., broker_force_days=...)`，使強制重抓僅針對使用者勾選的資料類別與指定期程增量覆蓋更新。
     2. 防呆防錯原因：
-       - 若使用者誤輸入無效代號（如 `1`，尚未寫入歷史清單），點擊「清除查詢個股紀錄」時先將當前無效輸入
-         還原為歷史清單置頂標的（或預設 `2330`）；若當前標的已在歷史清單中，則直接移除清單置頂第一筆並切換至下一筆，
-         同步清除操作儀錶板快取。
+       - 若 `force_refresh_cfg` 尚未初始化，預設提供全部 7 項皆勾選且預設 120 日（大戶 1 週）之防呆字典。
     """
     auth_st = cloud_sync.get_auth_status()
     status_icon = "🟡" if auth_st == 2 else ("🔵" if auth_st == 1 else "⚪")
@@ -66,9 +63,7 @@ def render_stock_tab(
     cur_name_resolved = get_stock_chinese_name(cur_code_upper)
     cur_display_label = next(
         (opt for opt in selector_options if opt.split()[0] == cur_code_upper),
-        f"{cur_code_upper} {cur_name_resolved}".strip()
-        if (cur_name_resolved and cur_name_resolved != cur_code_upper)
-        else cur_code_upper
+        f"{cur_code_upper} {cur_name_resolved}".strip() if (cur_name_resolved and cur_name_resolved != cur_code_upper) else cur_code_upper
     )
     if cur_display_label not in selector_options:
         selector_options = [cur_display_label] + selector_options
@@ -153,9 +148,35 @@ def render_stock_tab(
 
     st.markdown(get_legend_html(), unsafe_allow_html=True)
 
-    current_force = st.session_state.force_refresh
+    current_force = bool(st.session_state.force_refresh)
+    active_refresh_cfg = None
+    broker_force_days = 0
     if current_force:
         st.session_state.force_refresh = False
+        raw_cfg = st.session_state.get("force_refresh_cfg")
+        if isinstance(raw_cfg, dict):
+            active_refresh_cfg = dict(raw_cfg)
+        else:
+            active_refresh_cfg = {
+                "kline_enabled": True,
+                "kline_days": 120,
+                "foreign_enabled": True,
+                "foreign_days": 120,
+                "trust_enabled": True,
+                "trust_days": 120,
+                "dealer_enabled": True,
+                "dealer_days": 120,
+                "margin_enabled": True,
+                "margin_days": 120,
+                "holding_enabled": True,
+                "holding_weeks": 1,
+                "broker_enabled": True,
+                "broker_days": 120,
+            }
+        if active_refresh_cfg.get("broker_enabled", True):
+            broker_force_days = max(1, int(active_refresh_cfg.get("broker_days", 120) or 120))
+        else:
+            broker_force_days = 0
 
     with st.spinner(f"正在載入 {st.session_state.stock_id} 技術與籌碼數據..."):
         fig_top, fig_btm, df_res, resolved_name, raw_end_idx, raw_disp_n = get_figures_fn(
@@ -166,7 +187,8 @@ def render_stock_tab(
             st.session_state.m1_thresh,
             st.session_state.m2_thresh,
             st.session_state.is_mobile_mode,
-            current_force
+            current_force,
+            active_refresh_cfg
         )
 
     if fig_top is not None and df_res is not None:
@@ -264,7 +286,8 @@ def render_stock_tab(
                     trade_dates_tuple=trade_dates_tuple,
                     target_end_idx=safe_end_idx,
                     force_refresh=current_force,
-                    include_60d=include_60d
+                    include_60d=include_60d,
+                    broker_force_days=broker_force_days
                 )
         else:
             broker_payload = {"by_date": {}}
@@ -357,5 +380,5 @@ def render_stock_tab(
 
         st.markdown("<div style='height: 54px;'></div>", unsafe_allow_html=True)
     else:
-        st.error(f"無法取得 {st.session_state.stock_id} 的資料，請檢查代號是否正確或稍後再試。")
+        st.error(f"無法取得 {st.session_state.stock_id} 的資料，請確認輸入的代號是否正確。")
 ## EOF app_stock_view.py
