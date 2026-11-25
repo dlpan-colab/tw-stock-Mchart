@@ -1,7 +1,7 @@
 """
 app.py - 主應用程式介面與生命週期控制（三主頁籤路由總入口）
 (依邏輯職責拆分為 app_broker_cache.py、app_dashboard.py、app_settings.py、app_stock_view.py 與本主入口，維持三主頁籤架構)
-版本: 202611252130
+版本: 202611252300
 """
 
 import os
@@ -9,7 +9,7 @@ import re
 import streamlit as st
 
 MODULE_NAME = "app"
-MODULE_VERSION = "202611252130"
+MODULE_VERSION = "202611252300"
 
 
 # 【防呆防錯備註 2026-11-24】：動態掃描主模組與所有拆分子模組之最大版本號，作為唯一系統版本號
@@ -108,7 +108,22 @@ def _format_code_name_options(history_list: list) -> list:
 
 
 @st.cache_data(ttl=180, show_spinner=False)
-def get_cached_figures(stock_id, period, disp_days, base_date, m1_thresh, m2_thresh, is_mobile, force_refresh):
+def get_cached_figures(
+    stock_id,
+    period,
+    disp_days,
+    base_date,
+    m1_thresh,
+    m2_thresh,
+    is_mobile,
+    force_refresh,
+    refresh_cfg=None
+):
+    """
+    【修訂說明 2026-11-25】【修改目的與防呆防錯原因】：
+    1. 修改目的：新增 `refresh_cfg` 參數並轉傳給 `build_split_figures`，支援依使用者勾選項目與指定期程強制重抓。
+    2. 防呆防錯原因：維持預設值 `None` 以相容既有呼叫。
+    """
     return build_split_figures(
         raw_ticker=stock_id,
         period=period,
@@ -118,7 +133,8 @@ def get_cached_figures(stock_id, period, disp_days, base_date, m1_thresh, m2_thr
         major2_thresh=m2_thresh,
         is_mobile=is_mobile,
         status_placeholder=None,
-        force_refresh=force_refresh
+        force_refresh=force_refresh,
+        refresh_cfg=refresh_cfg
     )
 
 
@@ -327,6 +343,7 @@ st.markdown("""
         background-color: #1e293b !important;
         color: #ffffff !important;
     }
+
     .dash-tbl-wrap {
         width: 100%;
         overflow-x: auto;
@@ -368,6 +385,7 @@ if initial_history:
         default_code = first_code
 
 MAIN_TABS = ["📊 操作儀錶板", "📈 個股", "⚙️ 參數設定"]
+
 if "active_main_tab" not in st.session_state:
     st.session_state.active_main_tab = "📈 個股"
 if "stock_id" not in st.session_state:
@@ -388,6 +406,25 @@ if "m2_thresh" not in st.session_state:
     st.session_state.m2_thresh = 400
 if "force_refresh" not in st.session_state:
     st.session_state.force_refresh = False
+if "force_refresh_cfg" not in st.session_state:
+    st.session_state.force_refresh_cfg = {
+        "kline_enabled": True,
+        "kline_days": 120,
+        "foreign_enabled": True,
+        "foreign_days": 120,
+        "trust_enabled": True,
+        "trust_days": 120,
+        "dealer_enabled": True,
+        "dealer_days": 120,
+        "margin_enabled": True,
+        "margin_days": 120,
+        "holding_enabled": True,
+        "holding_weeks": 1,
+        "broker_enabled": True,
+        "broker_days": 120,
+    }
+if "promote_to_top" not in st.session_state:
+    st.session_state.promote_to_top = False
 if "confirm_clear_all" not in st.session_state:
     st.session_state.confirm_clear_all = False
 if "confirm_clear_brokers" not in st.session_state:
@@ -396,91 +433,80 @@ if "confirm_clear_brokers_range" not in st.session_state:
     st.session_state.confirm_clear_brokers_range = False
 if "confirm_clear_gov_brokers" not in st.session_state:
     st.session_state.confirm_clear_gov_brokers = False
-if "confirm_clear_chip_type" not in st.session_state:
-    st.session_state.confirm_clear_chip_type = ""
-if "index_select_box" not in st.session_state:
-    st.session_state.index_select_box = "主要市場指數..."
-if "ms_counter" not in st.session_state:
-    st.session_state.ms_counter = 0
-if "promote_to_top" not in st.session_state:
-    st.session_state.promote_to_top = False
+if "confirm_clear_gov_brokers_range" not in st.session_state:
+    st.session_state.confirm_clear_gov_brokers_range = False
+if "confirm_clear_chip_range_type" not in st.session_state:
+    st.session_state.confirm_clear_chip_range_type = ""
+if "confirm_clear_chip_all_type" not in st.session_state:
+    st.session_state.confirm_clear_chip_all_type = ""
 if "broker_60d_requests" not in st.session_state:
     st.session_state.broker_60d_requests = set()
 
 
-# 【修訂說明 2026-11-25】【修改目的與防呆防錯原因】：
-# 1. 修改目的：在個股查詢歷史下拉式選單中，無論點選既有標的或輸入新代號，皆設 `promote_to_top = True` 使選中個股自動置頂。
-# 2. 防呆防錯原因：僅透過下拉選單主動選取時置頂，按「◀ 上一檔 / 下一檔 ▶」仍維持 `promote_to_top = False` 保持瀏覽順序。
-def _apply_stock_selector_choice(widget_key: str):
-    raw_sel = str(st.session_state.get(widget_key, "") or "").strip()
-    if not raw_sel:
+def _apply_stock_selection(raw_val: str):
+    if not raw_val:
         return
-    hist_now = load_stock_history()
-    existing_labels = set(_format_code_name_options(hist_now))
-    if raw_sel in existing_labels:
-        target_code = raw_sel.split()[0].strip().upper()
-        if target_code:
-            st.session_state.stock_id = target_code
-            st.session_state.promote_to_top = True
-            st.session_state.confirm_clear_all = False
-    else:
-        first_token = raw_sel.split()[0].strip()
-        resolved = resolve_ticker_code(first_token)
-        if resolved:
-            st.session_state.stock_id = resolved
-            st.session_state.promote_to_top = True
-            st.session_state.confirm_clear_all = False
+    token = str(raw_val).strip().split()[0]
+    new_code = resolve_ticker_code(token)
+    if new_code:
+        st.session_state.stock_id = new_code
+        st.session_state.promote_to_top = True
+        st.session_state.confirm_clear_all = False
 
 
-def on_top_stock_selector_change():
-    _apply_stock_selector_choice("top_stock_selector")
+def _on_top_selector_change():
+    _apply_stock_selection(st.session_state.get("top_stock_selector", ""))
 
 
-def on_bottom_stock_selector_change():
-    _apply_stock_selector_choice("bottom_stock_selector")
+def _on_bottom_selector_change():
+    _apply_stock_selection(st.session_state.get("bottom_stock_selector", ""))
 
 
-def on_index_select_change():
-    sel = st.session_state.index_select_box
-    if sel and sel != "主要市場指數...":
-        m = re.search(r'\((.*?)\)', sel)
-        if m:
-            idx_code = m.group(1)
-            st.session_state.stock_id = idx_code
-            st.session_state.promote_to_top = False
-            st.session_state.confirm_clear_all = False
-            st.session_state.active_main_tab = "📈 個股"
-            st.session_state.index_select_box = "主要市場指數..."
+def _on_index_change():
+    idx_label = st.session_state.get("index_select_box", "")
+    m = re.search(r'\(([^)]+)\)', str(idx_label))
+    if m:
+        st.session_state.stock_id = m.group(1).strip().upper()
+        st.session_state.promote_to_top = False
+        st.session_state.confirm_clear_all = False
 
 
-if "pending_main_tab" in st.session_state:
-    st.session_state.active_main_tab = st.session_state.pop("pending_main_tab")
+def _on_main_tab_change():
+    chosen = st.session_state.get("main_tab_radio")
+    if chosen in MAIN_TABS:
+        st.session_state.active_main_tab = chosen
 
-selected_main_tab = st.radio(
+
+if st.session_state.get("main_tab_radio") != st.session_state.active_main_tab:
+    st.session_state.main_tab_radio = st.session_state.active_main_tab
+
+st.radio(
     "主功能頁籤",
     MAIN_TABS,
     horizontal=True,
-    label_visibility="collapsed",
-    key="active_main_tab"
+    key="main_tab_radio",
+    on_change=_on_main_tab_change,
+    label_visibility="collapsed"
 )
 
-if selected_main_tab == "📊 操作儀錶板":
+if st.session_state.active_main_tab == "📊 操作儀錶板":
     render_dashboard_tab(
         system_version=SYSTEM_VERSION,
-        resolve_ticker_fn=resolve_ticker_code,
-    )
-elif selected_main_tab == "⚙️ 參數設定":
-    render_settings_tab(
-        system_version=SYSTEM_VERSION,
+        main_tabs=MAIN_TABS,
         clear_figures_cache_fn=get_cached_figures.clear,
     )
-else:
+elif st.session_state.active_main_tab == "📈 個股":
     render_stock_tab(
         system_version=SYSTEM_VERSION,
         format_options_fn=_format_code_name_options,
-        on_top_selector_change_fn=on_top_stock_selector_change,
-        on_bottom_selector_change_fn=on_bottom_stock_selector_change,
-        on_index_change_fn=on_index_select_change,
+        on_top_selector_change_fn=_on_top_selector_change,
+        on_bottom_selector_change_fn=_on_bottom_selector_change,
+        on_index_change_fn=_on_index_change,
         get_figures_fn=get_cached_figures,
+    )
+else:
+    render_settings_tab(
+        system_version=SYSTEM_VERSION,
+        clear_figures_cache_fn=get_cached_figures.clear,
     )
 ## EOF app.py
