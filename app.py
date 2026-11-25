@@ -1,7 +1,7 @@
 """
 app.py - 主應用程式介面與生命週期控制（三主頁籤路由總入口）
 (依邏輯職責拆分為 app_broker_cache.py、app_dashboard.py、app_settings.py、app_stock_view.py 與本主入口，維持三主頁籤架構)
-版本: 202611242246
+版本: 202611252115
 """
 
 import os
@@ -9,20 +9,33 @@ import re
 import streamlit as st
 
 MODULE_NAME = "app"
-MODULE_VERSION = "202611242246"
+MODULE_VERSION = "202611252115"
 
 
 # 【防呆防錯備註 2026-11-24】：動態掃描主模組與所有拆分子模組之最大版本號，作為唯一系統版本號
 def get_system_version() -> str:
     versions = [MODULE_VERSION]
     module_names = [
-        "app_broker_cache", "app_dashboard", "app_settings", "app_stock_view",
-        "frontend", "frnt_broker",
-        "chart_builder", "chrt_chip",
+        "app_broker_cache",
+        "app_dashboard",
+        "app_settings",
+        "app_stock_view",
+        "frontend",
+        "frnt_broker",
+        "chart_builder",
+        "chrt_chip",
         "indicators",
-        "data_fetcher", "ftch_kline_chip", "ftch_tdcc_dash", "ftch_gov8", "ftch_broker",
-        "storage", "strg_cloud_names", "strg_history_maint", "strg_broker_mixin",
-        "config", "cloud_sync"
+        "data_fetcher",
+        "ftch_kline_chip",
+        "ftch_tdcc_dash",
+        "ftch_gov8",
+        "ftch_broker",
+        "storage",
+        "strg_cloud_names",
+        "strg_history_maint",
+        "strg_broker_mixin",
+        "config",
+        "cloud_sync"
     ]
     base_dir = os.path.dirname(os.path.abspath(__file__))
     for mod_name in module_names:
@@ -115,6 +128,12 @@ st.set_page_config(
     initial_sidebar_state="collapsed"
 )
 
+# 【修訂說明 2026-11-25】【修改目的與防呆防錯原因】：
+# 1. 修改目的：新增 `.stock-nav-4col-anchor` 橫向四欄並排樣式，支援個股頁籤頂部
+#    [◀ 上一檔][主要市場指數][個股查詢歷史][下一檔 ▶] 四個功能鍵同一列並排，且手機版維持單列不換行；
+#    同時完整保留原有 3 欄 `.stock-nav-anchor` 樣式供個股底部選單使用。
+# 2. 防呆防錯原因：使用 `:first-child` 與 `:last-child` 鎖定左右切換鈕寬度，中間兩欄下拉選單採 `flex: 1 1 0`
+#    與 `min-width: 0` 平均分配剩餘寬度並自動截斷過長文字，防止手機版窄螢幕溢出或換行跑版。
 st.markdown("""
 <style>
     .block-container {
@@ -208,6 +227,61 @@ st.markdown("""
         white-space: nowrap !important;
     }
 
+    div[data-testid="stVerticalBlock"]:has(.stock-nav-4col-anchor) [data-testid="stHorizontalBlock"] {
+        display: flex !important;
+        flex-direction: row !important;
+        flex-wrap: nowrap !important;
+        align-items: center !important;
+        justify-content: space-between !important;
+        gap: 4px !important;
+        width: 100% !important;
+    }
+    div[data-testid="stVerticalBlock"]:has(.stock-nav-4col-anchor) [data-testid="stHorizontalBlock"] > [data-testid="stColumn"]:nth-child(1),
+    div[data-testid="stVerticalBlock"]:has(.stock-nav-4col-anchor) [data-testid="stHorizontalBlock"] > [data-testid="stColumn"]:nth-child(4),
+    div[data-testid="stVerticalBlock"]:has(.stock-nav-4col-anchor) [data-testid="stHorizontalBlock"] > div:nth-child(1),
+    div[data-testid="stVerticalBlock"]:has(.stock-nav-4col-anchor) [data-testid="stHorizontalBlock"] > div:nth-child(4) {
+        flex: 0 0 58px !important;
+        width: 58px !important;
+        min-width: 58px !important;
+        max-width: 58px !important;
+    }
+    div[data-testid="stVerticalBlock"]:has(.stock-nav-4col-anchor) [data-testid="stHorizontalBlock"] > [data-testid="stColumn"]:nth-child(2),
+    div[data-testid="stVerticalBlock"]:has(.stock-nav-4col-anchor) [data-testid="stHorizontalBlock"] > [data-testid="stColumn"]:nth-child(3),
+    div[data-testid="stVerticalBlock"]:has(.stock-nav-4col-anchor) [data-testid="stHorizontalBlock"] > div:nth-child(2),
+    div[data-testid="stVerticalBlock"]:has(.stock-nav-4col-anchor) [data-testid="stHorizontalBlock"] > div:nth-child(3) {
+        flex: 1 1 0 !important;
+        width: auto !important;
+        min-width: 0 !important;
+        max-width: none !important;
+    }
+    div[data-testid="stVerticalBlock"]:has(.stock-nav-4col-anchor) [data-testid="stHorizontalBlock"] > [data-testid="stColumn"]:nth-child(2) > div,
+    div[data-testid="stVerticalBlock"]:has(.stock-nav-4col-anchor) [data-testid="stHorizontalBlock"] > [data-testid="stColumn"]:nth-child(2) [data-testid="stSelectbox"],
+    div[data-testid="stVerticalBlock"]:has(.stock-nav-4col-anchor) [data-testid="stHorizontalBlock"] > [data-testid="stColumn"]:nth-child(2) div[data-baseweb="select"],
+    div[data-testid="stVerticalBlock"]:has(.stock-nav-4col-anchor) [data-testid="stHorizontalBlock"] > [data-testid="stColumn"]:nth-child(2) div[data-baseweb="select"] > div,
+    div[data-testid="stVerticalBlock"]:has(.stock-nav-4col-anchor) [data-testid="stHorizontalBlock"] > [data-testid="stColumn"]:nth-child(3) > div,
+    div[data-testid="stVerticalBlock"]:has(.stock-nav-4col-anchor) [data-testid="stHorizontalBlock"] > [data-testid="stColumn"]:nth-child(3) [data-testid="stSelectbox"],
+    div[data-testid="stVerticalBlock"]:has(.stock-nav-4col-anchor) [data-testid="stHorizontalBlock"] > [data-testid="stColumn"]:nth-child(3) div[data-baseweb="select"],
+    div[data-testid="stVerticalBlock"]:has(.stock-nav-4col-anchor) [data-testid="stHorizontalBlock"] > [data-testid="stColumn"]:nth-child(3) div[data-baseweb="select"] > div,
+    div[data-testid="stVerticalBlock"]:has(.stock-nav-4col-anchor) [data-testid="stHorizontalBlock"] > div:nth-child(2) > div,
+    div[data-testid="stVerticalBlock"]:has(.stock-nav-4col-anchor) [data-testid="stHorizontalBlock"] > div:nth-child(2) [data-testid="stSelectbox"],
+    div[data-testid="stVerticalBlock"]:has(.stock-nav-4col-anchor) [data-testid="stHorizontalBlock"] > div:nth-child(2) div[data-baseweb="select"],
+    div[data-testid="stVerticalBlock"]:has(.stock-nav-4col-anchor) [data-testid="stHorizontalBlock"] > div:nth-child(2) div[data-baseweb="select"] > div,
+    div[data-testid="stVerticalBlock"]:has(.stock-nav-4col-anchor) [data-testid="stHorizontalBlock"] > div:nth-child(3) > div,
+    div[data-testid="stVerticalBlock"]:has(.stock-nav-4col-anchor) [data-testid="stHorizontalBlock"] > div:nth-child(3) [data-testid="stSelectbox"],
+    div[data-testid="stVerticalBlock"]:has(.stock-nav-4col-anchor) [data-testid="stHorizontalBlock"] > div:nth-child(3) div[data-baseweb="select"],
+    div[data-testid="stVerticalBlock"]:has(.stock-nav-4col-anchor) [data-testid="stHorizontalBlock"] > div:nth-child(3) div[data-baseweb="select"] > div {
+        width: 100% !important;
+        min-width: 0 !important;
+        max-width: 100% !important;
+    }
+    div[data-testid="stVerticalBlock"]:has(.stock-nav-4col-anchor) [data-testid="stHorizontalBlock"] button {
+        width: 100% !important;
+        min-width: 54px !important;
+        padding: 4px 2px !important;
+        font-size: 11px !important;
+        white-space: nowrap !important;
+    }
+
     div[data-testid="stVerticalBlock"]:has(.settings-btn-row-anchor) [data-testid="stHorizontalBlock"] {
         display: flex !important;
         flex-direction: row !important;
@@ -255,7 +329,6 @@ st.markdown("""
         background-color: #1e293b !important;
         color: #ffffff !important;
     }
-
     .dash-tbl-wrap {
         width: 100%;
         overflow-x: auto;
@@ -299,7 +372,6 @@ if initial_history:
 MAIN_TABS = ["📊 操作儀錶板", "📈 個股", "⚙️ 參數設定"]
 if "active_main_tab" not in st.session_state:
     st.session_state.active_main_tab = "📈 個股"
-
 if "stock_id" not in st.session_state:
     st.session_state.stock_id = default_code
 if "period" not in st.session_state:
@@ -329,7 +401,7 @@ if "confirm_clear_gov_brokers" not in st.session_state:
 if "confirm_clear_chip_type" not in st.session_state:
     st.session_state.confirm_clear_chip_type = ""
 if "index_select_box" not in st.session_state:
-    st.session_state.index_select_box = "選擇主要市場指數..."
+    st.session_state.index_select_box = "主要市場指數..."
 if "ms_counter" not in st.session_state:
     st.session_state.ms_counter = 0
 if "promote_to_top" not in st.session_state:
@@ -367,28 +439,21 @@ def on_bottom_stock_selector_change():
     _apply_stock_selector_choice("bottom_stock_selector")
 
 
+# 【修訂說明 2026-11-25】【修改目的與防呆防錯原因】：
+# 1. 修改目的：配合「主要市場指數」下拉選單移動至「📈 個股」頁籤並排顯示，預設提示文字精簡為「主要市場指數...」，
+#    選擇指數後直接更新 `stock_id` 並將下拉選單重置回「主要市場指數...」。
+# 2. 防呆防錯原因：維持 `promote_to_top = False`，避免切換主要市場指數時誤將指数排擠個股查詢歷史排序。
 def on_index_select_change():
     sel = st.session_state.index_select_box
-    if sel != "選擇主要市場指數...":
+    if sel and sel != "主要市場指數...":
         m = re.search(r'\((.*?)\)', sel)
         if m:
             idx_code = m.group(1)
             st.session_state.stock_id = idx_code
             st.session_state.promote_to_top = False
-            st.session_state.active_main_tab = "📈 個股"
-        st.session_state.index_select_box = "選擇主要市場指數..."
-
-
-def on_history_select_change():
-    cur_key = f"history_selectbox_{st.session_state.ms_counter}"
-    sel = st.session_state.get(cur_key, "選擇歷史紀錄...")
-    if sel and sel != "選擇歷史紀錄...":
-        target_code = sel.split()[0].strip().upper()
-        if target_code:
-            st.session_state.stock_id = target_code
-            st.session_state.promote_to_top = True
             st.session_state.confirm_clear_all = False
             st.session_state.active_main_tab = "📈 個股"
+            st.session_state.index_select_box = "主要市場指數..."
 
 
 if "pending_main_tab" in st.session_state:
@@ -402,6 +467,10 @@ selected_main_tab = st.radio(
     key="active_main_tab"
 )
 
+# 【修訂說明 2026-11-25】【修改目的與防呆防錯原因】：
+# 1. 修改目的：`render_settings_tab` 移除已搬遷之 `on_index_change_fn` 與已刪除之 `on_history_change_fn`；
+#    `render_stock_tab` 傳入 `on_index_change_fn=on_index_select_change` 供同列主要市場指數選單呼叫。
+# 2. 防呆防錯原因：同步更新主入口與子模組介面簽章，確保頁面切換無參數不匹配錯誤。
 if selected_main_tab == "📊 操作儀錶板":
     render_dashboard_tab(
         system_version=SYSTEM_VERSION,
@@ -410,9 +479,6 @@ if selected_main_tab == "📊 操作儀錶板":
 elif selected_main_tab == "⚙️ 參數設定":
     render_settings_tab(
         system_version=SYSTEM_VERSION,
-        format_options_fn=_format_code_name_options,
-        on_index_change_fn=on_index_select_change,
-        on_history_change_fn=on_history_select_change,
         clear_figures_cache_fn=get_cached_figures.clear,
     )
 else:
@@ -421,6 +487,7 @@ else:
         format_options_fn=_format_code_name_options,
         on_top_selector_change_fn=on_top_stock_selector_change,
         on_bottom_selector_change_fn=on_bottom_stock_selector_change,
+        on_index_change_fn=on_index_select_change,
         get_figures_fn=get_cached_figures,
     )
 ## EOF app.py
