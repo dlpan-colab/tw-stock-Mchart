@@ -1,12 +1,11 @@
 """
 app_settings.py - 主頁籤 3「⚙️ 參數設定」介面渲染模組
 (自 app.py 依邏輯職責拆分，維持既有全市籌碼維護、八大官股維護與全市場分點三鍵並列維護機制，並劃分三項次頁籤)
-版本: 202611252212
+版本: 202611252305
 """
 
 from datetime import datetime
 import streamlit as st
-
 from storage import (
     get_stock_chinese_name,
     clear_all_stocks_chip_range,
@@ -23,7 +22,7 @@ from data_fetcher import (
 from app_broker_cache import get_cached_broker_payload
 
 MODULE_NAME = "app_settings"
-MODULE_VERSION = "202611252212"
+MODULE_VERSION = "202611252305"
 
 
 def render_settings_tab(
@@ -33,14 +32,12 @@ def render_settings_tab(
     """
     【修訂說明 2026-11-25】【修改目的與防呆防錯原因】：
     1. 修改目的：
-       - 將第 3 個次頁籤名稱由「全市場個股資料維護」修訂為「全市場批次維護」。
-       - 將「全市(含上櫃)籌碼資料庫維護」之資券、法人、大戶三個區塊，以及「加權指數／櫃買指數八大官股維護」，
-         全面比照「全市場（含上櫃）分點批次增補與維護」改為三鍵並排：
-         [📥 批次增補...]、[🧹 清除指定期間...]、[🗑️ 清除所有...資料]。
+       - 於次頁籤 2「個股資料維護」之「🔄 強制重新抓取最新資料」按鈕上方，新增 7 組可彈性勾選與設定期程的欄位：
+         日 K 線（預設 120 日）、外資（預設 120 日）、投信（預設 120 日）、自營商（預設 120 日）、
+         資券（預設 120 日）、大戶（預設 1 週，備註：最長15週）、分點（預設 120 日，備註：統計不限，日況限最近一日）。
     2. 防呆防錯原因：
-       - 清除指定期間（`confirm_clear_chip_range_type`、`confirm_clear_gov_brokers_range`）嚴格依據各區塊對應之
-         基準日與往前交易日數執行區間刪除；清除所有資料（`confirm_clear_chip_all_type`、`confirm_clear_gov_brokers`）
-         與區間清除狀態完全獨立，並提供明確二次確認提示，避免誤刪全表資料。
+       - 將使用者勾選狀態與輸入數值即時存入 `st.session_state.force_refresh_cfg`，
+         若全部項目皆未勾選時顯示提示並阻擋無效點擊；未勾選項目於重抓時完全保留資料庫既有資料。
     """
     st.markdown(
         f"<div style='font-size:16px; font-weight:800; color:#0f172a; margin-bottom:6px;'>"
@@ -115,13 +112,159 @@ def render_settings_tab(
             f"目前個股頁籤選定標的：{target_label}</div>",
             unsafe_allow_html=True
         )
+
+        cfg = st.session_state.get("force_refresh_cfg")
+        if not isinstance(cfg, dict):
+            cfg = {
+                "kline_enabled": True,
+                "kline_days": 120,
+                "foreign_enabled": True,
+                "foreign_days": 120,
+                "trust_enabled": True,
+                "trust_days": 120,
+                "dealer_enabled": True,
+                "dealer_days": 120,
+                "margin_enabled": True,
+                "margin_days": 120,
+                "holding_enabled": True,
+                "holding_weeks": 1,
+                "broker_enabled": True,
+                "broker_days": 120,
+            }
+
+        # 1. 日 K 線
+        c_k1, c_k2 = st.columns([2, 3])
+        with c_k1:
+            k_en = st.checkbox("日 K 線", value=bool(cfg.get("kline_enabled", True)), key="chk_fr_kline")
+        with c_k2:
+            k_days = int(st.number_input(
+                "日 K 線期程(交易日)",
+                min_value=1,
+                max_value=1200,
+                value=int(cfg.get("kline_days", 120) or 120),
+                step=10,
+                key="num_fr_kline_days",
+                label_visibility="collapsed"
+            ))
+
+        # 2. 外資
+        c_f1, c_f2 = st.columns([2, 3])
+        with c_f1:
+            f_en = st.checkbox("外資", value=bool(cfg.get("foreign_enabled", True)), key="chk_fr_foreign")
+        with c_f2:
+            f_days = int(st.number_input(
+                "外資期程(交易日)",
+                min_value=1,
+                max_value=365,
+                value=int(cfg.get("foreign_days", 120) or 120),
+                step=10,
+                key="num_fr_foreign_days",
+                label_visibility="collapsed"
+            ))
+
+        # 3. 投信
+        c_t1, c_t2 = st.columns([2, 3])
+        with c_t1:
+            t_en = st.checkbox("投信", value=bool(cfg.get("trust_enabled", True)), key="chk_fr_trust")
+        with c_t2:
+            t_days = int(st.number_input(
+                "投信期程(交易日)",
+                min_value=1,
+                max_value=365,
+                value=int(cfg.get("trust_days", 120) or 120),
+                step=10,
+                key="num_fr_trust_days",
+                label_visibility="collapsed"
+            ))
+
+        # 4. 自營商
+        c_d1, c_d2 = st.columns([2, 3])
+        with c_d1:
+            d_en = st.checkbox("自營商", value=bool(cfg.get("dealer_enabled", True)), key="chk_fr_dealer")
+        with c_d2:
+            d_days = int(st.number_input(
+                "自營商期程(交易日)",
+                min_value=1,
+                max_value=365,
+                value=int(cfg.get("dealer_days", 120) or 120),
+                step=10,
+                key="num_fr_dealer_days",
+                label_visibility="collapsed"
+            ))
+
+        # 5. 資券
+        c_m1, c_m2 = st.columns([2, 3])
+        with c_m1:
+            m_en = st.checkbox("資券", value=bool(cfg.get("margin_enabled", True)), key="chk_fr_margin")
+        with c_m2:
+            m_days = int(st.number_input(
+                "資券期程(交易日)",
+                min_value=1,
+                max_value=365,
+                value=int(cfg.get("margin_days", 120) or 120),
+                step=10,
+                key="num_fr_margin_days",
+                label_visibility="collapsed"
+            ))
+
+        # 6. 大戶（預設1週，備註最長15週）
+        c_h1, c_h2 = st.columns([2, 3])
+        with c_h1:
+            h_en = st.checkbox("大戶（最長15週）", value=bool(cfg.get("holding_enabled", True)), key="chk_fr_holding")
+        with c_h2:
+            h_weeks = int(st.number_input(
+                "大戶期程(週，最長15週)",
+                min_value=1,
+                max_value=15,
+                value=min(15, max(1, int(cfg.get("holding_weeks", 1) or 1))),
+                step=1,
+                key="num_fr_holding_weeks",
+                label_visibility="collapsed"
+            ))
+
+        # 7. 分點（預設120日，備註統計不限，日況限最近一日）
+        c_b1, c_b2 = st.columns([2, 3])
+        with c_b1:
+            b_en = st.checkbox("分點（統計不限，日況限最近一日）", value=bool(cfg.get("broker_enabled", True)), key="chk_fr_broker")
+        with c_b2:
+            b_days = int(st.number_input(
+                "分點統計期程(交易日)",
+                min_value=1,
+                max_value=365,
+                value=int(cfg.get("broker_days", 120) or 120),
+                step=10,
+                key="num_fr_broker_days",
+                label_visibility="collapsed"
+            ))
+
+        updated_cfg = {
+            "kline_enabled": k_en,
+            "kline_days": k_days,
+            "foreign_enabled": f_en,
+            "foreign_days": f_days,
+            "trust_enabled": t_en,
+            "trust_days": t_days,
+            "dealer_enabled": d_en,
+            "dealer_days": d_days,
+            "margin_enabled": m_en,
+            "margin_days": m_days,
+            "holding_enabled": h_en,
+            "holding_weeks": h_weeks,
+            "broker_enabled": b_en,
+            "broker_days": b_days,
+        }
+        st.session_state.force_refresh_cfg = updated_cfg
+
         if st.button("🔄 強制重新抓取最新資料", use_container_width=True):
-            st.session_state.force_refresh = True
-            clear_figures_cache_fn()
-            get_cached_broker_payload.clear()
-            from app_dashboard import get_cached_dashboard_rows
-            get_cached_dashboard_rows.clear()
-            st.success("快取已清除，切換回「📈 個股」頁籤即會重新抓取最新資料。")
+            if not any([k_en, f_en, t_en, d_en, m_en, h_en, b_en]):
+                st.warning("⚠️ 請至少勾選一項要重新抓取的資料類別。")
+            else:
+                st.session_state.force_refresh = True
+                clear_figures_cache_fn()
+                get_cached_broker_payload.clear()
+                from app_dashboard import get_cached_dashboard_rows
+                get_cached_dashboard_rows.clear()
+                st.success("已套用勾選項目與期程，切換回「📈 個股」頁籤即會依設定重新抓取最新資料。")
 
     # =========================================================================
     # 次頁籤 3：全市場批次維護
@@ -480,10 +623,10 @@ def render_settings_tab(
 
         if run_bk_sync:
             from data_fetcher import batch_sync_all_stocks_brokers
-            prog_bar = st.progress(0, text="準備檢查歷史紀錄與增補分點資料...")
+            prog_bar = st.progress(0, text="準備檢查歷史紀錄與增補分點統計...")
             status_txt = st.empty()
 
-            def _on_bf_progress(cur_i, tot_n, c_code, c_name, st_msg):
+            def _on_bk_progress(cur_i, tot_n, c_code, c_name, st_msg):
                 pct = int(cur_i / max(1, tot_n) * 100)
                 prog_bar.progress(min(100, pct), text=f"[{cur_i}/{tot_n}] {c_code} {c_name} - {st_msg}")
                 status_txt.caption(f"目前處理：{c_code} {c_name}（基準日 {base_d_str} 往前 {backfill_days_opt} 日）")
@@ -491,22 +634,22 @@ def render_settings_tab(
             summary_msg = batch_sync_all_stocks_brokers(
                 base_date_str=base_d_str,
                 lookback_days=int(backfill_days_opt),
-                progress_callback=_on_bf_progress
+                progress_callback=_on_bk_progress
             )
             prog_bar.progress(100, text="批次增補完成！")
             status_txt.empty()
             get_cached_broker_payload.clear()
             st.success(summary_msg)
 
-        if st.session_state.confirm_clear_brokers_range:
+        if st.session_state.get("confirm_clear_brokers_range", False):
             st.warning(
-                f"⚠️ 確定要清除所有上市／上櫃個股於增補基準日 **{base_d_str}** 往前 **{backfill_days_opt}** 個交易日區間內之「**分點統計與分點日況明細**」嗎？（區間外歷史分點、八大官股及日線/法人/資券/大戶資料將完整保留）"
+                f"⚠️ 確定要清除所有上市／上櫃個股於增補基準日 **{base_d_str}** 往前 **{backfill_days_opt}** 個交易日區間內之「**分點資料（含統計排行、個股逐日明細與關注分點日況）**」嗎？（區間外更早歷史分點、日線及籌碼資料將完整保留）"
             )
             with st.container():
                 st.markdown("<div class='settings-btn-row-anchor'></div>", unsafe_allow_html=True)
-                cbr_yes, cbr_no = st.columns(2)
-                with cbr_yes:
-                    if st.button("確定清除指定期間分點", key="btn_confirm_clear_brokers_range_yes", use_container_width=True):
+                c_rng_yes, c_rng_no = st.columns(2)
+                with c_rng_yes:
+                    if st.button("確定清除指定期間分點", key="btn_confirm_clear_bk_rng_yes", use_container_width=True):
                         with st.spinner(f"正在清除基準日 {base_d_str} 往前 {backfill_days_opt} 日之分點資料..."):
                             res_rng_msg = clear_all_stocks_broker_range(
                                 base_date_str=base_d_str,
@@ -515,25 +658,25 @@ def render_settings_tab(
                         st.session_state.confirm_clear_brokers_range = False
                         get_cached_broker_payload.clear()
                         st.success(res_rng_msg)
-                with cbr_no:
-                    if st.button("取消清除", key="btn_confirm_clear_brokers_range_no", use_container_width=True):
+                with c_rng_no:
+                    if st.button("取消清除", key="btn_confirm_clear_bk_rng_no", use_container_width=True):
                         st.session_state.confirm_clear_brokers_range = False
                         st.rerun()
 
-        if st.session_state.confirm_clear_brokers:
-            st.warning("⚠️ 確定要清除本地與雲端所有標的（含上市/上櫃個股與加權/櫃買八大官股）之「分點統計與分點日況明細」嗎？（日線、法人、資券與集保大戶資料將完整保留）")
+        if st.session_state.get("confirm_clear_brokers", False):
+            st.warning("⚠️ 確定要清除本地與雲端所有上市／上櫃個股之「所有分點資料（含統計排行、逐日明細與關注分點日況）」嗎？（日線、法人、資券與大戶資料將完整保留）")
             with st.container():
                 st.markdown("<div class='settings-btn-row-anchor'></div>", unsafe_allow_html=True)
-                cb_yes, cb_no = st.columns(2)
-                with cb_yes:
-                    if st.button("確定清除分點", key="btn_confirm_clear_brokers_yes", use_container_width=True):
-                        with st.spinner("正在清除本地與雲端分點資料表..."):
-                            res_msg = clear_all_broker_data()
+                c_yes, c_no = st.columns(2)
+                with c_yes:
+                    if st.button("確定清除所有分點", key="btn_confirm_clear_bk_yes", use_container_width=True):
+                        with st.spinner("正在清除本地與雲端所有分點資料..."):
+                            res_clr_msg = clear_all_broker_data()
                         st.session_state.confirm_clear_brokers = False
                         get_cached_broker_payload.clear()
-                        st.success(res_msg)
-                with cb_no:
-                    if st.button("取消清除", key="btn_confirm_clear_brokers_no", use_container_width=True):
+                        st.success(res_clr_msg)
+                with c_no:
+                    if st.button("取消清除", key="btn_confirm_clear_bk_no", use_container_width=True):
                         st.session_state.confirm_clear_brokers = False
                         st.rerun()
 ## EOF app_settings.py
