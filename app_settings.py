@@ -1,17 +1,13 @@
 """
 app_settings.py - 主頁籤 3「⚙️ 參數設定」介面渲染模組
 (自 app.py 依邏輯職責拆分，維持既有全市籌碼維護、八大官股維護與全市場分點三鍵並列維護機制)
-版本: 202611242246
+版本: 202611252116
 """
 
-import os
 from datetime import datetime
 import streamlit as st
 
 from storage import (
-    load_stock_history,
-    clear_stock_history,
-    remove_stocks_from_history,
     clear_all_stocks_chip_range,
     clear_all_stocks_broker_range,
     clear_all_broker_data,
@@ -22,92 +18,29 @@ from data_fetcher import (
     get_default_chip_backfill_base_date,
 )
 from app_broker_cache import get_cached_broker_payload
-from app_dashboard import get_cached_dashboard_rows
 
 MODULE_NAME = "app_settings"
-MODULE_VERSION = "202611242246"
+MODULE_VERSION = "202611252116"
 
 
 def render_settings_tab(
     system_version: str,
-    format_options_fn,
-    on_index_change_fn,
-    on_history_change_fn,
     clear_figures_cache_fn,
 ):
+    """
+    【修訂說明 2026-11-25】【修改目的與防呆防錯原因】：
+    1. 修改目的：
+       - 刪除「主要市場指數」下拉選單區塊（已移至「📈 個股」頁籤與導覽列並排顯示）。
+       - 刪除「查詢歷史紀錄」折疊區塊與內部的「清除紀錄」按鈕（改為「清除查詢個股紀錄」移至「📈 個股」頁籤）。
+    2. 防呆防錯原因：
+       - 移除未使用的歷史紀錄管理引用與函式參數（`format_options_fn`、`on_index_change_fn`、`on_history_change_fn`），
+         完整保留下方所有參數設定、大戶門檻、強制重新抓取及全市籌碼／八大官股／分點資料庫維護邏輯。
+    """
     st.markdown(
         f"<div style='font-size:16px; font-weight:800; color:#0f172a; margin-bottom:6px;'>"
         f"⚙️ 參數設定與資料庫維護 <span style='font-size:12px; color:#64748b; font-weight:600;'>v{system_version}</span></div>",
         unsafe_allow_html=True
     )
-
-    INDEX_CHOICES = [
-        "選擇主要市場指數...",
-        "加權指數 (^TWII)", "櫃買指數 (^TWOII)",
-        "那斯達克 (^IXIC)", "費城半導體 (^SOX)", "道瓊工業 (^DJI)", "標普500 (^GSPC)",
-        "日經225 (^N225)", "韓國綜合 (^KS11)",
-        "英國富時100 (^FTSE)", "德國DAX (^GDAXI)", "法國CAC40 (^FCHI)"
-    ]
-    st.selectbox(
-        "主要市場指數",
-        INDEX_CHOICES,
-        key="index_select_box",
-        on_change=on_index_change_fn
-    )
-
-    history_records = load_stock_history()
-    history_codes = [str(item.get("code")).strip().upper() for item in history_records if item.get("code")]
-
-    with st.expander("查詢歷史紀錄", expanded=True):
-        if history_codes:
-            history_options = ["選擇歷史紀錄..."] + format_options_fn(history_records)
-            current_sb_key = f"history_selectbox_{st.session_state.ms_counter}"
-            selected_history = st.selectbox(
-                "點擊展開並選擇單一標的（選擇後將置頂並跳轉至個股頁籤）...",
-                options=history_options,
-                index=0,
-                key=current_sb_key,
-                on_change=on_history_change_fn
-            )
-
-            if st.button("清除紀錄", key="btn_clear_hist", use_container_width=True):
-                if selected_history and selected_history != "選擇歷史紀錄...":
-                    target_code = selected_history.split()[0].strip().upper()
-                    remained = remove_stocks_from_history([target_code])
-                    local_db = f"data_{target_code}.db"
-                    if os.path.exists(local_db):
-                        try:
-                            os.remove(local_db)
-                        except Exception:
-                            pass
-                    if str(st.session_state.stock_id).strip().upper() == target_code:
-                        next_code = remained[0]["code"] if remained else "2330"
-                        st.session_state.stock_id = next_code
-                        st.session_state.promote_to_top = False
-                    st.session_state.confirm_clear_all = False
-                    st.session_state.ms_counter += 1
-                    get_cached_dashboard_rows.clear()
-                    st.rerun()
-                else:
-                    st.session_state.confirm_clear_all = True
-                    st.rerun()
-        else:
-            st.caption("目前無歷史紀錄")
-
-        if st.session_state.confirm_clear_all:
-            st.warning("⚠️ 確定要清空所有查詢歷史紀錄嗎？")
-            c_yes, c_no = st.columns(2)
-            with c_yes:
-                if st.button("確定清空", key="btn_confirm_yes", use_container_width=True):
-                    clear_stock_history()
-                    st.session_state.confirm_clear_all = False
-                    st.session_state.ms_counter += 1
-                    get_cached_dashboard_rows.clear()
-                    st.rerun()
-            with c_no:
-                if st.button("取消", key="btn_confirm_no", use_container_width=True):
-                    st.session_state.confirm_clear_all = False
-                    st.rerun()
 
     st.session_state.is_mobile_mode = st.toggle(
         "手機版緊湊模式 (自動最佳化字體與高度)",
@@ -116,7 +49,11 @@ def render_settings_tab(
 
     period_options = {"1年": "1y", "2年": "2y", "3年": "3y", "5年": "5y", "6個月": "6mo", "3個月": "3mo"}
     current_period_label = [k for k, v in period_options.items() if v == st.session_state.period][0]
-    sel_period_label = st.selectbox("K線歷史抓取範圍", list(period_options.keys()), index=list(period_options.keys()).index(current_period_label))
+    sel_period_label = st.selectbox(
+        "K線歷史抓取範圍",
+        list(period_options.keys()),
+        index=list(period_options.keys()).index(current_period_label)
+    )
     st.session_state.period = period_options[sel_period_label]
 
     st.session_state.disp_days = int(st.number_input(
@@ -139,14 +76,23 @@ def render_settings_tab(
     st.markdown("---")
     st.markdown("**大戶持股門檻設定**")
     major_options = [100, 200, 400, 600, 800, 1000]
-    st.session_state.m1_thresh = st.selectbox("大戶線 1 (預設1000張)", major_options, index=major_options.index(st.session_state.m1_thresh))
-    st.session_state.m2_thresh = st.selectbox("大戶線 2 (預設400張)", major_options, index=major_options.index(st.session_state.m2_thresh))
+    st.session_state.m1_thresh = st.selectbox(
+        "大戶線 1 (預設1000張)",
+        major_options,
+        index=major_options.index(st.session_state.m1_thresh)
+    )
+    st.session_state.m2_thresh = st.selectbox(
+        "大戶線 2 (預設400張)",
+        major_options,
+        index=major_options.index(st.session_state.m2_thresh)
+    )
 
     st.markdown("---")
     if st.button("🔄 強制重新抓取最新資料", use_container_width=True):
         st.session_state.force_refresh = True
         clear_figures_cache_fn()
         get_cached_broker_payload.clear()
+        from app_dashboard import get_cached_dashboard_rows
         get_cached_dashboard_rows.clear()
         st.success("快取已清除，切換回「📈 個股」頁籤即會重新抓取最新資料。")
 
@@ -175,7 +121,10 @@ def render_settings_tab(
     ))
     chip_base_str = chip_base_dt.strftime("%Y-%m-%d")
 
-    st.markdown("<div style='font-size:13px; font-weight:700; color:#334155; margin-top:6px; margin-bottom:2px;'>資券籌碼維護</div>", unsafe_allow_html=True)
+    st.markdown(
+        "<div style='font-size:13px; font-weight:700; color:#334155; margin-top:6px; margin-bottom:2px;'>資券籌碼維護</div>",
+        unsafe_allow_html=True
+    )
     with st.container():
         st.markdown("<div class='settings-btn-row-anchor'></div>", unsafe_allow_html=True)
         col_ms_add, col_ms_clr = st.columns(2)
@@ -206,7 +155,10 @@ def render_settings_tab(
         clear_figures_cache_fn()
         st.success(summary_ms)
 
-    st.markdown("<div style='font-size:13px; font-weight:700; color:#334155; margin-top:6px; margin-bottom:2px;'>法人籌碼維護</div>", unsafe_allow_html=True)
+    st.markdown(
+        "<div style='font-size:13px; font-weight:700; color:#334155; margin-top:6px; margin-bottom:2px;'>法人籌碼維護</div>",
+        unsafe_allow_html=True
+    )
     with st.container():
         st.markdown("<div class='settings-btn-row-anchor'></div>", unsafe_allow_html=True)
         col_in_add, col_in_clr = st.columns(2)
@@ -237,7 +189,10 @@ def render_settings_tab(
         clear_figures_cache_fn()
         st.success(summary_inst)
 
-    st.markdown("<div style='font-size:13px; font-weight:700; color:#334155; margin-top:6px; margin-bottom:2px;'>大戶籌碼維護（最多15週）</div>", unsafe_allow_html=True)
+    st.markdown(
+        "<div style='font-size:13px; font-weight:700; color:#334155; margin-top:6px; margin-bottom:2px;'>大戶籌碼維護（最多15週）</div>",
+        unsafe_allow_html=True
+    )
     with st.container():
         st.markdown("<div class='settings-btn-row-anchor'></div>", unsafe_allow_html=True)
         col_hd_add, col_hd_clr = st.columns(2)
@@ -321,7 +276,6 @@ def render_settings_tab(
         step=1,
         key="gov_broker_backfill_days_input"
     ))
-
     with st.container():
         st.markdown("<div class='settings-btn-row-anchor'></div>", unsafe_allow_html=True)
         col_gov_add, col_gov_clr = st.columns(2)
@@ -395,7 +349,10 @@ def render_settings_tab(
     ))
     base_d_str = backfill_base_dt.strftime("%Y-%m-%d")
 
-    st.markdown("<div style='font-size:13px; font-weight:700; color:#334155; margin-top:6px; margin-bottom:2px;'>增補分點(分點買賣超交易日況僅限最近交易日之近20日)</div>", unsafe_allow_html=True)
+    st.markdown(
+        "<div style='font-size:13px; font-weight:700; color:#334155; margin-top:6px; margin-bottom:2px;'>增補分點(分點買賣超交易日況僅限最近交易日之近20日)</div>",
+        unsafe_allow_html=True
+    )
     with st.container():
         st.markdown("<div class='settings-btn-row-anchor'></div>", unsafe_allow_html=True)
         col_bk_add, col_bk_rng_clr, col_bk_clr = st.columns(3)
