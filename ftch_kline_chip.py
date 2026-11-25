@@ -1,7 +1,7 @@
 """
 ftch_kline_chip.py - 日K線、三大法人與個股/大盤全市場資券籌碼擷取模組
 (自 data_fetcher.py 依邏輯職責拆分，維持既有官方日K補齊、集保總股數優先與法人資券智慧增量同步機制)
-版本: 202611252225
+版本: 202611252249
 """
 
 import re
@@ -20,7 +20,7 @@ from storage import (
 from ftch_tdcc_dash import fetch_tdcc_holding_data
 
 MODULE_NAME = "ftch_kline_chip"
-MODULE_VERSION = "202611252225"
+MODULE_VERSION = "202611252249"
 
 FINMIND_TOKEN = ""
 
@@ -119,16 +119,20 @@ def _fetch_tw_official_month_k(pure_code: str, full_ticker: str = None) -> pd.Da
     return df_off
 
 
-def _resolve_force_refresh_yf_period(display_days: int) -> str:
-    """依初始顯示K線根數（交易日數）換算足以涵蓋該區間之 Yahoo Finance period 字串"""
-    n_bars = max(5, int(display_days or 30))
+def _resolve_force_refresh_yf_period(target_days: int) -> str:
+    """依目標交易日數換算足以涵蓋該區間之 Yahoo Finance period 字串"""
+    n_bars = max(5, int(target_days or 120))
     if n_bars <= 20:
         return "1mo"
     elif n_bars <= 62:
         return "3mo"
     elif n_bars <= 125:
         return "6mo"
-    return "1y"
+    elif n_bars <= 250:
+        return "1y"
+    elif n_bars <= 500:
+        return "2y"
+    return "5y"
 
 
 def fetch_stock_daily_k(
@@ -136,15 +140,16 @@ def fetch_stock_daily_k(
     period: str = "1y",
     base_date: str = None,
     force_refresh: bool = False,
-    display_days: int = 30
+    display_days: int = 30,
+    refresh_cfg: dict = None
 ):
     """
     自本地 SQLite 或官方 API / Yahoo Finance 擷取歷史日 K 線資料。
     【修訂說明 2026-11-25】【修改目的與防呆防錯原因】：
-    1. 修改目的：當 `force_refresh=True`（按下「🔄 強制重新抓取最新資料」）時，改為依據「初始顯示K線根數（`display_days`）」
-       重新抓取涵蓋最近 `display_days` 個交易日之日 K 線，並與既有本地歷史資料 `combined` 增量合併覆蓋（`keep='last'`）。
-    2. 防呆防錯原因：修正先前 `force_refresh=True` 時僅抓 `"5d"` 卻整表覆寫 `combined`，導致原本 1 年歷史 K 線被洗掉只剩 5 根的錯誤，
-       同時完整保留更早之歷史日 K 線。
+    1. 修改目的：支援透過 `refresh_cfg` 彈性控制强制重抓行為；當 `force_refresh=True` 時，
+       僅在 `refresh_cfg.get("kline_enabled", True)` 為 True 時依 `kline_days`（預設 120 日）重抓日 K 並增量合併覆蓋，
+       若未勾選日 K 線則直接沿用資料庫既有日 K，不再無條件重抓。
+    2. 防呆防錯原因：一律以 `keep='last'` 合併去重並保留更早歷史資料。
     """
     raw_str = str(raw_ticker).strip()
     if not raw_str:
@@ -180,6 +185,14 @@ def fetch_stock_daily_k(
         if tdcc_tot and tdcc_tot > 0:
             shares_outstanding = tdcc_tot
 
+    cfg = refresh_cfg if isinstance(refresh_cfg, dict) else {}
+    kline_force = bool(force_refresh and cfg.get("kline_enabled", True))
+    kline_days_val = max(1, int(cfg.get("kline_days", 120) or 120))
+
+    # 若為強制重抓模式且使用者未勾選「日 K 線」，只要本地已有資料就直接返回，完全不動日 K 資料表
+    if force_refresh and not kline_force and not db_df.empty:
+        return db_df, full_ticker, shares_outstanding
+
     ticker = yf.Ticker(target_ticker)
     if is_tw_etf_or_stk and not shares_outstanding:
         try:
@@ -189,8 +202,8 @@ def fetch_stock_daily_k(
 
     if db_df.empty or not last_k_date:
         fetch_period = period
-    elif force_refresh:
-        fetch_period = _resolve_force_refresh_yf_period(display_days)
+    elif kline_force:
+        fetch_period = _resolve_force_refresh_yf_period(kline_days_val)
     else:
         fetch_period = "5d"
 
@@ -247,7 +260,7 @@ def fetch_stock_daily_k(
             expected_latest -= timedelta(days=1)
 
         latest_in_df = combined.index[-1].date()
-        if force_refresh or latest_in_df < expected_latest:
+        if kline_force or latest_in_df < expected_latest:
             df_official = _fetch_tw_official_month_k(pure_code, full_ticker=full_ticker)
             if df_official is not None and not df_official.empty:
                 combined = pd.concat([combined, df_official])
@@ -265,18 +278,22 @@ def sync_chip_data(
     status_placeholder=None,
     force_refresh: bool = False,
     full_ticker: str = None,
-    display_days: int = 30
+    display_days: int = 30,
+    refresh_cfg: dict = None
 ):
     """
-    智慧增量同步三大法人、資券與集保大戶（支援台股個股、含英文後綴之 ETF，以及大盤加權指數 ^TWII 與櫃買指數 ^TWOII 資券與融資金額）。
+    智慧增量同步三大法人、資券與集保大戶。
     【修訂說明 2026-11-25】【修改目的與防呆防錯原因】：
-    1. 修改目的：當 `force_refresh=True` 時，三大法人與資券僅針對最近 `display_days` 個交易日區間重新抓取覆蓋更新，
-       不再重抓整年或僅抓 5 日。
-    2. 防呆防錯原因：兼顧重抓速度與初始顯示根數範圍內之最新籌碼正確性，保留更早歷史資料。
+    1. 修改目的：支援透過 `refresh_cfg` 分別控制外資（`foreign_enabled` / `foreign_days`）、
+       投信（`trust_enabled` / `trust_days`）、自營商（`dealer_enabled` / `dealer_days`）、
+       資券（`margin_enabled` / `margin_days`）與大戶（`holding_enabled` / `holding_weeks`，最多 15 週）。
+    2. 防呆防錯原因：當外資、投信、自營商僅部分勾選時，將新抓取資料與本地既有的 `institutional_investors` 逐日合併，
+       僅覆寫有勾選的欄位（外資/投信/自營商），未勾選欄位完整保留原資料庫數值。
     """
     pure_code = str(pure_code).strip().upper()
     storage = StockChipStorage(pure_code)
     n_disp = max(5, int(display_days or 30))
+    cfg = refresh_cfg if isinstance(refresh_cfg, dict) else {}
 
     if pure_code in ("^TWII", "^TWOII"):
         if len(df_dates) == 0:
@@ -291,8 +308,10 @@ def sync_chip_data(
             or "margin_money_bal" not in existing_ms_df.columns
             or (existing_ms_df["margin_money_bal"].fillna(0) == 0).all()
         )
-        should_fetch_margin = force_refresh or missing_money_col
-        if not should_fetch_margin:
+        margin_force = bool(force_refresh and cfg.get("margin_enabled", True))
+        margin_days_val = max(1, int(cfg.get("margin_days", 120) or 120))
+        should_fetch_margin = margin_force or missing_money_col
+        if not should_fetch_margin and not force_refresh:
             if not last_margin_date:
                 should_fetch_margin = True
             elif last_margin_date < latest_trade_date_str:
@@ -303,8 +322,8 @@ def sync_chip_data(
         if should_fetch_margin:
             if missing_money_col:
                 start_filter = None
-            elif force_refresh:
-                idx_start = max(0, len(df_dates) - n_disp - 1)
+            elif margin_force:
+                idx_start = max(0, len(df_dates) - margin_days_val - 1)
                 start_filter = df_dates[idx_start].strftime('%Y-%m-%d')
             else:
                 start_filter = last_margin_date
@@ -336,10 +355,24 @@ def sync_chip_data(
     if now_tw_date_str in missing_inst_dates and now_tw.hour < 16:
         missing_inst_dates.remove(now_tw_date_str)
 
-    should_fetch_inst = force_refresh or (len(missing_inst_dates) > 0)
+    f_en = bool(cfg.get("foreign_enabled", True))
+    t_en = bool(cfg.get("trust_enabled", True))
+    d_en = bool(cfg.get("dealer_enabled", True))
+    f_days = max(1, int(cfg.get("foreign_days", 120) or 120))
+    t_days = max(1, int(cfg.get("trust_days", 120) or 120))
+    d_days = max(1, int(cfg.get("dealer_days", 120) or 120))
 
-    should_fetch_margin = force_refresh
-    if not should_fetch_margin:
+    if force_refresh:
+        should_fetch_inst = (f_en or t_en or d_en)
+    else:
+        should_fetch_inst = (len(missing_inst_dates) > 0)
+
+    m_en = bool(cfg.get("margin_enabled", True))
+    m_days = max(1, int(cfg.get("margin_days", 120) or 120))
+    if force_refresh:
+        should_fetch_margin = m_en
+    else:
+        should_fetch_margin = False
         if not last_margin_date:
             should_fetch_margin = True
         elif last_margin_date < latest_trade_date_str:
@@ -348,8 +381,12 @@ def sync_chip_data(
             else:
                 should_fetch_margin = True
 
-    should_fetch_holding = force_refresh
-    if not should_fetch_holding:
+    h_en = bool(cfg.get("holding_enabled", True))
+    h_weeks = min(15, max(1, int(cfg.get("holding_weeks", 1) or 1)))
+    if force_refresh:
+        should_fetch_holding = h_en
+    else:
+        should_fetch_holding = False
         if not last_holding_date:
             should_fetch_holding = True
         else:
@@ -362,21 +399,55 @@ def sync_chip_data(
 
     if should_fetch_inst:
         if force_refresh:
-            target_dates = list(df_dates[-n_disp:])
+            max_inst_days = max(
+                f_days if f_en else 0,
+                t_days if t_en else 0,
+                d_days if d_en else 0,
+            )
+            target_dates = list(df_dates[-max_inst_days:]) if max_inst_days > 0 else []
+            inst_records = fetch_institutional_investors(
+                pure_code=pure_code,
+                df_dates=df_dates,
+                explicit_missing_dates=target_dates,
+                full_ticker=full_ticker
+            )
+            if inst_records:
+                f_cutoff = df_dates[max(0, len(df_dates) - f_days)].strftime('%Y-%m-%d') if f_en else "9999-12-31"
+                t_cutoff = df_dates[max(0, len(df_dates) - t_days)].strftime('%Y-%m-%d') if t_en else "9999-12-31"
+                d_cutoff = df_dates[max(0, len(df_dates) - d_days)].strftime('%Y-%m-%d') if d_en else "9999-12-31"
+
+                old_map = {}
+                if not existing_inst_df.empty:
+                    for _, r in existing_inst_df.iterrows():
+                        ds = pd.to_datetime(r['date']).strftime('%Y-%m-%d')
+                        old_map[ds] = (
+                            float(r.get('foreign_net', 0.0) or 0.0),
+                            float(r.get('trust_net', 0.0) or 0.0),
+                            float(r.get('dealer_net', 0.0) or 0.0),
+                        )
+
+                merged_inst = []
+                for ds, fn, tn, dn in inst_records:
+                    prev_f, prev_t, prev_d = old_map.get(ds, (0.0, 0.0, 0.0))
+                    new_f = fn if (f_en and ds >= f_cutoff) else prev_f
+                    new_t = tn if (t_en and ds >= t_cutoff) else prev_t
+                    new_d = dn if (d_en and ds >= d_cutoff) else prev_d
+                    merged_inst.append((ds, new_f, new_t, new_d))
+                storage.save_institutional_data(merged_inst)
         else:
             target_dates = [d for d in df_dates if d.strftime('%Y-%m-%d') in missing_inst_dates]
-        inst_records = fetch_institutional_investors(
-            pure_code=pure_code,
-            df_dates=df_dates,
-            explicit_missing_dates=target_dates,
-            full_ticker=full_ticker
-        )
-        if inst_records:
-            storage.save_institutional_data(inst_records)
+            inst_records = fetch_institutional_investors(
+                pure_code=pure_code,
+                df_dates=df_dates,
+                explicit_missing_dates=target_dates,
+                full_ticker=full_ticker
+            )
+            if inst_records:
+                storage.save_institutional_data(inst_records)
 
     if should_fetch_margin:
         if force_refresh:
-            idx_start = max(0, len(df_dates) - n_disp - 1)
+            idx_start = max(0, len(df_dates) - m_days - 1)
             start_filter = df_dates[idx_start].strftime('%Y-%m-%d')
         else:
             start_filter = last_margin_date
@@ -387,6 +458,10 @@ def sync_chip_data(
     if should_fetch_holding:
         holding_records = fetch_tdcc_holding_data(pure_code)
         if holding_records:
+            if force_refresh:
+                distinct_weeks = sorted({str(r[0])[:10] for r in holding_records if r and len(r) >= 3}, reverse=True)
+                keep_weeks = set(distinct_weeks[:h_weeks])
+                holding_records = [r for r in holding_records if str(r[0])[:10] in keep_weeks]
             storage.save_holding_data(holding_records)
 
     if status_placeholder:
