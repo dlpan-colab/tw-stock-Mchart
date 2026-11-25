@@ -1,17 +1,19 @@
 """
 app_stock_view.py - 主頁籤 2「📈 個股」介面渲染模組
-(自 app.py 依邏輯職責拆分，維持既有上下雙複合選單、共用主圖與四大子頁籤互動機制)
-版本: 202611242246
+(自 app.py 依邏輯職責拆分，維持上下雙複合選單、共用主圖與四大子頁籤互動機制，並整合四鍵同列與清除查詢個股紀錄)
+版本: 202611252118
 """
 
 import re
 import streamlit as st
 import streamlit.components.v1 as components
-import cloud_sync
 
+import cloud_sync
 from storage import (
     load_stock_history,
     save_stock_history,
+    delete_stock_history,
+    clear_stock_history,
     update_stock_name_only,
     get_stock_chinese_name,
     is_tw_stock_or_etf,
@@ -28,7 +30,7 @@ from frontend import (
 from app_broker_cache import get_cached_broker_payload
 
 MODULE_NAME = "app_stock_view"
-MODULE_VERSION = "202611242246"
+MODULE_VERSION = "202611252118"
 
 
 def render_stock_tab(
@@ -36,8 +38,19 @@ def render_stock_tab(
     format_options_fn,
     on_top_selector_change_fn,
     on_bottom_selector_change_fn,
+    on_index_change_fn,
     get_figures_fn,
 ):
+    """
+    【修訂說明 2026-11-25】【修改目的與防呆防錯原因】：
+    1. 修改目的：
+       - 將原參數設定頁籤之「主要市場指數」下拉選單移動至個股頁籤頂部導覽列，
+         與「◀ 上一檔」、「個股查詢歷史下拉選單」、「下一檔 ▶」四個功能並排在同一列（`.stock-nav-4col-anchor`）。
+       - 將原參數設定頁籤之「清除紀錄」更名為「清除查詢個股紀錄」，移至本頁籤且緊接置於上述功能鍵列之下一行。
+    2. 防呆防錯原因：
+       - 點擊「清除查詢個股紀錄」時，若目前查詢標的在歷史紀錄中則移除該標的（並同步清除操作儀錶板快取），
+         若無歷史紀錄可刪則提供二次確認清空機制，避免誤刪使用者其他自選清單項目。
+    """
     auth_st = cloud_sync.get_auth_status()
     status_icon = "🟡" if auth_st == 2 else ("🔵" if auth_st == 1 else "⚪")
     st.markdown(
@@ -49,20 +62,38 @@ def render_stock_tab(
     history_records = load_stock_history()
     history_codes = [str(item.get("code")).strip().upper() for item in history_records if item.get("code")]
     selector_options = format_options_fn(history_records)
+
     cur_code_upper = str(st.session_state.stock_id).strip().upper()
     cur_name_resolved = get_stock_chinese_name(cur_code_upper)
     cur_display_label = next(
         (opt for opt in selector_options if opt.split()[0] == cur_code_upper),
-        f"{cur_code_upper} {cur_name_resolved}".strip() if (cur_name_resolved and cur_name_resolved != cur_code_upper) else cur_code_upper
+        f"{cur_code_upper} {cur_name_resolved}".strip()
+        if (cur_name_resolved and cur_name_resolved != cur_code_upper)
+        else cur_code_upper
     )
     if cur_display_label not in selector_options:
         selector_options = [cur_display_label] + selector_options
     cur_sel_idx = selector_options.index(cur_display_label)
 
-    # 頂部：「◀ 上一檔」＋「可輸入＋下拉點選（代號 名稱）」＋「下一檔 ▶」
+    index_options = [
+        "主要市場指數...",
+        "🇹🇼 台股加權 (^TWII)",
+        "🇹🇼 台股櫃買 (^TWOII)",
+        "🇺🇸 道瓊工業 (^DJI)",
+        "🇺🇸 那斯達克 (^IXIC)",
+        "🇺🇸 費城半導體 (^SOX)",
+        "🇺🇸 標普500 (^GSPC)",
+        "🇯🇵 日經225 (^N225)",
+        "🇰🇷 韓國綜合 (^KS11)",
+        "🇬🇧 英國富時100 (^FTSE)",
+        "🇩🇪 德國DAX (^GDAXI)",
+        "🇫🇷 法國CAC40 (^FCHI)",
+    ]
+
+    # 第 1 列：四功能同列並排「◀ 上一檔」＋「主要市場指數」＋「個股查詢歷史」＋「下一檔 ▶」
     with st.container():
-        st.markdown("<div class='stock-nav-anchor'></div>", unsafe_allow_html=True)
-        col_prev, col_input, col_next = st.columns([1, 6, 1])
+        st.markdown("<div class='stock-nav-4col-anchor'></div>", unsafe_allow_html=True)
+        col_prev, col_idx, col_input, col_next = st.columns([1, 3, 3, 1])
         with col_prev:
             if st.button("◀ 上一檔", key="btn_top_prev", use_container_width=True):
                 if history_codes:
@@ -70,7 +101,16 @@ def render_stock_tab(
                     prev_code = history_codes[(idx - 1) % len(history_codes)]
                     st.session_state.stock_id = prev_code
                     st.session_state.promote_to_top = False
+                    st.session_state.confirm_clear_all = False
                     st.rerun()
+        with col_idx:
+            st.selectbox(
+                "主要市場指數",
+                index_options,
+                key="index_select_box",
+                on_change=on_index_change_fn,
+                label_visibility="collapsed"
+            )
         with col_input:
             st.selectbox(
                 "股票代號或名稱",
@@ -79,7 +119,7 @@ def render_stock_tab(
                 accept_new_options=True,
                 key="top_stock_selector",
                 on_change=on_top_selector_change_fn,
-                placeholder="輸入代號或下拉選擇標的 (如 2330, 00632R, ^TWII)",
+                placeholder="輸入代號或下拉選擇標的 (如 2330, 00632R)",
                 label_visibility="collapsed"
             )
         with col_next:
@@ -89,6 +129,44 @@ def render_stock_tab(
                     next_code = history_codes[(idx + 1) % len(history_codes)]
                     st.session_state.stock_id = next_code
                     st.session_state.promote_to_top = False
+                    st.session_state.confirm_clear_all = False
+                    st.rerun()
+
+    # 第 2 列（紧接功能鍵下一行）：「清除查詢個股紀錄」按鈕
+    if st.button("清除查詢個股紀錄", key="btn_clear_stock_history_row", use_container_width=True):
+        if cur_code_upper in history_codes:
+            delete_stock_history(cur_code_upper)
+            from app_dashboard import get_cached_dashboard_rows
+            get_cached_dashboard_rows.clear()
+            rem_hist = load_stock_history()
+            if rem_hist:
+                st.session_state.stock_id = str(rem_hist[0].get("code", "2330")).strip().upper()
+            else:
+                st.session_state.stock_id = "2330"
+            st.session_state.promote_to_top = False
+            st.session_state.confirm_clear_all = False
+            st.rerun()
+        elif history_codes:
+            st.session_state.confirm_clear_all = True
+            st.rerun()
+
+    if st.session_state.get("confirm_clear_all", False):
+        st.warning("⚠️ 確定要清空所有個股查詢歷史紀錄嗎？（同步清除操作儀錶板自選清單）")
+        with st.container():
+            st.markdown("<div class='settings-btn-row-anchor'></div>", unsafe_allow_html=True)
+            c_yes, c_no = st.columns(2)
+            with c_yes:
+                if st.button("確定全部清空", key="btn_confirm_clear_hist_yes", use_container_width=True):
+                    clear_stock_history()
+                    from app_dashboard import get_cached_dashboard_rows
+                    get_cached_dashboard_rows.clear()
+                    st.session_state.confirm_clear_all = False
+                    st.session_state.stock_id = "2330"
+                    st.session_state.promote_to_top = False
+                    st.rerun()
+            with c_no:
+                if st.button("取消", key="btn_confirm_clear_hist_no", use_container_width=True):
+                    st.session_state.confirm_clear_all = False
                     st.rerun()
 
     st.markdown(get_legend_html(), unsafe_allow_html=True)
@@ -145,7 +223,10 @@ def render_stock_tab(
 
         # 下半部四大子頁籤（指標 / 籌碼 / 分點統計 / 分點日況）
         tab_tech, tab_chip, tab_broker_stats, tab_broker_daily = st.tabs([
-            "📊 指標", "💰 籌碼", "📊 分點統計", "📈 分點日況"
+            "📊 指標",
+            "💰 籌碼",
+            "📊 分點統計",
+            "📈 分點日況"
         ])
 
         with tab_tech:
@@ -192,8 +273,8 @@ def render_stock_tab(
 
             spinner_txt = (
                 "正在載入加權/櫃買八大官股買賣超統計與日況..."
-                if is_gov_idx else
-                "正在載入雲端與最新券商分點統計與逐日進出序列..."
+                if is_gov_idx
+                else "正在載入雲端與最新券商分點統計與逐日進出序列..."
             )
             with st.spinner(spinner_txt):
                 broker_payload = get_cached_broker_payload(
@@ -269,6 +350,7 @@ def render_stock_tab(
                         prev_code = latest_hist_codes[(idx - 1) % len(latest_hist_codes)]
                         st.session_state.stock_id = prev_code
                         st.session_state.promote_to_top = False
+                        st.session_state.confirm_clear_all = False
                         st.rerun()
             with btm_sel:
                 st.selectbox(
@@ -288,6 +370,7 @@ def render_stock_tab(
                         next_code = latest_hist_codes[(idx + 1) % len(latest_hist_codes)]
                         st.session_state.stock_id = next_code
                         st.session_state.promote_to_top = False
+                        st.session_state.confirm_clear_all = False
                         st.rerun()
 
         st.markdown("<div style='height: 54px;'></div>", unsafe_allow_html=True)
