@@ -1,7 +1,7 @@
 """
 app_settings.py - 主頁籤 3「⚙️ 參數設定」介面渲染模組
 (自 app.py 依邏輯職責拆分，維持既有全市籌碼維護、八大官股維護與全市場分點三鍵並列維護機制，並劃分三項次頁籤)
-版本: 202611252150
+版本: 202611252212
 """
 
 from datetime import datetime
@@ -10,8 +10,10 @@ import streamlit as st
 from storage import (
     get_stock_chinese_name,
     clear_all_stocks_chip_range,
+    clear_all_stocks_chip_all,
     clear_all_stocks_broker_range,
     clear_all_broker_data,
+    clear_tw_index_gov_broker_range,
     clear_tw_index_gov_broker_data,
 )
 from data_fetcher import (
@@ -21,7 +23,7 @@ from data_fetcher import (
 from app_broker_cache import get_cached_broker_payload
 
 MODULE_NAME = "app_settings"
-MODULE_VERSION = "202611252150"
+MODULE_VERSION = "202611252212"
 
 
 def render_settings_tab(
@@ -31,13 +33,14 @@ def render_settings_tab(
     """
     【修訂說明 2026-11-25】【修改目的與防呆防錯原因】：
     1. 修改目的：
-       - 於「手機版緊湊模式」開關下方建立三個次頁籤：`st.tabs(["顯示參數", "個股資料維護", "全市場個股資料維護"])`。
-       - 次頁籤 1「顯示參數」：包含 K線歷史抓取範圍、初始顯示K線根數、指定基準日、大戶持股門檻設定。
-       - 次頁籤 2「個股資料維護」：包含當前關注個股標示與「🔄 強制重新抓取最新資料」功能。
-       - 次頁籤 3「全市場個股資料維護」：完整包含全市(含上櫃)籌碼資料庫維護、加權指數／櫃買指數八大官股維護、
-         全市場（含上櫃）分點批次增補與維護三個既有區塊。
+       - 將第 3 個次頁籤名稱由「全市場個股資料維護」修訂為「全市場批次維護」。
+       - 將「全市(含上櫃)籌碼資料庫維護」之資券、法人、大戶三個區塊，以及「加權指數／櫃買指數八大官股維護」，
+         全面比照「全市場（含上櫃）分點批次增補與維護」改為三鍵並排：
+         [📥 批次增補...]、[🧹 清除指定期間...]、[🗑️ 清除所有...資料]。
     2. 防呆防錯原因：
-       - 僅調整 UI 容器階層歸屬，所有變數鍵值（widget keys）、session_state 狀態與資料庫維護函式呼叫均完整保留未更動。
+       - 清除指定期間（`confirm_clear_chip_range_type`、`confirm_clear_gov_brokers_range`）嚴格依據各區塊對應之
+         基準日與往前交易日數執行區間刪除；清除所有資料（`confirm_clear_chip_all_type`、`confirm_clear_gov_brokers`）
+         與區間清除狀態完全獨立，並提供明確二次確認提示，避免誤刪全表資料。
     """
     st.markdown(
         f"<div style='font-size:16px; font-weight:800; color:#0f172a; margin-bottom:6px;'>"
@@ -53,7 +56,7 @@ def render_settings_tab(
     tab_disp_params, tab_single_maint, tab_market_maint = st.tabs([
         "顯示參數",
         "個股資料維護",
-        "全市場個股資料維護"
+        "全市場批次維護"
     ])
 
     # =========================================================================
@@ -121,7 +124,7 @@ def render_settings_tab(
             st.success("快取已清除，切換回「📈 個股」頁籤即會重新抓取最新資料。")
 
     # =========================================================================
-    # 次頁籤 3：全市場個股資料維護
+    # 次頁籤 3：全市場批次維護
     # =========================================================================
     with tab_market_maint:
         st.markdown("**全市(含上櫃)籌碼資料庫維護**")
@@ -148,18 +151,25 @@ def render_settings_tab(
         ))
         chip_base_str = chip_base_dt.strftime("%Y-%m-%d")
 
+        # 1. 資券籌碼維護（三鍵並列）
         st.markdown(
             "<div style='font-size:13px; font-weight:700; color:#334155; margin-top:6px; margin-bottom:2px;'>資券籌碼維護</div>",
             unsafe_allow_html=True
         )
         with st.container():
             st.markdown("<div class='settings-btn-row-anchor'></div>", unsafe_allow_html=True)
-            col_ms_add, col_ms_clr = st.columns(2)
+            col_ms_add, col_ms_rng_clr, col_ms_all_clr = st.columns(3)
             with col_ms_add:
                 run_ms_sync = st.button("📥 批次增補歷史資券籌碼", key="btn_batch_sync_margin", use_container_width=True)
-            with col_ms_clr:
-                if st.button("🗑️ 清除資券籌碼資料", key="btn_batch_clear_margin", use_container_width=True):
-                    st.session_state.confirm_clear_chip_type = "margin"
+            with col_ms_rng_clr:
+                if st.button("🧹 清除指定期間資券", key="btn_batch_clear_margin_range", use_container_width=True):
+                    st.session_state.confirm_clear_chip_range_type = "margin"
+                    st.session_state.confirm_clear_chip_all_type = ""
+                    st.rerun()
+            with col_ms_all_clr:
+                if st.button("🗑️ 清除所有資券資料", key="btn_batch_clear_margin_all", use_container_width=True):
+                    st.session_state.confirm_clear_chip_all_type = "margin"
+                    st.session_state.confirm_clear_chip_range_type = ""
                     st.rerun()
 
         if run_ms_sync:
@@ -182,18 +192,25 @@ def render_settings_tab(
             clear_figures_cache_fn()
             st.success(summary_ms)
 
+        # 2. 法人籌碼維護（三鍵並列）
         st.markdown(
             "<div style='font-size:13px; font-weight:700; color:#334155; margin-top:6px; margin-bottom:2px;'>法人籌碼維護</div>",
             unsafe_allow_html=True
         )
         with st.container():
             st.markdown("<div class='settings-btn-row-anchor'></div>", unsafe_allow_html=True)
-            col_in_add, col_in_clr = st.columns(2)
+            col_in_add, col_in_rng_clr, col_in_all_clr = st.columns(3)
             with col_in_add:
                 run_in_sync = st.button("📥 批次增補歷史法人籌碼", key="btn_batch_sync_inst", use_container_width=True)
-            with col_in_clr:
-                if st.button("🗑️ 清除法人籌碼資料", key="btn_batch_clear_inst", use_container_width=True):
-                    st.session_state.confirm_clear_chip_type = "institutional"
+            with col_in_rng_clr:
+                if st.button("🧹 清除指定期間法人", key="btn_batch_clear_inst_range", use_container_width=True):
+                    st.session_state.confirm_clear_chip_range_type = "institutional"
+                    st.session_state.confirm_clear_chip_all_type = ""
+                    st.rerun()
+            with col_in_all_clr:
+                if st.button("🗑️ 清除所有法人資料", key="btn_batch_clear_inst_all", use_container_width=True):
+                    st.session_state.confirm_clear_chip_all_type = "institutional"
+                    st.session_state.confirm_clear_chip_range_type = ""
                     st.rerun()
 
         if run_in_sync:
@@ -216,18 +233,25 @@ def render_settings_tab(
             clear_figures_cache_fn()
             st.success(summary_inst)
 
+        # 3. 大戶籌碼維護（三鍵並列）
         st.markdown(
             "<div style='font-size:13px; font-weight:700; color:#334155; margin-top:6px; margin-bottom:2px;'>大戶籌碼維護（最多15週）</div>",
             unsafe_allow_html=True
         )
         with st.container():
             st.markdown("<div class='settings-btn-row-anchor'></div>", unsafe_allow_html=True)
-            col_hd_add, col_hd_clr = st.columns(2)
+            col_hd_add, col_hd_rng_clr, col_hd_all_clr = st.columns(3)
             with col_hd_add:
                 run_hd_sync = st.button("📥 批次增補歷史大戶籌碼", key="btn_batch_sync_hold", use_container_width=True)
-            with col_hd_clr:
-                if st.button("🗑️ 清除大戶籌碼資料", key="btn_batch_clear_hold", use_container_width=True):
-                    st.session_state.confirm_clear_chip_type = "holding"
+            with col_hd_rng_clr:
+                if st.button("🧹 清除指定期間大戶", key="btn_batch_clear_hold_range", use_container_width=True):
+                    st.session_state.confirm_clear_chip_range_type = "holding"
+                    st.session_state.confirm_clear_chip_all_type = ""
+                    st.rerun()
+            with col_hd_all_clr:
+                if st.button("🗑️ 清除所有大戶資料", key="btn_batch_clear_hold_all", use_container_width=True):
+                    st.session_state.confirm_clear_chip_all_type = "holding"
+                    st.session_state.confirm_clear_chip_range_type = ""
                     st.rerun()
 
         if run_hd_sync:
@@ -250,34 +274,62 @@ def render_settings_tab(
             clear_figures_cache_fn()
             st.success(summary_hold)
 
-        pending_chip_clr = st.session_state.get("confirm_clear_chip_type", "")
-        if pending_chip_clr in ("margin", "institutional", "holding"):
-            chip_label_map = {
+        # 籌碼指定期間清除二次確認
+        pending_chip_rng_clr = st.session_state.get("confirm_clear_chip_range_type", "")
+        if pending_chip_rng_clr in ("margin", "institutional", "holding"):
+            chip_rng_label_map = {
                 "margin": "資券籌碼資料",
                 "institutional": "法人籌碼資料",
                 "holding": "大戶籌碼資料",
             }
-            cur_lbl = chip_label_map[pending_chip_clr]
+            cur_rng_lbl = chip_rng_label_map[pending_chip_rng_clr]
             st.warning(
-                f"⚠️ 確定要清除所有上市／上櫃個股於基準日 **{chip_base_str}** 往前 **{chip_days_opt}** 個交易日區間內之「**{cur_lbl}**」嗎？（區間外更早歷史資料與其他資料表將完整保留）"
+                f"⚠️ 確定要清除所有上市／上櫃個股於籌碼增補基準日 **{chip_base_str}** 往前 **{chip_days_opt}** 個交易日區間內之「**{cur_rng_lbl}**」嗎？（區間外更早歷史資料與其他資料表將完整保留）"
             )
             with st.container():
                 st.markdown("<div class='settings-btn-row-anchor'></div>", unsafe_allow_html=True)
                 cc_yes, cc_no = st.columns(2)
                 with cc_yes:
-                    if st.button(f"確定清除{cur_lbl}", key="btn_confirm_clear_chip_yes", use_container_width=True):
-                        with st.spinner(f"正在清除基準日 {chip_base_str} 往前 {chip_days_opt} 日之{cur_lbl}..."):
+                    if st.button(f"確定清除指定期間{cur_rng_lbl}", key="btn_confirm_clear_chip_rng_yes", use_container_width=True):
+                        with st.spinner(f"正在清除基準日 {chip_base_str} 往前 {chip_days_opt} 日之{cur_rng_lbl}..."):
                             res_chip_msg = clear_all_stocks_chip_range(
-                                chip_type=pending_chip_clr,
+                                chip_type=pending_chip_rng_clr,
                                 base_date_str=chip_base_str,
                                 lookback_days=int(chip_days_opt)
                             )
-                        st.session_state.confirm_clear_chip_type = ""
+                        st.session_state.confirm_clear_chip_range_type = ""
                         clear_figures_cache_fn()
                         st.success(res_chip_msg)
                 with cc_no:
-                    if st.button("取消清除", key="btn_confirm_clear_chip_no", use_container_width=True):
-                        st.session_state.confirm_clear_chip_type = ""
+                    if st.button("取消清除", key="btn_confirm_clear_chip_rng_no", use_container_width=True):
+                        st.session_state.confirm_clear_chip_range_type = ""
+                        st.rerun()
+
+        # 籌碼全部清除二次確認
+        pending_chip_all_clr = st.session_state.get("confirm_clear_chip_all_type", "")
+        if pending_chip_all_clr in ("margin", "institutional", "holding"):
+            chip_all_label_map = {
+                "margin": "所有資券資料",
+                "institutional": "所有法人資料",
+                "holding": "所有大戶資料",
+            }
+            cur_all_lbl = chip_all_label_map[pending_chip_all_clr]
+            st.warning(
+                f"⚠️ 確定要清除本地與雲端所有上市／上櫃個股之「**{cur_all_lbl}**」嗎？（日線、分點及其他籌碼資料將完整保留）"
+            )
+            with st.container():
+                st.markdown("<div class='settings-btn-row-anchor'></div>", unsafe_allow_html=True)
+                ca_yes, ca_no = st.columns(2)
+                with ca_yes:
+                    if st.button(f"確定清除{cur_all_lbl}", key="btn_confirm_clear_chip_all_yes", use_container_width=True):
+                        with st.spinner(f"正在清除本地與雲端之{cur_all_lbl}..."):
+                            res_all_chip_msg = clear_all_stocks_chip_all(chip_type=pending_chip_all_clr)
+                        st.session_state.confirm_clear_chip_all_type = ""
+                        clear_figures_cache_fn()
+                        st.success(res_all_chip_msg)
+                with ca_no:
+                    if st.button("取消清除", key="btn_confirm_clear_chip_all_no", use_container_width=True):
+                        st.session_state.confirm_clear_chip_all_type = ""
                         st.rerun()
 
         st.markdown("---")
@@ -303,19 +355,27 @@ def render_settings_tab(
             step=1,
             key="gov_broker_backfill_days_input"
         ))
+        gov_d_str = gov_base_dt.strftime("%Y-%m-%d")
+
+        # 4. 加權指數／櫃買指數八大官股維護（三鍵並列）
         with st.container():
             st.markdown("<div class='settings-btn-row-anchor'></div>", unsafe_allow_html=True)
-            col_gov_add, col_gov_clr = st.columns(2)
+            col_gov_add, col_gov_rng_clr, col_gov_all_clr = st.columns(3)
             with col_gov_add:
                 run_gov_sync = st.button("📥 批次增補八大官股交易前30個股", key="btn_batch_sync_gov_brokers", use_container_width=True)
-            with col_gov_clr:
-                if st.button("🗑️ 清除八大官股交易資料", key="btn_batch_clear_gov_brokers", use_container_width=True):
+            with col_gov_rng_clr:
+                if st.button("🧹 清除指定期間八大官股", key="btn_batch_clear_gov_brokers_range", use_container_width=True):
+                    st.session_state.confirm_clear_gov_brokers_range = True
+                    st.session_state.confirm_clear_gov_brokers = False
+                    st.rerun()
+            with col_gov_all_clr:
+                if st.button("🗑️ 清除所有八大官股資料", key="btn_batch_clear_gov_brokers", use_container_width=True):
                     st.session_state.confirm_clear_gov_brokers = True
+                    st.session_state.confirm_clear_gov_brokers_range = False
                     st.rerun()
 
         if run_gov_sync:
             from data_fetcher import batch_sync_tw_index_gov_brokers
-            gov_d_str = gov_base_dt.strftime("%Y-%m-%d")
             prog_bar = st.progress(0, text="準備檢查並增補加權／櫃買八大官股交易前30個股...")
             status_txt = st.empty()
 
@@ -334,14 +394,36 @@ def render_settings_tab(
             get_cached_broker_payload.clear()
             st.success(summary_gov)
 
-        if st.session_state.confirm_clear_gov_brokers:
-            st.warning("⚠️ 確定要清除加權指數（^TWII）與櫃買指數（^TWOII）本地與雲端之「八大官股交易資料」嗎？（指數日線、資券及其他個股資料將完整保留）")
+        if st.session_state.get("confirm_clear_gov_brokers_range", False):
+            st.warning(
+                f"⚠️ 確定要清除加權指數（^TWII）與櫃買指數（^TWOII）於八大官股增補基準日 **{gov_d_str}** 往前 **{gov_days_opt}** 個交易日區間內之「**八大官股交易資料**」嗎？（區間外歷史八大官股、指數日線與資券資料將完整保留）"
+            )
+            with st.container():
+                st.markdown("<div class='settings-btn-row-anchor'></div>", unsafe_allow_html=True)
+                cgr_yes, cgr_no = st.columns(2)
+                with cgr_yes:
+                    if st.button("確定清除指定期間八大官股", key="btn_confirm_clear_gov_rng_yes", use_container_width=True):
+                        with st.spinner(f"正在清除基準日 {gov_d_str} 往前 {gov_days_opt} 日之八大官股資料..."):
+                            res_gov_rng_msg = clear_tw_index_gov_broker_range(
+                                base_date_str=gov_d_str,
+                                lookback_days=int(gov_days_opt)
+                            )
+                        st.session_state.confirm_clear_gov_brokers_range = False
+                        get_cached_broker_payload.clear()
+                        st.success(res_gov_rng_msg)
+                with cgr_no:
+                    if st.button("取消清除", key="btn_confirm_clear_gov_rng_no", use_container_width=True):
+                        st.session_state.confirm_clear_gov_brokers_range = False
+                        st.rerun()
+
+        if st.session_state.get("confirm_clear_gov_brokers", False):
+            st.warning("⚠️ 確定要清除加權指數（^TWII）與櫃買指數（^TWOII）本地與雲端之「所有八大官股資料」嗎？（指數日線、資券及其他個股資料將完整保留）")
             with st.container():
                 st.markdown("<div class='settings-btn-row-anchor'></div>", unsafe_allow_html=True)
                 cg_yes, cg_no = st.columns(2)
                 with cg_yes:
-                    if st.button("確定清除八大官股", key="btn_confirm_clear_gov_yes", use_container_width=True):
-                        with st.spinner("正在清除加權與櫃買八大官股資料..."):
+                    if st.button("確定清除所有八大官股", key="btn_confirm_clear_gov_yes", use_container_width=True):
+                        with st.spinner("正在清除加權與櫃買所有八大官股資料..."):
                             res_gov_msg = clear_tw_index_gov_broker_data()
                         st.session_state.confirm_clear_gov_brokers = False
                         get_cached_broker_payload.clear()
