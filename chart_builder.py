@@ -1,7 +1,7 @@
 """
 chart_builder.py - Plotly 圖表建置模組（主圖、指標頁籤與籌碼總入口）
 (依邏輯職責拆分為 chrt_chip.py 與本主圖/指標建置總入口，維持 100% 向後相容回傳結構)
-版本: 202611252228
+版本: 202611252254
 """
 
 from typing import Tuple, Optional, Dict
@@ -11,7 +11,7 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
 MODULE_NAME = "chart_builder"
-MODULE_VERSION = "202611252228"
+MODULE_VERSION = "202611252254"
 
 from data_fetcher import fetch_stock_daily_k, fetch_stock_name
 from indicators import calculate_all_indicators
@@ -27,20 +27,22 @@ def build_split_figures(
     major2_thresh: int = 400,
     is_mobile: bool = False,
     status_placeholder=None,
-    force_refresh: bool = False
+    force_refresh: bool = False,
+    refresh_cfg: Optional[dict] = None
 ) -> Tuple[Optional[go.Figure], Optional[Dict[str, go.Figure]], Optional[pd.DataFrame], str, int, int]:
     """
     【修訂說明 2026-11-25】【修改目的與防呆防錯原因】：
-    1. 修改目的：將 `display_days`（初始顯示K線根數）傳遞給 `fetch_stock_daily_k` 與 `calculate_all_indicators`，
-       讓強制重新抓取最新資料時僅重抓涵蓋最近 `display_days` 個交易日之 K 線與籌碼並增量覆蓋合併。
-    2. 防呆防錯原因：維持向後相容預設值，不影響其他模組呼叫介面。
+    1. 修改目的：新增 `refresh_cfg` 參數並轉傳給 `fetch_stock_daily_k` 與 `calculate_all_indicators`，
+       讓「🔄 強制重新抓取最新資料」依據使用者勾選項目與指定期程增量覆蓋更新。
+    2. 防呆防錯原因：維持向後相容預設值 `None`，不影響其他模組呼叫介面。
     """
     k_res = fetch_stock_daily_k(
         raw_ticker,
         period=period,
         base_date=str(base_date) if base_date else None,
         force_refresh=force_refresh,
-        display_days=int(display_days)
+        display_days=int(display_days),
+        refresh_cfg=refresh_cfg
     )
     if k_res is None or k_res[0] is None or k_res[0].empty:
         return None, None, None, "", 0, 0
@@ -68,7 +70,8 @@ def build_split_figures(
         status_placeholder=status_placeholder,
         force_refresh=force_refresh,
         full_ticker=full_ticker,
-        display_days=int(display_days)
+        display_days=int(display_days),
+        refresh_cfg=refresh_cfg
     )
 
     date_str_list = [d.strftime('%Y-%m-%d') for d in df.index]
