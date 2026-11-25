@@ -1,7 +1,7 @@
 """
 app_stock_view.py - 主頁籤 2「📈 個股」介面渲染模組
 (自 app.py 依邏輯職責拆分，維持上下雙複合選單、共用主圖與四大子頁籤互動機制，並整合四鍵同列與清除置頂查詢個股紀錄)
-版本: 202611252258
+版本: 202611252325
 """
 
 import re
@@ -28,7 +28,7 @@ from frontend import (
 from app_broker_cache import get_cached_broker_payload
 
 MODULE_NAME = "app_stock_view"
-MODULE_VERSION = "202611252258"
+MODULE_VERSION = "202611252325"
 
 
 def render_stock_tab(
@@ -42,10 +42,11 @@ def render_stock_tab(
     """
     【修訂說明 2026-11-25】【修改目的與防呆防錯原因】：
     1. 修改目的：
-       - 當 `st.session_state.force_refresh` 為 True 時，讀取 `st.session_state.get("force_refresh_cfg")` 並傳入 `get_figures_fn`
-         與 `get_cached_broker_payload(..., broker_force_days=...)`，使強制重抓僅針對使用者勾選的資料類別與指定期程增量覆蓋更新。
+       - 當 `st.session_state.force_refresh` 為 True 時，從 `active_refresh_cfg` 讀取使用者於「個股資料維護」設定之
+         `base_date`（資料維護基準日）與 `broker_days`，並傳入 `get_cached_broker_payload(..., broker_base_date=...)`，
+         使分點統計與分點日況逐日增補以該基準日為錨點往前推算。
     2. 防呆防錯原因：
-       - 若 `force_refresh_cfg` 尚未初始化，預設提供全部 7 項皆勾選且預設 120 日（大戶 1 週）之防呆字典。
+       - 若 `base_date` 未設定則傳入空字串 `""`，由 `get_cached_broker_payload` 自動對齊目前關注交易日。
     """
     auth_st = cloud_sync.get_auth_status()
     status_icon = "🟡" if auth_st == 2 else ("🔵" if auth_st == 1 else "⚪")
@@ -151,6 +152,7 @@ def render_stock_tab(
     current_force = bool(st.session_state.force_refresh)
     active_refresh_cfg = None
     broker_force_days = 0
+    broker_base_date = ""
     if current_force:
         st.session_state.force_refresh = False
         raw_cfg = st.session_state.get("force_refresh_cfg")
@@ -158,6 +160,7 @@ def render_stock_tab(
             active_refresh_cfg = dict(raw_cfg)
         else:
             active_refresh_cfg = {
+                "base_date": "",
                 "kline_enabled": True,
                 "kline_days": 120,
                 "foreign_enabled": True,
@@ -173,6 +176,7 @@ def render_stock_tab(
                 "broker_enabled": True,
                 "broker_days": 120,
             }
+        broker_base_date = str(active_refresh_cfg.get("base_date", "") or "").strip()
         if active_refresh_cfg.get("broker_enabled", True):
             broker_force_days = max(1, int(active_refresh_cfg.get("broker_days", 120) or 120))
         else:
@@ -287,7 +291,8 @@ def render_stock_tab(
                     target_end_idx=safe_end_idx,
                     force_refresh=current_force,
                     include_60d=include_60d,
-                    broker_force_days=broker_force_days
+                    broker_force_days=broker_force_days,
+                    broker_base_date=broker_base_date
                 )
         else:
             broker_payload = {"by_date": {}}
