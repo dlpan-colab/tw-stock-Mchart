@@ -1,7 +1,7 @@
 """
 app_stock_view.py - 主頁籤 2「📈 個股」介面渲染模組
-(自 app.py 依邏輯職責拆分，維持上下雙複合選單、共用主圖與四大子頁籤互動機制，並整合四鍵同列與清除查詢個股紀錄)
-版本: 202611252122
+(自 app.py 依邏輯職責拆分，維持上下雙複合選單、共用主圖與四大子頁籤互動機制，並整合四鍵同列與清除置頂查詢個股紀錄)
+版本: 202611252135
 """
 
 import re
@@ -13,7 +13,6 @@ from storage import (
     load_stock_history,
     save_stock_history,
     remove_stocks_from_history,
-    clear_stock_history,
     update_stock_name_only,
     get_stock_chinese_name,
     is_tw_stock_or_etf,
@@ -30,7 +29,7 @@ from frontend import (
 from app_broker_cache import get_cached_broker_payload
 
 MODULE_NAME = "app_stock_view"
-MODULE_VERSION = "202611252122"
+MODULE_VERSION = "202611252135"
 
 
 def render_stock_tab(
@@ -44,12 +43,12 @@ def render_stock_tab(
     """
     【修訂說明 2026-11-25】【修改目的與防呆防錯原因】：
     1. 修改目的：
-       - 將原參數設定頁籤之「主要市場指數」下拉選單移動至個股頁籤頂部導覽列，
-         與「◀ 上一檔」、「個股查詢歷史下拉選單」、「下一檔 ▶」四個功能並排在同一列（`.stock-nav-4col-anchor`）。
-       - 將原參數設定頁籤之「清除紀錄」更名為「清除查詢個股紀錄」，移至本頁籤且緊接置於上述功能鍵列之下一行。
+       - 「清除查詢個股紀錄」固定僅清除歷史查詢清單置頂第一筆（`history_codes[0]`），
+         完全移除清空全部歷史紀錄之分支與二次確認提示。
     2. 防呆防錯原因：
-       - 依據 storage.py 實際匯出簽章呼叫 `remove_stocks_from_history([cur_code_upper])` 移除目前查詢標的
-         並同步清除操作儀錶板快取；若無歷史紀錄可刪則提供二次確認清空機制，避免 ImportError 與誤刪其他自選清單。
+       - 若使用者誤輸入無效代號（如 `1`，尚未寫入歷史清單），點擊「清除查詢個股紀錄」時先將當前無效輸入
+         還原為歷史清單置頂標的（或預設 `2330`）；若當前標的已在歷史清單中，則直接移除清單置頂第一筆並切換至下一筆，
+         同步清除操作儀錶板快取。
     """
     auth_st = cloud_sync.get_auth_status()
     status_icon = "🟡" if auth_st == 2 else ("🔵" if auth_st == 1 else "⚪")
@@ -132,10 +131,17 @@ def render_stock_tab(
                     st.session_state.confirm_clear_all = False
                     st.rerun()
 
-    # 第 2 列（緊接功能鍵下一行）：「清除查詢個股紀錄」按鈕
+    # 第 2 列（緊接功能鍵下一行）：「清除查詢個股紀錄」（僅清除置頂項目）
     if st.button("清除查詢個股紀錄", key="btn_clear_stock_history_row", use_container_width=True):
-        if cur_code_upper in history_codes:
-            rem_hist = remove_stocks_from_history([cur_code_upper])
+        st.session_state.confirm_clear_all = False
+        if cur_code_upper not in history_codes and not cur_code_upper.startswith("^"):
+            # 目前畫面為尚未寫入歷史清單之無效暫存輸入（如誤輸入 1），直接還原回原置頂標的
+            st.session_state.stock_id = history_codes[0] if history_codes else "2330"
+            st.session_state.promote_to_top = False
+            st.rerun()
+        elif history_codes:
+            top_code = history_codes[0]
+            rem_hist = remove_stocks_from_history([top_code])
             from app_dashboard import get_cached_dashboard_rows
             get_cached_dashboard_rows.clear()
             if rem_hist:
@@ -143,30 +149,7 @@ def render_stock_tab(
             else:
                 st.session_state.stock_id = "2330"
             st.session_state.promote_to_top = False
-            st.session_state.confirm_clear_all = False
             st.rerun()
-        elif history_codes:
-            st.session_state.confirm_clear_all = True
-            st.rerun()
-
-    if st.session_state.get("confirm_clear_all", False):
-        st.warning("⚠️ 確定要清空所有個股查詢歷史紀錄嗎？（同步清除操作儀錶板自選清單）")
-        with st.container():
-            st.markdown("<div class='settings-btn-row-anchor'></div>", unsafe_allow_html=True)
-            c_yes, c_no = st.columns(2)
-            with c_yes:
-                if st.button("確定全部清空", key="btn_confirm_clear_hist_yes", use_container_width=True):
-                    clear_stock_history()
-                    from app_dashboard import get_cached_dashboard_rows
-                    get_cached_dashboard_rows.clear()
-                    st.session_state.confirm_clear_all = False
-                    st.session_state.stock_id = "2330"
-                    st.session_state.promote_to_top = False
-                    st.rerun()
-            with c_no:
-                if st.button("取消", key="btn_confirm_clear_hist_no", use_container_width=True):
-                    st.session_state.confirm_clear_all = False
-                    st.rerun()
 
     st.markdown(get_legend_html(), unsafe_allow_html=True)
 
