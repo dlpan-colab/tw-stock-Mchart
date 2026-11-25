@@ -1,7 +1,7 @@
 """
 app.py - 主應用程式介面與生命週期控制（三主頁籤路由總入口）
 (依邏輯職責拆分為 app_broker_cache.py、app_dashboard.py、app_settings.py、app_stock_view.py 與本主入口，維持三主頁籤架構)
-版本: 202611252115
+版本: 202611252130
 """
 
 import os
@@ -9,7 +9,7 @@ import re
 import streamlit as st
 
 MODULE_NAME = "app"
-MODULE_VERSION = "202611252115"
+MODULE_VERSION = "202611252130"
 
 
 # 【防呆防錯備註 2026-11-24】：動態掃描主模組與所有拆分子模組之最大版本號，作為唯一系統版本號
@@ -129,11 +129,9 @@ st.set_page_config(
 )
 
 # 【修訂說明 2026-11-25】【修改目的與防呆防錯原因】：
-# 1. 修改目的：新增 `.stock-nav-4col-anchor` 橫向四欄並排樣式，支援個股頁籤頂部
-#    [◀ 上一檔][主要市場指數][個股查詢歷史][下一檔 ▶] 四個功能鍵同一列並排，且手機版維持單列不換行；
-#    同時完整保留原有 3 欄 `.stock-nav-anchor` 樣式供個股底部選單使用。
-# 2. 防呆防錯原因：使用 `:first-child` 與 `:last-child` 鎖定左右切換鈕寬度，中間兩欄下拉選單採 `flex: 1 1 0`
-#    與 `min-width: 0` 平均分配剩餘寬度並自動截斷過長文字，防止手機版窄螢幕溢出或換行跑版。
+# 1. 修改目的：微調 `.stock-nav-4col-anchor` 左右切換按鈕寬度為 `64px`，確保手機版四鍵同列時
+#    「◀ 上一檔」與「下一檔 ▶」完整顯示不出現 `...` 截斷。
+# 2. 防呆防錯原因：維持中間兩欄下拉選單 `flex: 1 1 0` 與 `min-width: 0`，避免窄螢幕溢位換行。
 st.markdown("""
 <style>
     .block-container {
@@ -240,10 +238,10 @@ st.markdown("""
     div[data-testid="stVerticalBlock"]:has(.stock-nav-4col-anchor) [data-testid="stHorizontalBlock"] > [data-testid="stColumn"]:nth-child(4),
     div[data-testid="stVerticalBlock"]:has(.stock-nav-4col-anchor) [data-testid="stHorizontalBlock"] > div:nth-child(1),
     div[data-testid="stVerticalBlock"]:has(.stock-nav-4col-anchor) [data-testid="stHorizontalBlock"] > div:nth-child(4) {
-        flex: 0 0 58px !important;
-        width: 58px !important;
-        min-width: 58px !important;
-        max-width: 58px !important;
+        flex: 0 0 64px !important;
+        width: 64px !important;
+        min-width: 64px !important;
+        max-width: 64px !important;
     }
     div[data-testid="stVerticalBlock"]:has(.stock-nav-4col-anchor) [data-testid="stHorizontalBlock"] > [data-testid="stColumn"]:nth-child(2),
     div[data-testid="stVerticalBlock"]:has(.stock-nav-4col-anchor) [data-testid="stHorizontalBlock"] > [data-testid="stColumn"]:nth-child(3),
@@ -276,7 +274,7 @@ st.markdown("""
     }
     div[data-testid="stVerticalBlock"]:has(.stock-nav-4col-anchor) [data-testid="stHorizontalBlock"] button {
         width: 100% !important;
-        min-width: 54px !important;
+        min-width: 60px !important;
         padding: 4px 2px !important;
         font-size: 11px !important;
         white-space: nowrap !important;
@@ -410,6 +408,9 @@ if "broker_60d_requests" not in st.session_state:
     st.session_state.broker_60d_requests = set()
 
 
+# 【修訂說明 2026-11-25】【修改目的與防呆防錯原因】：
+# 1. 修改目的：在個股查詢歷史下拉式選單中，無論點選既有標的或輸入新代號，皆設 `promote_to_top = True` 使選中個股自動置頂。
+# 2. 防呆防錯原因：僅透過下拉選單主動選取時置頂，按「◀ 上一檔 / 下一檔 ▶」仍維持 `promote_to_top = False` 保持瀏覽順序。
 def _apply_stock_selector_choice(widget_key: str):
     raw_sel = str(st.session_state.get(widget_key, "") or "").strip()
     if not raw_sel:
@@ -420,7 +421,7 @@ def _apply_stock_selector_choice(widget_key: str):
         target_code = raw_sel.split()[0].strip().upper()
         if target_code:
             st.session_state.stock_id = target_code
-            st.session_state.promote_to_top = False
+            st.session_state.promote_to_top = True
             st.session_state.confirm_clear_all = False
     else:
         first_token = raw_sel.split()[0].strip()
@@ -439,10 +440,6 @@ def on_bottom_stock_selector_change():
     _apply_stock_selector_choice("bottom_stock_selector")
 
 
-# 【修訂說明 2026-11-25】【修改目的與防呆防錯原因】：
-# 1. 修改目的：配合「主要市場指數」下拉選單移動至「📈 個股」頁籤並排顯示，預設提示文字精簡為「主要市場指數...」，
-#    選擇指數後直接更新 `stock_id` 並將下拉選單重置回「主要市場指數...」。
-# 2. 防呆防錯原因：維持 `promote_to_top = False`，避免切換主要市場指數時誤將指数排擠個股查詢歷史排序。
 def on_index_select_change():
     sel = st.session_state.index_select_box
     if sel and sel != "主要市場指數...":
@@ -467,10 +464,6 @@ selected_main_tab = st.radio(
     key="active_main_tab"
 )
 
-# 【修訂說明 2026-11-25】【修改目的與防呆防錯原因】：
-# 1. 修改目的：`render_settings_tab` 移除已搬遷之 `on_index_change_fn` 與已刪除之 `on_history_change_fn`；
-#    `render_stock_tab` 傳入 `on_index_change_fn=on_index_select_change` 供同列主要市場指數選單呼叫。
-# 2. 防呆防錯原因：同步更新主入口與子模組介面簽章，確保頁面切換無參數不匹配錯誤。
 if selected_main_tab == "📊 操作儀錶板":
     render_dashboard_tab(
         system_version=SYSTEM_VERSION,
