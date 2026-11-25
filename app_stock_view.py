@@ -1,7 +1,7 @@
 """
 app_stock_view.py - 主頁籤 2「📈 個股」介面渲染模組
 (自 app.py 依邏輯職責拆分，維持上下雙複合選單、共用主圖與四大子頁籤互動機制，並整合四鍵同列與清除查詢個股紀錄)
-版本: 202611252118
+版本: 202611252122
 """
 
 import re
@@ -12,7 +12,7 @@ import cloud_sync
 from storage import (
     load_stock_history,
     save_stock_history,
-    delete_stock_history,
+    remove_stocks_from_history,
     clear_stock_history,
     update_stock_name_only,
     get_stock_chinese_name,
@@ -30,7 +30,7 @@ from frontend import (
 from app_broker_cache import get_cached_broker_payload
 
 MODULE_NAME = "app_stock_view"
-MODULE_VERSION = "202611252118"
+MODULE_VERSION = "202611252122"
 
 
 def render_stock_tab(
@@ -48,8 +48,8 @@ def render_stock_tab(
          與「◀ 上一檔」、「個股查詢歷史下拉選單」、「下一檔 ▶」四個功能並排在同一列（`.stock-nav-4col-anchor`）。
        - 將原參數設定頁籤之「清除紀錄」更名為「清除查詢個股紀錄」，移至本頁籤且緊接置於上述功能鍵列之下一行。
     2. 防呆防錯原因：
-       - 點擊「清除查詢個股紀錄」時，若目前查詢標的在歷史紀錄中則移除該標的（並同步清除操作儀錶板快取），
-         若無歷史紀錄可刪則提供二次確認清空機制，避免誤刪使用者其他自選清單項目。
+       - 依據 storage.py 實際匯出簽章呼叫 `remove_stocks_from_history([cur_code_upper])` 移除目前查詢標的
+         並同步清除操作儀錶板快取；若無歷史紀錄可刪則提供二次確認清空機制，避免 ImportError 與誤刪其他自選清單。
     """
     auth_st = cloud_sync.get_auth_status()
     status_icon = "🟡" if auth_st == 2 else ("🔵" if auth_st == 1 else "⚪")
@@ -132,13 +132,12 @@ def render_stock_tab(
                     st.session_state.confirm_clear_all = False
                     st.rerun()
 
-    # 第 2 列（紧接功能鍵下一行）：「清除查詢個股紀錄」按鈕
+    # 第 2 列（緊接功能鍵下一行）：「清除查詢個股紀錄」按鈕
     if st.button("清除查詢個股紀錄", key="btn_clear_stock_history_row", use_container_width=True):
         if cur_code_upper in history_codes:
-            delete_stock_history(cur_code_upper)
+            rem_hist = remove_stocks_from_history([cur_code_upper])
             from app_dashboard import get_cached_dashboard_rows
             get_cached_dashboard_rows.clear()
-            rem_hist = load_stock_history()
             if rem_hist:
                 st.session_state.stock_id = str(rem_hist[0].get("code", "2330")).strip().upper()
             else:
