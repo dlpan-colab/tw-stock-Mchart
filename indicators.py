@@ -1,13 +1,14 @@
 """
 indicators.py - 技術指標與籌碼計算模組
 (新增 20/120/240/1200 日乖離率、大盤加權^TWII與櫃買^TWOII融資金額(億)與融資/融券維持率、個股全期間與近60日滾動視窗預估融資維持率計算及以集保最新週真實總股數扣除近15週1000張以上大於0最小持股比例之實際流通張數週轉率與1%約當張數輸出版)
-版本: 202611231808
+版本: 202611252230
 """
+
 import numpy as np
 import pandas as pd
 
 MODULE_NAME = "indicators"
-MODULE_VERSION = "202611231808"
+MODULE_VERSION = "202611252230"
 
 HOLDING_LEVEL_MAP = {
     100: [8, 9, 10, 11, 12, 13, 14, 15],
@@ -27,7 +28,8 @@ def calculate_all_indicators(
     shares_outstanding=None,
     status_placeholder=None,
     force_refresh: bool = False,
-    full_ticker: str = None
+    full_ticker: str = None,
+    display_days: int = 30
 ):
     if df is None or df.empty:
         return df
@@ -99,7 +101,6 @@ def calculate_all_indicators(
     if len(valid_idx) >= 2:
         curr_state = bool(df['Close'].iloc[valid_idx[0]] >= df['MA5'].iloc[valid_idx[0]])
         seg_indices = [valid_idx[0]]
-
         for idx in valid_idx[1:]:
             new_state = bool(df['Close'].iloc[idx] >= df['MA5'].iloc[idx])
             if new_state == curr_state:
@@ -121,6 +122,8 @@ def calculate_all_indicators(
     # 【防呆防錯備註 2026-11-10】【修訂目的】：
     # 將 Yahoo 日 K 驗證出的 full_ticker (.TW 或 .TWO) 傳遞給 sync_chip_data。
     # 避免籌碼模組因失去市場別，無腦連續輪詢證交所與櫃買中心而造成延遲與誤判。
+    # 【修訂說明 2026-11-25】【修改目的與防呆防錯原因】：
+    # 新增傳遞 `display_days` 給 `sync_chip_data`，使強制重新抓取最新資料時依據初始顯示K線根數增量覆蓋更新籌碼。
     inst_df, margin_df, holding_df = pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
     try:
         from data_fetcher import sync_chip_data
@@ -129,7 +132,8 @@ def calculate_all_indicators(
             df_dates=df.index,
             status_placeholder=status_placeholder,
             force_refresh=force_refresh,
-            full_ticker=full_ticker
+            full_ticker=full_ticker,
+            display_days=int(display_days)
         )
         if isinstance(chip_res, tuple):
             if len(chip_res) == 3:
