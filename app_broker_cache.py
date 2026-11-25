@@ -1,12 +1,11 @@
 """
 app_broker_cache.py - 個股分點與大盤八大官股快取組裝模組
-(自 app.py 依邏輯職責拆分，開放歷史關注交易日補抓與顯示近 10/20 日個股分點逐日明細)
-版本: 202611250715
+(自 app.py 依邏輯職責拆分，開放歷史關注交易日補抓與顯示近 10/20 日個股分點逐日明細，並支援依指定交易日數強制重抓區間分點統計)
+版本: 202611252256
 """
 
 import time
 import streamlit as st
-
 from storage import (
     StockChipStorage,
     is_tw_stock_or_etf,
@@ -20,7 +19,7 @@ from data_fetcher import (
 )
 
 MODULE_NAME = "app_broker_cache"
-MODULE_VERSION = "202611250715"
+MODULE_VERSION = "202611252256"
 
 
 @st.cache_data(ttl=600, show_spinner=False)
@@ -29,16 +28,18 @@ def get_cached_broker_payload(
     trade_dates_tuple: tuple,
     target_end_idx: int,
     force_refresh: bool = False,
-    include_60d: bool = False
+    include_60d: bool = False,
+    broker_force_days: int = 0
 ) -> dict:
     """
     【修訂說明 2026-11-25】【修改目的與防呆防錯原因】：
-    1. 修改目的：移除台股個股/ETF 分支中「僅限最新交易日（`is_end_latest`）才抓取與組裝前 5 名分點日況」的限制，
-       讓使用者切換至任一歷史關注交易日（如 2026-11-23）時，若該日尚無 `w10` / `w20` 分點日況序列，
-       可自動依該關注交易日往回計算區間並補抓前 5 名買賣超分點逐日明細，使「分點日況」頁籤顯示對應柱狀圖。
+    1. 修改目的：
+       - 新增 `broker_force_days` 參數；當 `force_refresh=True` 且 `broker_force_days > 1` 時，
+         會針對關注交易日往前最多 `broker_force_days` 個交易日區間（如預設 120 日），逐日重抓分點統計排行榜（`w1/w10/w20`）
+         並與既有分點統計合併覆蓋（統計不限天數），同時重抓關注交易日之分點日況（限最近交易日之近 20 日）。
+       - 當 `force_refresh=True` 但 `broker_force_days <= 0`（使用者未勾選分點）時，直接讀取資料庫既有分點資料，不觸發爬蟲。
     2. 防呆防錯原因：
-       - 若關注交易日尚未達 16:00 更新時機點且尚無明細，避免無效重複請求；
-       - 針對歷史關注交易日僅寫入本地 SQLite（`sync_cloud=False`）並合併回傳，不覆寫既有最新交易日快取。
+       - `broker_force_days` 納為 `@st.cache_data` 參數鍵值，確保不同重抓天數不會誤命中舊快取。
     """
     code = str(stock_id).strip().upper()
     is_gov_idx = is_tw_index_with_gov_brokers(code)
@@ -50,8 +51,9 @@ def get_cached_broker_payload(
     safe_idx = min(max(0, int(target_end_idx)), n_dates - 1)
     end_date_str = trade_dates_tuple[safe_idx]
     latest_trade_date_str = trade_dates_tuple[-1]
-
     storage = StockChipStorage(code)
+
+    eff_force = bool(force_refresh and int(broker_force_days or 0) > 0)
 
     # -----------------------------------------------------------------
     # 分支 A：大盤加權（^TWII）與櫃買（^TWOII）八大官股個股統計與8行庫日況
@@ -60,7 +62,7 @@ def get_cached_broker_payload(
         by_date_map = {}
         all_stored_ranks = storage.load_all_broker_range_ranks()
         for hist_date_str, hist_bundle in all_stored_ranks.items():
-            if hist_date_str != end_date_str and not force_refresh:
+            if hist_date_str != end_date_str and not eff_force:
                 by_date_map[hist_date_str] = dict(hist_bundle)
 
         lookback_start_idx = max(0, safe_idx - 25)
@@ -74,7 +76,7 @@ def get_cached_broker_payload(
         for d_avail in sorted(avail_gov_dates):
             if d_avail == end_date_str:
                 continue
-            if not force_refresh and d_avail in by_date_map and isinstance(by_date_map[d_avail], dict) and by_date_map[d_avail].get("w1"):
+            if not eff_force and d_avail in by_date_map and isinstance(by_date_map[d_avail], dict) and by_date_map[d_avail].get("w1"):
                 continue
             d_idx = date_to_idx.get(d_avail)
             if d_idx is not None:
@@ -137,14 +139,69 @@ def get_cached_broker_payload(
             w_obj["top5_sell_series"] = w_focus.get("top5_sell_series", [])
         return bundle
 
+    def df_to_rank_records(df_rank):
+        if df_rank is None or df_rank.empty:
+            return []
+        recs = []
+        for _, r in df_rank.head(10).iterrows():
+            recs.append({
+                "name": str(r.get("分點名稱", "")),
+                "sys": str(r.get("體系", "")),
+                "buy": int(r.get("買進(張)", 0)),
+                "sell": int(r.get("賣出(張)", 0)),
+                "net": int(r.get("買賣超(張)", 0)),
+                "ratio": str(r.get("佔比", "-")),
+            })
+        return recs
+
+    def _calc_win_starts(anchor_idx: int) -> dict:
+        anchor_d = trade_dates_tuple[anchor_idx]
+        return {
+            1: anchor_d,
+            10: trade_dates_tuple[max(0, anchor_idx - 10 + 1)],
+            20: trade_dates_tuple[max(0, anchor_idx - 20 + 1)],
+            60: trade_dates_tuple[max(0, anchor_idx - 60 + 1)],
+        }
+
     all_stored_ranks = storage.load_all_broker_range_ranks()
     by_date_map = {}
     for hist_date_str, hist_bundle in all_stored_ranks.items():
-        if hist_date_str == end_date_str and force_refresh:
+        if hist_date_str == end_date_str and eff_force:
             continue
         by_date_map[hist_date_str] = attach_focus_series_to_bundle(dict(hist_bundle), hist_date_str)
 
-    cached_rank = None if force_refresh else all_stored_ranks.get(end_date_str)
+    # 若為「強制重抓模式」但使用者未勾選分點（broker_force_days <= 0），直接沿用既有分點資料
+    if force_refresh and not eff_force:
+        return {"by_date": by_date_map}
+
+    # 若為「強制重抓模式」且指定天數 > 1（例如預設 120 日），先針對前 (broker_force_days - 1) 個歷史交易日重抓分點統計（統計不限日數）
+    if eff_force and int(broker_force_days) > 1:
+        extra_days = min(safe_idx, int(broker_force_days) - 1)
+        start_hist_idx = max(0, safe_idx - extra_days)
+        for h_idx in range(start_hist_idx, safe_idx):
+            h_dt_str = trade_dates_tuple[h_idx]
+            h_starts = _calc_win_starts(h_idx)
+            h_bundle = {}
+            h_has_any = False
+            for w in (1, 10, 20):
+                s_str = h_starts[w]
+                df_b, df_s = fetch_stock_broker_range_ranking(code, s_str, h_dt_str)
+                b_recs = df_to_rank_records(df_b)
+                s_recs = df_to_rank_records(df_s)
+                if b_recs or s_recs:
+                    h_has_any = True
+                lbl = h_dt_str if w == 1 else f"{s_str} ~ {h_dt_str}"
+                h_bundle[f"w{w}"] = {
+                    "range_label": lbl,
+                    "buy": b_recs,
+                    "sell": s_recs,
+                }
+                time.sleep(0.06)
+            if h_has_any:
+                storage.save_broker_range_rank(h_dt_str, h_bundle, sync_cloud=False)
+                by_date_map[h_dt_str] = attach_focus_series_to_bundle(h_bundle, h_dt_str)
+
+    cached_rank = None if eff_force else all_stored_ranks.get(end_date_str)
     end_w20_b = all_focus_series.get(end_date_str, {}).get("w20", {}).get("top5_buy_series") or []
     end_w20_s = all_focus_series.get(end_date_str, {}).get("w20", {}).get("top5_sell_series") or []
     ready_for_end_date = is_broker_daily_data_ready_for_date(end_date_str)
@@ -163,36 +220,12 @@ def get_cached_broker_payload(
             by_date_map[end_date_str] = attach_focus_series_to_bundle(dict(cached_rank), end_date_str)
             return {"by_date": by_date_map}
 
-    def _calc_win_starts(anchor_idx: int) -> dict:
-        anchor_d = trade_dates_tuple[anchor_idx]
-        return {
-            1: anchor_d,
-            10: trade_dates_tuple[max(0, anchor_idx - 10 + 1)],
-            20: trade_dates_tuple[max(0, anchor_idx - 20 + 1)],
-            60: trade_dates_tuple[max(0, anchor_idx - 60 + 1)],
-        }
-
     win_starts = _calc_win_starts(safe_idx)
     target_windows = (1, 10, 20, 60) if include_60d else (1, 10, 20)
     series_windows = (10, 20, 60) if include_60d else (10, 20)
     earliest_start = win_starts[60] if include_60d else win_starts[20]
 
-    def df_to_rank_records(df_rank):
-        if df_rank is None or df_rank.empty:
-            return []
-        recs = []
-        for _, r in df_rank.head(10).iterrows():
-            recs.append({
-                "name": str(r.get("分點名稱", "")),
-                "sys": str(r.get("體系", "")),
-                "buy": int(r.get("買進(張)", 0)),
-                "sell": int(r.get("賣出(張)", 0)),
-                "net": int(r.get("買賣超(張)", 0)),
-                "ratio": str(r.get("佔比", "-")),
-            })
-        return recs
-
-    if cached_rank is not None and not force_refresh:
+    if cached_rank is not None and not eff_force:
         fetch_windows = [w for w in target_windows if not _has_valid_win(cached_rank, w)]
         if not fetch_windows and (not has_focus_for_end):
             fetch_windows = [10, 20]
@@ -253,7 +286,7 @@ def get_cached_broker_payload(
                             )
         all_focus_series = storage.load_all_broker_focus_daily_series()
 
-    day_bundle = dict(cached_rank) if (isinstance(cached_rank, dict) and not force_refresh) else {}
+    day_bundle = dict(cached_rank) if (isinstance(cached_rank, dict) and not eff_force) else {}
     has_any_rank = False
     for w in fetch_windows:
         s_str = win_starts[w]
@@ -262,16 +295,15 @@ def get_cached_broker_payload(
         s_recs = df_to_rank_records(df_s)
         if b_recs or s_recs:
             has_any_rank = True
-            label = end_date_str if w == 1 else f"{s_str} ~ {end_date_str}"
-            day_bundle[f"w{w}"] = {
-                "range_label": label,
-                "buy": b_recs,
-                "sell": s_recs,
-            }
+        label = end_date_str if w == 1 else f"{s_str} ~ {end_date_str}"
+        day_bundle[f"w{w}"] = {
+            "range_label": label,
+            "buy": b_recs,
+            "sell": s_recs,
+        }
 
     if has_any_rank or day_bundle:
         storage.save_broker_range_rank(end_date_str, day_bundle, sync_cloud=is_end_latest)
-        by_date_map[end_date_str] = attach_focus_series_to_bundle(day_bundle, end_date_str)
-
+    by_date_map[end_date_str] = attach_focus_series_to_bundle(day_bundle, end_date_str)
     return {"by_date": by_date_map}
 ## EOF app_broker_cache.py
