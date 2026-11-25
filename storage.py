@@ -1,7 +1,7 @@
 """
 storage.py - 本地 SQLite 資料庫與股票歷史紀錄管理器（對外統一入口）
 (依邏輯職責拆分為 strg_cloud_names.py、strg_history_maint.py、strg_broker_mixin.py 與本核心檔案，維持 100% 向後相容匯出)
-版本: 202611242144
+版本: 202611252208
 """
 
 import os
@@ -9,7 +9,7 @@ import sqlite3
 import pandas as pd
 
 MODULE_NAME = "storage"
-MODULE_VERSION = "202611242144"
+MODULE_VERSION = "202611252208"
 
 from strg_cloud_names import (
     STORAGE_DIR,
@@ -33,6 +33,10 @@ from strg_cloud_names import (
     get_stock_chinese_name,
 )
 
+# 【修訂說明 2026-11-25】【修改目的與防呆防錯原因】：
+# 1. 修改目的：補匯出 `clear_all_stocks_chip_all`（清除所有資券/法人/大戶籌碼資料）
+#    與 `clear_tw_index_gov_broker_range`（清除指定期間八大官股資料），供 `app_settings.py` 呼叫。
+# 2. 防呆防錯原因：維持 `storage.py` 作為所有子模組之統一對外匯出入口，確保既有引用路徑 100% 相容。
 from strg_history_maint import (
     _recover_history_from_databases,
     load_stock_history,
@@ -44,8 +48,10 @@ from strg_history_maint import (
     clear_recent_institutional_data,
     _collect_all_stock_codes_local_and_cloud,
     clear_all_stocks_chip_range,
+    clear_all_stocks_chip_all,
     clear_all_stocks_broker_range,
     clear_all_broker_data,
+    clear_tw_index_gov_broker_range,
     clear_tw_index_gov_broker_data,
 )
 
@@ -173,8 +179,9 @@ class StockChipStorage(BrokerStorageMixin):
             cursor.execute("PRAGMA table_info(broker_range_rank)")
             br_cols = {row[1] for row in cursor.fetchall()}
             required_br_cols = {
-                "range_date", "win_days", "side", "rank", "broker_name",
-                "broker_sys", "buy_sheets", "sell_sheets", "net_sheets", "ratio_str", "range_label"
+                "range_date", "win_days", "side", "rank",
+                "broker_name", "broker_sys", "buy_sheets", "sell_sheets",
+                "net_sheets", "ratio_str", "range_label"
             }
             if br_cols and not required_br_cols.issubset(br_cols):
                 cursor.execute("DROP TABLE IF EXISTS broker_range_rank")
@@ -236,6 +243,7 @@ class StockChipStorage(BrokerStorageMixin):
                     PRIMARY KEY (trade_date, stock_name)
                 )
             ''')
+
             cursor.execute("DELETE FROM shareholding_distribution WHERE level > 15 OR level < 1")
             conn.commit()
 
@@ -269,15 +277,18 @@ class StockChipStorage(BrokerStorageMixin):
     def load_daily_k_df(self) -> pd.DataFrame:
         with sqlite3.connect(self.db_path) as conn:
             df = pd.read_sql_query("SELECT * FROM daily_k ORDER BY date ASC", conn)
-        if df.empty:
-            return pd.DataFrame()
-        df['Date'] = pd.to_datetime(df['date'])
-        df.set_index('Date', inplace=True)
-        df.rename(columns={
-            'open': 'Open', 'high': 'High', 'low': 'Low',
-            'close': 'Close', 'volume': 'Volume'
-        }, inplace=True)
-        return df[['Open', 'High', 'Low', 'Close', 'Volume']]
+            if df.empty:
+                return pd.DataFrame()
+            df['Date'] = pd.to_datetime(df['date'])
+            df.set_index('Date', inplace=True)
+            df.rename(columns={
+                'open': 'Open',
+                'high': 'High',
+                'low': 'Low',
+                'close': 'Close',
+                'volume': 'Volume'
+            }, inplace=True)
+            return df[['Open', 'High', 'Low', 'Close', 'Volume']]
 
     def get_latest_institutional_date(self) -> str:
         with sqlite3.connect(self.db_path) as conn:
@@ -355,6 +366,7 @@ class StockChipStorage(BrokerStorageMixin):
                 norm_records.append((str(r[0])[:10], lvl, 0, 0, pct_v))
         if not norm_records:
             return
+
         sql_ins = '''
             INSERT OR REPLACE INTO shareholding_distribution (date, level, holders, shares, percent)
             VALUES (?, ?, ?, ?, ?)
@@ -397,20 +409,20 @@ class StockChipStorage(BrokerStorageMixin):
     def load_institutional_df(self) -> pd.DataFrame:
         with sqlite3.connect(self.db_path) as conn:
             df = pd.read_sql_query("SELECT * FROM institutional_investors ORDER BY date ASC", conn)
-        if not df.empty:
-            df['date'] = pd.to_datetime(df['date'])
-        return df
+            if not df.empty:
+                df['date'] = pd.to_datetime(df['date'])
+            return df
 
     def load_margin_df(self) -> pd.DataFrame:
         with sqlite3.connect(self.db_path) as conn:
             df = pd.read_sql_query("SELECT * FROM margin_short ORDER BY date ASC", conn)
-        if not df.empty:
-            df['date'] = pd.to_datetime(df['date'])
-            if 'margin_money_diff' not in df.columns:
-                df['margin_money_diff'] = 0.0
-            if 'margin_money_bal' not in df.columns:
-                df['margin_money_bal'] = 0.0
-        return df
+            if not df.empty:
+                df['date'] = pd.to_datetime(df['date'])
+                if 'margin_money_diff' not in df.columns:
+                    df['margin_money_diff'] = 0.0
+                if 'margin_money_bal' not in df.columns:
+                    df['margin_money_bal'] = 0.0
+            return df
 
     def load_holding_df(self) -> pd.DataFrame:
         with sqlite3.connect(self.db_path) as conn:
@@ -418,7 +430,7 @@ class StockChipStorage(BrokerStorageMixin):
                 "SELECT * FROM shareholding_distribution WHERE level >= 1 AND level <= 15 ORDER BY date ASC, level ASC",
                 conn
             )
-        if not df.empty:
-            df['date'] = pd.to_datetime(df['date'])
-        return df
+            if not df.empty:
+                df['date'] = pd.to_datetime(df['date'])
+            return df
 ## EOF storage.py
