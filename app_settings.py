@@ -1,7 +1,7 @@
 """
 app_settings.py - 主頁籤 3「⚙️ 參數設定」介面渲染模組
 (自 app.py 依邏輯職責拆分，維持既有全市籌碼維護、八大官股維護與全市場分點三鍵並列維護機制，並劃分三項次頁籤)
-版本: 202611252305
+版本: 202611252315
 """
 
 from datetime import datetime
@@ -22,7 +22,7 @@ from data_fetcher import (
 from app_broker_cache import get_cached_broker_payload
 
 MODULE_NAME = "app_settings"
-MODULE_VERSION = "202611252305"
+MODULE_VERSION = "202611252315"
 
 
 def render_settings_tab(
@@ -32,12 +32,12 @@ def render_settings_tab(
     """
     【修訂說明 2026-11-25】【修改目的與防呆防錯原因】：
     1. 修改目的：
-       - 於次頁籤 2「個股資料維護」之「🔄 強制重新抓取最新資料」按鈕上方，新增 7 組可彈性勾選與設定期程的欄位：
-         日 K 線（預設 120 日）、外資（預設 120 日）、投信（預設 120 日）、自營商（預設 120 日）、
-         資券（預設 120 日）、大戶（預設 1 週，備註：最長15週）、分點（預設 120 日，備註：統計不限，日況限最近一日）。
+       - 於次頁籤 2「個股資料維護」最上方新增「資料維護基準日」（預設為最近交易日），
+         不新增共用往前增補交易日數，維持下方 7 個各自獨立的勾選與期程輸入框，
+         並將分點備註更新為「分點（統計與日況逐日增補）」。
     2. 防呆防錯原因：
-       - 將使用者勾選狀態與輸入數值即時存入 `st.session_state.force_refresh_cfg`，
-         若全部項目皆未勾選時顯示提示並阻擋無效點擊；未勾選項目於重抓時完全保留資料庫既有資料。
+       - 將使用者設定之基準日（`base_date`）與 7 項勾選/期程存入 `st.session_state.force_refresh_cfg`，
+         供個股頁籤重抓時精準對齊基準日往前推算期程。
     """
     st.markdown(
         f"<div style='font-size:16px; font-weight:800; color:#0f172a; margin-bottom:6px;'>"
@@ -113,9 +113,18 @@ def render_settings_tab(
             unsafe_allow_html=True
         )
 
+        default_single_date = get_default_broker_backfill_base_date()
+        if isinstance(default_single_date, str):
+            parsed_single_date = datetime.strptime(default_single_date[:10], "%Y-%m-%d").date()
+        elif hasattr(default_single_date, "date"):
+            parsed_single_date = default_single_date.date()
+        else:
+            parsed_single_date = default_single_date
+
         cfg = st.session_state.get("force_refresh_cfg")
         if not isinstance(cfg, dict):
             cfg = {
+                "base_date": parsed_single_date.strftime("%Y-%m-%d"),
                 "kline_enabled": True,
                 "kline_days": 120,
                 "foreign_enabled": True,
@@ -131,6 +140,22 @@ def render_settings_tab(
                 "broker_enabled": True,
                 "broker_days": 120,
             }
+
+        saved_b_date = cfg.get("base_date")
+        if saved_b_date:
+            try:
+                init_single_dt = datetime.strptime(str(saved_b_date)[:10], "%Y-%m-%d").date()
+            except Exception:
+                init_single_dt = parsed_single_date
+        else:
+            init_single_dt = parsed_single_date
+
+        single_base_dt = st.date_input(
+            "資料維護基準日（預設為最近交易日）",
+            value=init_single_dt,
+            key="single_maint_base_date_input"
+        )
+        single_base_str = single_base_dt.strftime("%Y-%m-%d")
 
         # 1. 日 K 線
         c_k1, c_k2 = st.columns([2, 3])
@@ -222,13 +247,13 @@ def render_settings_tab(
                 label_visibility="collapsed"
             ))
 
-        # 7. 分點（預設120日，備註統計不限，日況限最近一日）
+        # 7. 分點（預設120日，統計與日況逐日增補）
         c_b1, c_b2 = st.columns([2, 3])
         with c_b1:
-            b_en = st.checkbox("分點（統計不限，日況限最近一日）", value=bool(cfg.get("broker_enabled", True)), key="chk_fr_broker")
+            b_en = st.checkbox("分點（統計與日況逐日增補）", value=bool(cfg.get("broker_enabled", True)), key="chk_fr_broker")
         with c_b2:
             b_days = int(st.number_input(
-                "分點統計期程(交易日)",
+                "分點期程(交易日)",
                 min_value=1,
                 max_value=365,
                 value=int(cfg.get("broker_days", 120) or 120),
@@ -238,6 +263,7 @@ def render_settings_tab(
             ))
 
         updated_cfg = {
+            "base_date": single_base_str,
             "kline_enabled": k_en,
             "kline_days": k_days,
             "foreign_enabled": f_en,
@@ -264,7 +290,7 @@ def render_settings_tab(
                 get_cached_broker_payload.clear()
                 from app_dashboard import get_cached_dashboard_rows
                 get_cached_dashboard_rows.clear()
-                st.success("已套用勾選項目與期程，切換回「📈 個股」頁籤即會依設定重新抓取最新資料。")
+                st.success(f"已套用基準日 {single_base_str} 與勾選期程，切換回「📈 個股」頁籤即會依設定重新抓取資料。")
 
     # =========================================================================
     # 次頁籤 3：全市場批次維護
