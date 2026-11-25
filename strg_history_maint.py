@@ -1,7 +1,7 @@
 """
 strg_history_maint.py - 查詢歷史紀錄管理與全市籌碼/分點維護清除模組
-(自 storage.py 依邏輯職責拆分，維持既有歷史清單 CRUD、雲端還原與指定基準日區間精準清除防呆機制)
-版本: 202611242144
+(自 storage.py 依邏輯職責拆分，維持既有歷史清單 CRUD、雲端還原與指定基準日區間／全表精準清除防呆機制)
+版本: 202611252205
 """
 
 import os
@@ -25,7 +25,7 @@ from strg_cloud_names import (
 )
 
 MODULE_NAME = "strg_history_maint"
-MODULE_VERSION = "202611242144"
+MODULE_VERSION = "202611252205"
 
 
 def _recover_history_from_databases() -> list:
@@ -37,7 +37,10 @@ def _recover_history_from_databases() -> list:
         if sync_client.service and sync_client.folder_id:
             q = f"'{sync_client.folder_id}' in parents and name contains 'data_' and name contains '.db' and trashed = false"
             res = sync_client.service.files().list(
-                q=q, fields="files(id, name, modifiedTime)", orderBy="modifiedTime desc", pageSize=50
+                q=q,
+                fields="files(id, name, modifiedTime)",
+                orderBy="modifiedTime desc",
+                pageSize=50
             ).execute()
             files = res.get("files", [])
             for f in files:
@@ -79,8 +82,10 @@ def load_stock_history():
             data = []
     if not isinstance(data, list):
         data = []
+
     if not data:
         data = _recover_history_from_databases()
+
     for item in data:
         code = str(item.get("code", "")).strip().upper()
         item["code"] = code
@@ -213,7 +218,9 @@ def _collect_all_stock_codes_local_and_cloud() -> list:
         if sync_client.service and sync_client.folder_id:
             q = f"'{sync_client.folder_id}' in parents and name contains 'data_' and name contains '.db' and trashed = false"
             res = sync_client.service.files().list(
-                q=q, fields="files(id, name)", pageSize=200
+                q=q,
+                fields="files(id, name)",
+                pageSize=200
             ).execute()
             for f in res.get("files", []):
                 fname = f.get("name", "")
@@ -252,19 +259,20 @@ def clear_all_stocks_chip_range(chip_type: str, base_date_str: str, lookback_day
         b_norm = base_dt.strftime("%Y-%m-%d")
 
     fallback_start_str = (base_dt - timedelta(days=max(n_days * 2, n_days + 4))).strftime("%Y-%m-%d")
-
     all_codes = _collect_all_stock_codes_local_and_cloud()
     if not all_codes:
         return "目前無任何已收集之上市／上櫃個股資料庫。"
 
     cleared_stocks = 0
     deleted_rows_total = 0
+
     for pure_code in all_codes:
         db_path = os.path.join(STORAGE_DIR, f"data_{pure_code}.db")
         if not os.path.exists(db_path) or os.path.getsize(db_path) == 0:
             _do_sync_db_pull(pure_code)
         if not os.path.exists(db_path) or os.path.getsize(db_path) == 0:
             continue
+
         try:
             with sqlite3.connect(db_path) as conn:
                 cur = conn.cursor()
@@ -283,6 +291,7 @@ def clear_all_stocks_chip_range(chip_type: str, base_date_str: str, lookback_day
                 )
                 affected = cur.rowcount if cur.rowcount and cur.rowcount > 0 else 0
                 conn.commit()
+
             if affected > 0:
                 _do_sync_db_push(pure_code)
                 cleared_stocks += 1
@@ -293,6 +302,58 @@ def clear_all_stocks_chip_range(chip_type: str, base_date_str: str, lookback_day
     return (
         f"已完成清除基準日 {b_norm} 往前 {n_days} 個交易日區間之{label_zh}："
         f"共更新 {cleared_stocks} 檔個股（刪除 {deleted_rows_total} 筆紀錄，區間外歷史資料及其他籌碼完整保留）。"
+    )
+
+
+def clear_all_stocks_chip_all(chip_type: str) -> str:
+    """
+    【修訂說明 2026-11-25】【修改目的與防呆防錯原因】：
+    1. 修改目的：供「⚙️ 參數設定 → 全市場批次維護 → 全市(含上櫃)籌碼資料庫維護」之
+       「🗑️ 清除所有資券/法人/大戶籌碼資料」按鈕呼叫，一次性清除所有上市／上櫃個股與 ETF 本地及雲端之指定籌碼全表資料。
+    2. 防呆防錯原因：僅針對指定籌碼資料表（margin_short / institutional_investors / shareholding_distribution）執行全表清除並回寫雲端，
+       完整保留 daily_k、分點明細與其他兩項籌碼資料。
+    """
+    c_type = str(chip_type or "").strip().lower()
+    table_map = {
+        "margin": ("margin_short", "所有資券籌碼資料"),
+        "institutional": ("institutional_investors", "所有法人籌碼資料"),
+        "holding": ("shareholding_distribution", "所有大戶籌碼資料"),
+    }
+    if c_type not in table_map:
+        return f"不支援的籌碼類型：{chip_type}"
+
+    table_name, label_zh = table_map[c_type]
+    all_codes = _collect_all_stock_codes_local_and_cloud()
+    if not all_codes:
+        return "目前無任何已收集之上市／上櫃個股資料庫。"
+
+    cleared_stocks = 0
+    deleted_rows_total = 0
+
+    for pure_code in all_codes:
+        db_path = os.path.join(STORAGE_DIR, f"data_{pure_code}.db")
+        if not os.path.exists(db_path) or os.path.getsize(db_path) == 0:
+            _do_sync_db_pull(pure_code)
+        if not os.path.exists(db_path) or os.path.getsize(db_path) == 0:
+            continue
+
+        try:
+            with sqlite3.connect(db_path) as conn:
+                cur = conn.cursor()
+                cur.execute(f"DELETE FROM {table_name}")
+                affected = cur.rowcount if cur.rowcount and cur.rowcount > 0 else 0
+                conn.commit()
+
+            if affected > 0:
+                _do_sync_db_push(pure_code)
+                cleared_stocks += 1
+                deleted_rows_total += affected
+        except Exception as e:
+            print(f"[Storage] 清除 {pure_code} {label_zh}失敗: {e}")
+
+    return (
+        f"已成功清除本地與雲端之{label_zh}："
+        f"共更新 {cleared_stocks} 檔個股（刪除 {deleted_rows_total} 筆紀錄，日線、分點及其他籌碼完整保留）。"
     )
 
 
@@ -312,19 +373,20 @@ def clear_all_stocks_broker_range(base_date_str: str, lookback_days: int = 1) ->
         b_norm = base_dt.strftime("%Y-%m-%d")
 
     fallback_start_str = (base_dt - timedelta(days=max(n_days * 2, n_days + 4))).strftime("%Y-%m-%d")
-
     all_codes = _collect_all_stock_codes_local_and_cloud()
     if not all_codes:
         return "目前無任何已收集之上市／上櫃個股資料庫。"
 
     cleared_stocks = 0
     deleted_rows_total = 0
+
     for pure_code in all_codes:
         db_path = os.path.join(STORAGE_DIR, f"data_{pure_code}.db")
         if not os.path.exists(db_path) or os.path.getsize(db_path) == 0:
             _do_sync_db_pull(pure_code)
         if not os.path.exists(db_path) or os.path.getsize(db_path) == 0:
             continue
+
         try:
             with sqlite3.connect(db_path) as conn:
                 cur = conn.cursor()
@@ -350,6 +412,7 @@ def clear_all_stocks_broker_range(base_date_str: str, lookback_days: int = 1) ->
                     except Exception:
                         pass
                 conn.commit()
+
             if affected_stk > 0:
                 _do_sync_db_push(pure_code)
                 cleared_stocks += 1
@@ -378,7 +441,9 @@ def clear_all_broker_data() -> str:
         if sync_client.service and sync_client.folder_id:
             q = f"'{sync_client.folder_id}' in parents and name contains 'data_' and name contains '.db' and trashed = false"
             res = sync_client.service.files().list(
-                q=q, fields="files(id, name)", pageSize=200
+                q=q,
+                fields="files(id, name)",
+                pageSize=200
             ).execute()
             for f in res.get("files", []):
                 fname = f.get("name", "")
@@ -398,6 +463,7 @@ def clear_all_broker_data() -> str:
             _do_sync_db_pull(pure_code)
         if not os.path.exists(db_path) or os.path.getsize(db_path) == 0:
             continue
+
         try:
             with sqlite3.connect(db_path) as conn:
                 cur = conn.cursor()
@@ -415,6 +481,73 @@ def clear_all_broker_data() -> str:
     return f"已成功清除 {cleared_count} 檔標的（含上市/上櫃個股及加權/櫃買八大官股）之分點統計與分點日況明細（日線、法人、資券與集保大戶資料完整保留）。"
 
 
+def clear_tw_index_gov_broker_range(base_date_str: str, lookback_days: int = 1) -> str:
+    """
+    【修訂說明 2026-11-25】【修改目的與防呆防錯原因】：
+    1. 修改目的：供「⚙️ 參數設定 → 全市場批次維護 → 加權指數／櫃買指數八大官股維護」之
+       「🧹 清除指定期間八大官股」按鈕呼叫，依指定「八大官股增補基準日」往前「增補交易日數」，
+       精準清除加權指數（^TWII）與櫃買指數（^TWOII）在該交易日區間內之八大官股交易資料並回寫雲端。
+    2. 防呆防錯原因：優先依各指數本地 daily_k 實際交易日序列推算精確起始日，完整保留區間外歷史八大官股資料、日線與資券資料。
+    """
+    b_norm = str(base_date_str or "").strip()[:10]
+    n_days = max(1, int(lookback_days or 1))
+    try:
+        base_dt = datetime.strptime(b_norm, "%Y-%m-%d")
+    except Exception:
+        base_dt = datetime.now()
+        b_norm = base_dt.strftime("%Y-%m-%d")
+
+    fallback_start_str = (base_dt - timedelta(days=max(n_days * 2, n_days + 4))).strftime("%Y-%m-%d")
+    cleared_count = 0
+    deleted_rows_total = 0
+
+    for idx_code in ("^TWII", "^TWOII"):
+        db_path = os.path.join(STORAGE_DIR, f"data_{idx_code}.db")
+        if not os.path.exists(db_path) or os.path.getsize(db_path) == 0:
+            _do_sync_db_pull(idx_code)
+        if not os.path.exists(db_path) or os.path.getsize(db_path) == 0:
+            continue
+
+        try:
+            with sqlite3.connect(db_path) as conn:
+                cur = conn.cursor()
+                k_rows = cur.execute(
+                    "SELECT date FROM daily_k WHERE date <= ? ORDER BY date DESC LIMIT ?",
+                    (b_norm, n_days)
+                ).fetchall()
+                if k_rows:
+                    start_date_str = str(k_rows[-1][0])[:10]
+                else:
+                    start_date_str = fallback_start_str
+
+                affected_idx = 0
+                for sql_del in (
+                    "DELETE FROM gov_index_stock_daily WHERE trade_date >= ? AND trade_date <= ?",
+                    "DELETE FROM broker_range_rank WHERE range_date >= ? AND range_date <= ?",
+                    "DELETE FROM broker_daily_trades WHERE trade_date >= ? AND trade_date <= ?",
+                    "DELETE FROM broker_focus_daily_series WHERE focus_date >= ? AND focus_date <= ?",
+                ):
+                    try:
+                        cur.execute(sql_del, (start_date_str, b_norm))
+                        if cur.rowcount and cur.rowcount > 0:
+                            affected_idx += cur.rowcount
+                    except Exception:
+                        pass
+                conn.commit()
+
+            if affected_idx > 0:
+                _do_sync_db_push(idx_code)
+                cleared_count += 1
+                deleted_rows_total += affected_idx
+        except Exception as e:
+            print(f"[Storage] 清除 {idx_code} 指定期間八大官股資料失敗: {e}")
+
+    return (
+        f"已完成清除基準日 {b_norm} 往前 {n_days} 個交易日區間之八大官股交易資料："
+        f"共更新 {cleared_count} 檔指數資料庫（刪除 {deleted_rows_total} 筆紀錄，區間外歷史資料、日線與資券資料完整保留）。"
+    )
+
+
 def clear_tw_index_gov_broker_data() -> str:
     """僅清除加權指數（^TWII）與櫃買指數（^TWOII）本地與雲端資料庫中的八大官股交易資料並回寫雲端。"""
     cleared_count = 0
@@ -424,6 +557,7 @@ def clear_tw_index_gov_broker_data() -> str:
             _do_sync_db_pull(idx_code)
         if not os.path.exists(db_path) or os.path.getsize(db_path) == 0:
             continue
+
         try:
             with sqlite3.connect(db_path) as conn:
                 cur = conn.cursor()
