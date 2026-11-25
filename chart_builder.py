@@ -1,7 +1,7 @@
 """
 chart_builder.py - Plotly 圖表建置模組（主圖、指標頁籤與籌碼總入口）
 (依邏輯職責拆分為 chrt_chip.py 與本主圖/指標建置總入口，維持 100% 向後相容回傳結構)
-版本: 202611242230
+版本: 202611252228
 """
 
 from typing import Tuple, Optional, Dict
@@ -11,7 +11,7 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
 MODULE_NAME = "chart_builder"
-MODULE_VERSION = "202611242230"
+MODULE_VERSION = "202611252228"
 
 from data_fetcher import fetch_stock_daily_k, fetch_stock_name
 from indicators import calculate_all_indicators
@@ -29,11 +29,18 @@ def build_split_figures(
     status_placeholder=None,
     force_refresh: bool = False
 ) -> Tuple[Optional[go.Figure], Optional[Dict[str, go.Figure]], Optional[pd.DataFrame], str, int, int]:
+    """
+    【修訂說明 2026-11-25】【修改目的與防呆防錯原因】：
+    1. 修改目的：將 `display_days`（初始顯示K線根數）傳遞給 `fetch_stock_daily_k` 與 `calculate_all_indicators`，
+       讓強制重新抓取最新資料時僅重抓涵蓋最近 `display_days` 個交易日之 K 線與籌碼並增量覆蓋合併。
+    2. 防呆防錯原因：維持向後相容預設值，不影響其他模組呼叫介面。
+    """
     k_res = fetch_stock_daily_k(
         raw_ticker,
         period=period,
         base_date=str(base_date) if base_date else None,
-        force_refresh=force_refresh
+        force_refresh=force_refresh,
+        display_days=int(display_days)
     )
     if k_res is None or k_res[0] is None or k_res[0].empty:
         return None, None, None, "", 0, 0
@@ -41,8 +48,8 @@ def build_split_figures(
     df_raw = k_res[0]
     full_ticker = k_res[1]
     shares_outstanding = k_res[2] if len(k_res) >= 3 else None
-
     c_name = fetch_stock_name(raw_ticker)
+
     if str(raw_ticker).startswith("^"):
         market_label = "指數"
     elif full_ticker.endswith(".TW"):
@@ -60,12 +67,12 @@ def build_split_figures(
         shares_outstanding=shares_outstanding,
         status_placeholder=status_placeholder,
         force_refresh=force_refresh,
-        full_ticker=full_ticker
+        full_ticker=full_ticker,
+        display_days=int(display_days)
     )
 
     date_str_list = [d.strftime('%Y-%m-%d') for d in df.index]
     total_len = len(df)
-
     disp_n = min(int(display_days), total_len)
     end_idx = total_len - 1
     if base_date is not None:
@@ -79,8 +86,8 @@ def build_split_figures(
         except Exception:
             pass
     start_idx = max(0, end_idx - disp_n + 1)
-    sub_df = df.iloc[start_idx:end_idx + 1]
 
+    sub_df = df.iloc[start_idx:end_idx + 1]
     p_max, p_min = float(sub_df['High'].max()), float(sub_df['Low'].min())
     p_pad = (p_max - p_min) * 0.12 if p_max > p_min else 2.0
     vol_upper = float(sub_df['Volume_Sheets'].max()) * 1.25 if not sub_df['Volume_Sheets'].empty else 1000.0
@@ -109,7 +116,8 @@ def build_split_figures(
     macd_pad = (macd_max - macd_min) * 0.15 if macd_max > macd_min else 0.5
 
     bias_series_list = [
-        sub_df[col].dropna() for col in ['BIAS_20', 'BIAS_120', 'BIAS_240', 'BIAS_1200']
+        sub_df[col].dropna()
+        for col in ['BIAS_20', 'BIAS_120', 'BIAS_240', 'BIAS_1200']
         if col in sub_df.columns and not sub_df[col].dropna().empty
     ]
     if bias_series_list:
@@ -127,35 +135,42 @@ def build_split_figures(
     # 1. 上半部共用主圖（K線 + 成交量）
     # =====================================================================
     fig_top = make_subplots(
-        rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.04,
+        rows=2, cols=1,
+        shared_xaxes=True,
+        vertical_spacing=0.04,
         row_heights=[0.70, 0.30]
     )
 
     fig_top.add_trace(go.Candlestick(
-        x=date_str_list, open=df['Open'], high=df['High'], low=df['Low'], close=df['Close'],
+        x=date_str_list,
+        open=df['Open'], high=df['High'], low=df['Low'], close=df['Close'],
         increasing_line_color='#eb4d4b', increasing_fillcolor='#eb4d4b',
         decreasing_line_color='#2ecc71', decreasing_fillcolor='#2ecc71',
-        hoverinfo='none', name='K線'
+        hoverinfo='none',
+        name='K線'
     ), row=1, col=1)
 
     fig_top.add_trace(go.Scatter(
-        x=date_str_list, y=df['MA5'], line=dict(color='#f1c40f', width=1.2),
-        hoverinfo='none', name='MA5'
+        x=date_str_list, y=df['MA5'],
+        line=dict(color='#f1c40f', width=1.2), hoverinfo='none', name='MA5'
     ), row=1, col=1)
     fig_top.add_trace(go.Scatter(
-        x=date_str_list, y=df['MA20'], line=dict(color='#e67e22', width=1.2),
-        hoverinfo='none', name='MA20'
+        x=date_str_list, y=df['MA20'],
+        line=dict(color='#e67e22', width=1.2), hoverinfo='none', name='MA20'
     ), row=1, col=1)
     fig_top.add_trace(go.Scatter(
-        x=date_str_list, y=df['MA60'], line=dict(color='#9b59b6', width=1.2),
-        hoverinfo='none', name='MA60'
+        x=date_str_list, y=df['MA60'],
+        line=dict(color='#9b59b6', width=1.2), hoverinfo='none', name='MA60'
     ), row=1, col=1)
 
     head_df = df[df['Is_Head']]
     if not head_df.empty:
         fig_top.add_trace(go.Scatter(
-            x=[d.strftime('%Y-%m-%d') for d in head_df.index], y=head_df['High'],
-            mode='text', text='<b>〔頭〕</b>', textposition='top center',
+            x=[d.strftime('%Y-%m-%d') for d in head_df.index],
+            y=head_df['High'],
+            mode='text',
+            text='<b>〔頭〕</b>',
+            textposition='top center',
             textfont=dict(family='Arial Black, sans-serif', size=12, color='#27ae60'),
             hoverinfo='none'
         ), row=1, col=1)
@@ -163,40 +178,47 @@ def build_split_figures(
     bottom_df = df[df['Is_Bottom']]
     if not bottom_df.empty:
         fig_top.add_trace(go.Scatter(
-            x=[d.strftime('%Y-%m-%d') for d in bottom_df.index], y=bottom_df['Low'],
-            mode='text', text='<b>〔底〕</b>', textposition='bottom center',
+            x=[d.strftime('%Y-%m-%d') for d in bottom_df.index],
+            y=bottom_df['Low'],
+            mode='text',
+            text='<b>〔底〕</b>',
+            textposition='bottom center',
             textfont=dict(family='Arial Black, sans-serif', size=12, color='#e74c3c'),
             hoverinfo='none'
         ), row=1, col=1)
 
     fig_top.add_trace(go.Bar(
-        x=date_str_list,
-        y=df['Volume_Sheets'],
+        x=date_str_list, y=df['Volume_Sheets'],
         marker=dict(color=vol_colors, line=dict(color=vol_colors, width=0.8)),
-        hoverinfo='none',
-        name='成交量'
+        hoverinfo='none', name='成交量'
     ), row=2, col=1)
 
     to_series = df['Turnover_Rate']
     to_10_mask = (to_series >= 10.0) & (to_series < 20.0)
     to_20_mask = (to_series >= 20.0)
+
     if to_10_mask.any():
         fig_top.add_trace(go.Scatter(
             x=[date_str_list[i] for i in range(total_len) if to_10_mask.iloc[i]],
             y=df.loc[to_10_mask, 'Volume_Sheets'] * 1.06,
-            mode='text', text=['▲' for _ in range(to_10_mask.sum())],
+            mode='text',
+            text=['▲' for _ in range(to_10_mask.sum())],
             textposition='top center',
             textfont=dict(family='Arial Black, sans-serif', size=13, color='#1e3799'),
-            showlegend=False, hoverinfo='none'
+            showlegend=False,
+            hoverinfo='none'
         ), row=2, col=1)
+
     if to_20_mask.any():
         fig_top.add_trace(go.Scatter(
             x=[date_str_list[i] for i in range(total_len) if to_20_mask.iloc[i]],
             y=df.loc[to_20_mask, 'Volume_Sheets'] * 1.06,
-            mode='text', text=['▼' for _ in range(to_20_mask.sum())],
+            mode='text',
+            text=['▼' for _ in range(to_20_mask.sum())],
             textposition='top center',
             textfont=dict(family='Arial Black, sans-serif', size=13, color='#f1c40f'),
-            showlegend=False, hoverinfo='none'
+            showlegend=False,
+            hoverinfo='none'
         ), row=2, col=1)
 
     fig_top.update_layout(
@@ -204,35 +226,63 @@ def build_split_figures(
             text=f'<b>{c_name or raw_ticker} ({raw_ticker}) ({market_label})</b>',
             font=dict(size=16, color='#1d4ed8')
         ),
-        font=dict(size=12), template='plotly_white', hovermode=False, dragmode='pan',
-        showlegend=False, height=top_height,
+        font=dict(size=12),
+        template='plotly_white',
+        hovermode=False,
+        dragmode='pan',
+        showlegend=False,
+        height=top_height,
         margin=dict(l=80, r=15, t=34, b=34, autoexpand=False),
         xaxis_rangeslider_visible=False
     )
+
     fig_top.update_xaxes(
-        type='category', range=[start_idx - 0.5, end_idx + 0.5], domain=[0, 1],
-        showspikes=False, tickfont=dict(size=11), row=1, col=1
+        type='category',
+        range=[start_idx - 0.5, end_idx + 0.5],
+        domain=[0, 1],
+        showspikes=False,
+        tickfont=dict(size=11),
+        row=1, col=1
     )
     fig_top.update_xaxes(
-        type='category', range=[start_idx - 0.5, end_idx + 0.5], domain=[0, 1],
-        showticklabels=True, tickvals=month_ticks_vals, ticktext=month_ticks_text,
-        showspikes=False, tickfont=dict(size=11), row=2, col=1
+        type='category',
+        range=[start_idx - 0.5, end_idx + 0.5],
+        domain=[0, 1],
+        showticklabels=True,
+        tickvals=month_ticks_vals,
+        ticktext=month_ticks_text,
+        showspikes=False,
+        tickfont=dict(size=11),
+        row=2, col=1
+    )
+
+    fig_top.update_yaxes(
+        title_text='',
+        range=[p_min - (p_max - p_min) * 0.08, p_max + p_pad],
+        fixedrange=True,
+        showspikes=False,
+        tickfont=dict(size=11),
+        row=1, col=1
     )
     fig_top.update_yaxes(
-        title_text='', range=[p_min - (p_max - p_min) * 0.08, p_max + p_pad],
-        fixedrange=True, showspikes=False, tickfont=dict(size=11), row=1, col=1
-    )
-    fig_top.update_yaxes(
-        title_text='', range=[-vol_upper * 0.08, vol_upper],
-        zeroline=True, zerolinecolor='#cbd5e1', zerolinewidth=1,
-        fixedrange=True, showspikes=False, tickfont=dict(size=11), row=2, col=1
+        title_text='',
+        range=[-vol_upper * 0.08, vol_upper],
+        zeroline=True,
+        zerolinecolor='#cbd5e1',
+        zerolinewidth=1,
+        fixedrange=True,
+        showspikes=False,
+        tickfont=dict(size=11),
+        row=2, col=1
     )
 
     # =====================================================================
     # 2. 頁籤 1【指標】副圖：KD、MACD、OBV、乖離率 (20/120/240/1200日)
     # =====================================================================
     fig_tech = make_subplots(
-        rows=4, cols=1, shared_xaxes=True, vertical_spacing=0.045,
+        rows=4, cols=1,
+        shared_xaxes=True,
+        vertical_spacing=0.045,
         row_heights=[0.24, 0.24, 0.24, 0.28]
     )
 
@@ -255,21 +305,36 @@ def build_split_figures(
     fig_tech.add_hline(y=0, line_dash='dot', line_color='rgba(120,120,120,0.65)', line_width=1, row=4, col=1)
 
     fig_tech.update_layout(
-        font=dict(size=12), template='plotly_white', hovermode=False, dragmode='pan',
-        showlegend=False, height=tech_height,
+        font=dict(size=12),
+        template='plotly_white',
+        hovermode=False,
+        dragmode='pan',
+        showlegend=False,
+        height=tech_height,
         margin=dict(l=80, r=15, t=8, b=24, autoexpand=False),
         xaxis_rangeslider_visible=False
     )
+
     for r in range(1, 5):
         fig_tech.update_xaxes(
-            type='category', range=[start_idx - 0.5, end_idx + 0.5], domain=[0, 1],
-            showspikes=False, tickfont=dict(size=11), row=r, col=1
+            type='category',
+            range=[start_idx - 0.5, end_idx + 0.5],
+            domain=[0, 1],
+            showspikes=False,
+            tickfont=dict(size=11),
+            row=r, col=1
         )
     fig_tech.update_xaxes(
-        type='category', range=[start_idx - 0.5, end_idx + 0.5], domain=[0, 1],
-        showticklabels=True, tickvals=month_ticks_vals, ticktext=month_ticks_text,
-        tickfont=dict(size=11), row=4, col=1
+        type='category',
+        range=[start_idx - 0.5, end_idx + 0.5],
+        domain=[0, 1],
+        showticklabels=True,
+        tickvals=month_ticks_vals,
+        ticktext=month_ticks_text,
+        tickfont=dict(size=11),
+        row=4, col=1
     )
+
     fig_tech.update_yaxes(title_text='', range=[0, 100], fixedrange=True, showspikes=False, tickfont=dict(size=11), row=1, col=1)
     fig_tech.update_yaxes(title_text='', range=[macd_min - macd_pad, macd_max + macd_pad], fixedrange=True, showspikes=False, tickfont=dict(size=11), row=2, col=1)
     fig_tech.update_yaxes(title_text='', range=[obv_min - obv_pad, obv_max + obv_pad], fixedrange=True, showspikes=False, tickfont=dict(size=11), row=3, col=1)
