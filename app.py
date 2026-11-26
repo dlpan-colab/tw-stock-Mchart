@@ -1,7 +1,7 @@
 """
 app.py - 主應用程式介面與生命週期控制（三主頁籤路由總入口）
-(依邏輯職責拆分為 app_broker_cache.py、app_dashboard.py、app_settings.py、app_stock_view.py 與本主入口，維持三主頁籤架構)
-版本: 202611252300
+(依邏輯職責拆分為 app_broker_cache.py、app_dashboard.py、app_settings.py、app_market_batch_maint.py、app_stock_view.py 與本主入口，維持三主頁籤架構)
+版本: 202611262030
 """
 
 import os
@@ -9,16 +9,19 @@ import re
 import streamlit as st
 
 MODULE_NAME = "app"
-MODULE_VERSION = "202611252300"
+MODULE_VERSION = "202611262030"
 
 
-# 【防呆防錯備註 2026-11-24】：動態掃描主模組與所有拆分子模組之最大版本號，作為唯一系統版本號
+# 【修訂說明 2026-11-26】【修改目的與防呆防錯原因】：
+# 1. 修改目的：於 `module_names` 動態版本號掃描清單補入新拆分子模組 `app_market_batch_maint` 與 `ftch_inst_margin`。
+# 2. 防呆防錯原因：確保任一拆分子模組更新版本號時，系統唯一版本號 `SYSTEM_VERSION` 皆能即時正確反映最大值。
 def get_system_version() -> str:
     versions = [MODULE_VERSION]
     module_names = [
         "app_broker_cache",
         "app_dashboard",
         "app_settings",
+        "app_market_batch_maint",
         "app_stock_view",
         "frontend",
         "frnt_broker",
@@ -27,6 +30,7 @@ def get_system_version() -> str:
         "indicators",
         "data_fetcher",
         "ftch_kline_chip",
+        "ftch_inst_margin",
         "ftch_tdcc_dash",
         "ftch_gov8",
         "ftch_broker",
