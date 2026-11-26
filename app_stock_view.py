@@ -1,7 +1,7 @@
 """
 app_stock_view.py - 主頁籤 2「📈 個股」介面渲染模組
-(自 app.py 依邏輯職責拆分，維持上下雙複合選單、共用主圖與四大子頁籤互動機制，並整合四鍵同列與清除置頂查詢個股紀錄)
-版本: 202611252325
+(自 app.py 依邏輯職責拆分，維持上下雙複合選單、共用主圖與四大子頁籤互動機制，並整合四鍵同列與獨立代號輸入框)
+版本: 202611262045
 """
 
 import re
@@ -28,7 +28,28 @@ from frontend import (
 from app_broker_cache import get_cached_broker_payload
 
 MODULE_NAME = "app_stock_view"
-MODULE_VERSION = "202611252325"
+MODULE_VERSION = "202611262045"
+
+
+def _on_direct_code_input_change():
+    """
+    【修訂說明 2026-11-26】【修改目的與防呆防錯原因】：
+    1. 修改目的：獨立 `st.text_input` 輸入股票或指數代號按 Enter 送出時，自動轉大寫並透過 `app.resolve_ticker_code`
+       正規化後切換 `st.session_state.stock_id`，並清空輸入框以利下次輸入。
+    2. 防呆防錯原因：取代 `st.selectbox(accept_new_options=True)`，徹底解決 Android 手機鍵盤逐字輸入數字時
+       游標跳回左側導致代號反轉（如 2208 變 8022）之問題。
+    """
+    raw_txt = str(st.session_state.get("direct_stock_code_input", "") or "").strip()
+    if not raw_txt:
+        return
+    token = raw_txt.split()[0]
+    from app import resolve_ticker_code
+    new_code = resolve_ticker_code(token)
+    if new_code:
+        st.session_state.stock_id = new_code
+        st.session_state.promote_to_top = True
+        st.session_state.confirm_clear_all = False
+    st.session_state.direct_stock_code_input = ""
 
 
 def render_stock_tab(
@@ -40,13 +61,14 @@ def render_stock_tab(
     get_figures_fn,
 ):
     """
-    【修訂說明 2026-11-25】【修改目的與防呆防錯原因】：
+    【修訂說明 2026-11-26】【修改目的與防呆防錯原因】：
     1. 修改目的：
-       - 當 `st.session_state.force_refresh` 為 True 時，從 `active_refresh_cfg` 讀取使用者於「個股資料維護」設定之
-         `base_date`（資料維護基準日）與 `broker_days`，並傳入 `get_cached_broker_payload(..., broker_base_date=...)`，
-         使分點統計與分點日況逐日增補以該基準日為錨點往前推算。
+       - 移除上下兩個 `st.selectbox` 之 `accept_new_options=True`（改為純下拉點選查詢歷史清單，點開不觸發手機鍵盤），
+         並於第 2 列與「清除查詢個股紀錄」並排新增獨立原生 `st.text_input`（輸入代號按 Enter 查詢）。
+       - 調高「📊 指標」（`tech_h + 128`）與「💰 籌碼」（`chip_h + 165`）之 `components.html` iframe 高度，
+         確保底部複製渲染之資訊條完整顯示不被裁切。
     2. 防呆防錯原因：
-       - 若 `base_date` 未設定則傳入空字串 `""`，由 `get_cached_broker_payload` 自動對齊目前關注交易日。
+       - 維持四鍵同列與所有既有按鈕 `key`、快取參數與 `force_refresh_cfg` 轉傳邏輯 100% 不變。
     """
     auth_st = cloud_sync.get_auth_status()
     status_icon = "🟡" if auth_st == 2 else ("🔵" if auth_st == 1 else "⚪")
@@ -85,7 +107,7 @@ def render_stock_tab(
         "🇫🇷 法國CAC40 (^FCHI)",
     ]
 
-    # 第 1 列：四功能同列並排「◀ 上一檔」＋「主要市場指數」＋「個股查詢歷史」＋「下一檔 ▶」
+    # 第 1 列：四功能同列並排「◀ 上一檔」＋「主要市場指數」＋「個股查詢歷史(純下拉)」＋「下一檔 ▶」
     with st.container():
         st.markdown("<div class='stock-nav-4col-anchor'></div>", unsafe_allow_html=True)
         col_prev, col_idx, col_input, col_next = st.columns([1, 3, 3, 1])
@@ -108,13 +130,11 @@ def render_stock_tab(
             )
         with col_input:
             st.selectbox(
-                "股票代號或名稱",
+                "個股查詢歷史",
                 options=selector_options,
                 index=cur_sel_idx,
-                accept_new_options=True,
                 key="top_stock_selector",
                 on_change=on_top_selector_change_fn,
-                placeholder="輸入代號或下拉選擇標的 (如 2330, 00632R)",
                 label_visibility="collapsed"
             )
         with col_next:
@@ -127,25 +147,37 @@ def render_stock_tab(
                     st.session_state.confirm_clear_all = False
                     st.rerun()
 
-    # 第 2 列（緊接功能鍵下一行）：「清除查詢個股紀錄」（僅清除置頂項目）
-    if st.button("清除查詢個股紀錄", key="btn_clear_stock_history_row", use_container_width=True):
-        st.session_state.confirm_clear_all = False
-        if cur_code_upper not in history_codes and not cur_code_upper.startswith("^"):
-            # 目前畫面為尚未寫入歷史清單之無效暫存輸入（如誤輸入 1），直接還原回原置頂標的
-            st.session_state.stock_id = history_codes[0] if history_codes else "2330"
-            st.session_state.promote_to_top = False
-            st.rerun()
-        elif history_codes:
-            top_code = history_codes[0]
-            rem_hist = remove_stocks_from_history([top_code])
-            from app_dashboard import get_cached_dashboard_rows
-            get_cached_dashboard_rows.clear()
-            if rem_hist:
-                st.session_state.stock_id = str(rem_hist[0].get("code", "2330")).strip().upper()
-            else:
-                st.session_state.stock_id = "2330"
-            st.session_state.promote_to_top = False
-            st.rerun()
+    # 第 2 列：左側「獨立代號輸入框（防 Android 鍵盤游標反轉）」＋ 右側「清除查詢個股紀錄」
+    with st.container():
+        st.markdown("<div class='settings-btn-row-anchor'></div>", unsafe_allow_html=True)
+        col_code_box, col_clr_hist = st.columns([1, 1])
+        with col_code_box:
+            st.text_input(
+                "輸入代號查詢",
+                key="direct_stock_code_input",
+                on_change=_on_direct_code_input_change,
+                placeholder="輸入代號按Enter (如 2330, 00632R)",
+                label_visibility="collapsed"
+            )
+        with col_clr_hist:
+            if st.button("清除查詢個股紀錄", key="btn_clear_stock_history_row", use_container_width=True):
+                st.session_state.confirm_clear_all = False
+                if cur_code_upper not in history_codes and not cur_code_upper.startswith("^"):
+                    # 目前畫面為尚未寫入歷史清單之無效暫存輸入（如誤輸入 1），直接還原回原置頂標的
+                    st.session_state.stock_id = history_codes[0] if history_codes else "2330"
+                    st.session_state.promote_to_top = False
+                    st.rerun()
+                elif history_codes:
+                    top_code = history_codes[0]
+                    rem_hist = remove_stocks_from_history([top_code])
+                    from app_dashboard import get_cached_dashboard_rows
+                    get_cached_dashboard_rows.clear()
+                    if rem_hist:
+                        st.session_state.stock_id = str(rem_hist[0].get("code", "2330")).strip().upper()
+                    else:
+                        st.session_state.stock_id = "2330"
+                    st.session_state.promote_to_top = False
+                    st.rerun()
 
     st.markdown(get_legend_html(), unsafe_allow_html=True)
 
@@ -247,7 +279,7 @@ def render_stock_tab(
                 initial_disp_days=st.session_state.disp_days,
                 initial_end_idx=safe_end_idx
             )
-            components.html(tech_html, height=tech_h + 72, scrolling=False)
+            components.html(tech_html, height=tech_h + 128, scrolling=False)
 
         with tab_chip:
             chip_h = 760 if st.session_state.is_mobile_mode else 800
@@ -261,7 +293,7 @@ def render_stock_tab(
                 m1_thresh=st.session_state.m1_thresh,
                 m2_thresh=st.session_state.m2_thresh
             )
-            components.html(chip_html, height=chip_h + 85, scrolling=False)
+            components.html(chip_html, height=chip_h + 165, scrolling=False)
 
         is_gov_idx = is_tw_index_with_gov_brokers(pure_ticker)
         has_broker_support = (is_tw_stock_or_etf(pure_ticker) and not pure_ticker.startswith("^")) or is_gov_idx
@@ -321,7 +353,7 @@ def render_stock_tab(
             )
             components.html(broker_daily_html, height=1320, scrolling=True)
 
-        # 底部：「目前關注目標」提示列 ＋「◀ 上一檔」＋「可輸入＋下拉點選（代號 名稱）」＋「下一檔 ▶」＋ 空白緩衝區避開 [Manage app]
+        # 底部：「目前關注目標」提示列 ＋「◀ 上一檔」＋「純下拉點選（代號 名稱）」＋「下一檔 ▶」＋ 空白緩衝區避開 [Manage app]
         st.markdown("---")
         latest_hist_list = load_stock_history()
         latest_hist_codes = [str(item.get("code")).strip().upper() for item in latest_hist_list if item.get("code")]
@@ -367,10 +399,8 @@ def render_stock_tab(
                     "關注標的",
                     options=btm_options,
                     index=btm_sel_idx,
-                    accept_new_options=True,
                     key="bottom_stock_selector",
                     on_change=on_bottom_selector_change_fn,
-                    placeholder="輸入代號或下拉選擇標的 (如 2330, 00632R, ^TWII)",
                     label_visibility="collapsed"
                 )
             with btm_next:
