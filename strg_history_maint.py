@@ -1,7 +1,7 @@
 """
 strg_history_maint.py - 查詢歷史紀錄管理與全市籌碼/分點維護清除模組
 (自 storage.py 依邏輯職責拆分，維持既有歷史清單 CRUD、雲端還原與指定基準日區間／全表精準清除防呆機制)
-版本: 202611252205
+版本: 202611261135
 """
 
 import os
@@ -25,10 +25,15 @@ from strg_cloud_names import (
 )
 
 MODULE_NAME = "strg_history_maint"
-MODULE_VERSION = "202611252205"
+MODULE_VERSION = "202611261135"
 
 
 def _recover_history_from_databases() -> list:
+    """
+    【修訂說明 2026-11-26】【修改目的與防呆防錯原因】：
+    1. 修改目的：移除歷史清單 `[:30]` 截斷上限，並將雲端資料庫掃描 `pageSize` 調升至 500，確保所有已查詢或建立之標的完整還原。
+    2. 防呆防錯原因：維持以雲端 `modifiedTime desc` 優先與本地修改時間排序，避免舊標的遭截斷遺失。
+    """
     recovered = []
     seen = set()
     try:
@@ -40,7 +45,7 @@ def _recover_history_from_databases() -> list:
                 q=q,
                 fields="files(id, name, modifiedTime)",
                 orderBy="modifiedTime desc",
-                pageSize=50
+                pageSize=500
             ).execute()
             files = res.get("files", [])
             for f in files:
@@ -64,11 +69,11 @@ def _recover_history_from_databases() -> list:
     if recovered:
         try:
             with open(HISTORY_FILE, "w", encoding="utf-8") as f:
-                json.dump(recovered[:30], f, ensure_ascii=False, indent=2)
+                json.dump(recovered, f, ensure_ascii=False, indent=2)
             _sync_cloud_push(allow_empty_history=False)
         except Exception:
             pass
-    return recovered[:30]
+    return recovered
 
 
 def load_stock_history():
@@ -96,6 +101,11 @@ def load_stock_history():
 
 
 def save_stock_history(code: str, name: str = None):
+    """
+    【修訂說明 2026-11-26】【修改目的與防呆防錯原因】：
+    1. 修改目的：移除 `new_hist = new_hist[:30]` 筆數上限，查詢歷史清單改為不設容量限制，完整保留所有歷史查詢標的。
+    2. 防呆防錯原因：維持重複代號去重與最新查詢置頂排序，避免清單被擠出遺失。
+    """
     code = str(code).strip().upper()
     if not code:
         return load_stock_history()
@@ -103,7 +113,6 @@ def save_stock_history(code: str, name: str = None):
     history = load_stock_history()
     new_hist = [h for h in history if str(h.get("code")).strip().upper() != code]
     new_hist.insert(0, {"code": code, "name": c_name})
-    new_hist = new_hist[:30]
     try:
         with open(HISTORY_FILE, "w", encoding="utf-8") as f:
             json.dump(new_hist, f, ensure_ascii=False, indent=2)
