@@ -1,7 +1,7 @@
 """
 app_stock_view.py - 主頁籤 2「📈 個股」介面渲染模組
 (自 app.py 依邏輯職責拆分，維持上下雙複合選單、共用主圖與四大子頁籤互動機制，並整合四鍵同列與獨立代號輸入框)
-版本: 202611262045
+版本: 202611262055
 """
 
 import re
@@ -28,16 +28,16 @@ from frontend import (
 from app_broker_cache import get_cached_broker_payload
 
 MODULE_NAME = "app_stock_view"
-MODULE_VERSION = "202611262045"
+MODULE_VERSION = "202611262055"
 
 
 def _on_direct_code_input_change():
     """
     【修訂說明 2026-11-26】【修改目的與防呆防錯原因】：
     1. 修改目的：獨立 `st.text_input` 輸入股票或指數代號按 Enter 送出時，自動轉大寫並透過 `app.resolve_ticker_code`
-       正規化後切換 `st.session_state.stock_id`，並清空輸入框以利下次輸入。
-    2. 防呆防錯原因：取代 `st.selectbox(accept_new_options=True)`，徹底解決 Android 手機鍵盤逐字輸入數字時
-       游標跳回左側導致代號反轉（如 2208 變 8022）之問題。
+       正規化後切換 `st.session_state.stock_id`，並設定 `clear_direct_code_input = True` 供下一輪渲染前安全清空輸入框。
+    2. 防呆防錯原因：嚴禁於 `on_change` 回呼內直接改寫已綁定之 `st.session_state.direct_stock_code_input`，
+       避免觸發 `StreamlitWidgetAlreadyInstantiatedError` 導致切換標的失敗。
     """
     raw_txt = str(st.session_state.get("direct_stock_code_input", "") or "").strip()
     if not raw_txt:
@@ -49,7 +49,7 @@ def _on_direct_code_input_change():
         st.session_state.stock_id = new_code
         st.session_state.promote_to_top = True
         st.session_state.confirm_clear_all = False
-    st.session_state.direct_stock_code_input = ""
+    st.session_state.clear_direct_code_input = True
 
 
 def render_stock_tab(
@@ -63,8 +63,8 @@ def render_stock_tab(
     """
     【修訂說明 2026-11-26】【修改目的與防呆防錯原因】：
     1. 修改目的：
-       - 移除上下兩個 `st.selectbox` 之 `accept_new_options=True`（改為純下拉點選查詢歷史清單，點開不觸發手機鍵盤），
-         並於第 2 列與「清除查詢個股紀錄」並排新增獨立原生 `st.text_input`（輸入代號按 Enter 查詢）。
+       - 於建立 `st.text_input(key="direct_stock_code_input")` 之前檢查 `clear_direct_code_input` 旗標並安全清空輸入框，
+         消除 `StreamlitWidgetAlreadyInstantiatedError` 並確保輸入代號按 Enter 即刻切換標的。
        - 調高「📊 指標」（`tech_h + 128`）與「💰 籌碼」（`chip_h + 165`）之 `components.html` iframe 高度，
          確保底部複製渲染之資訊條完整顯示不被裁切。
     2. 防呆防錯原因：
@@ -148,6 +148,9 @@ def render_stock_tab(
                     st.rerun()
 
     # 第 2 列：左側「獨立代號輸入框（防 Android 鍵盤游標反轉）」＋ 右側「清除查詢個股紀錄」
+    if st.session_state.pop("clear_direct_code_input", False):
+        st.session_state.direct_stock_code_input = ""
+
     with st.container():
         st.markdown("<div class='settings-btn-row-anchor'></div>", unsafe_allow_html=True)
         col_code_box, col_clr_hist = st.columns([1, 1])
