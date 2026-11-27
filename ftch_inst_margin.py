@@ -1,7 +1,7 @@
 """
 ftch_inst_margin.py - 三大法人與個股/大盤全市場資券籌碼爬蟲模組
 (自 ftch_kline_chip.py 依邏輯職責拆分，維持既有證交所 T86、櫃買 3itrade、FinMind 法人與上市/上櫃全市場資券主資料源)
-版本: 202611262020
+版本: 202611270925
 """
 
 import re
@@ -12,9 +12,168 @@ from bs4 import BeautifulSoup
 from datetime import datetime, timedelta
 
 MODULE_NAME = "ftch_inst_margin"
-MODULE_VERSION = "202611262020"
+MODULE_VERSION = "202611270925"
 
 FINMIND_TOKEN = ""
+
+
+def fetch_market_index_institutional_data(
+    pure_code: str,
+    df_dates: pd.DatetimeIndex,
+    explicit_missing_dates: list = None
+) -> list:
+    """
+    【修訂說明 2026-11-27】【修改目的與防呆防錯原因】：
+    1. 修改目的：擷取上市加權指數（^TWII）與櫃買指數（^TWOII）全市場三大法人每日買賣超金額，
+       統一換算為「億元」並回傳 `[(date_str, foreign_yi, trust_yi, dealer_yi), ...]` 寫入 `institutional_investors`。
+       - 上市（^TWII）：主資料源為證交所 `BFI82U`（`https://www.twse.com.tw/rwd/zh/fund/BFI82U?response=json&dayDate=YYYYMMDD`），
+         解析自營商（自行買賣＋避險合計，或直接取自營商合計列）、投信、外資及陸資（不含外資自營商＋外資自營商合計，或直接取外資及陸資合計列），單位由元除以 `1e8` 換算為億元。
+       - 上櫃（^TWOII）：主資料源為櫃買中心三大法人買賣金額統計 `3itrade_hedge_result.php`（`se=EW&t=D&d=YYY/MM/DD`），
+         解析自營商合計、投信、外資及陸資合計買賣差額，單位由元除以 `1e8` 換算為億元；若無則以 FinMind `TaiwanStockTotalInstitutionalInvestors` 備援。
+    2. 防呆防錯原因：週末自動跳過；單日連線設短逾時防卡死，避免影響前端載入流暢度。
+    """
+    code = str(pure_code or "").strip().upper()
+    if code not in ("^TWII", "^TWOII"):
+        return []
+
+    sample_dates = list(explicit_missing_dates) if explicit_missing_dates is not None else list(df_dates[-5:])
+    if not sample_dates:
+        return []
+
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
+        "Referer": "https://www.twse.com.tw/" if code == "^TWII" else "https://www.tpex.org.tw/"
+    }
+
+    def _to_yi(val_raw, scale_div: float = 1e8) -> float:
+        s = str(val_raw or "").replace(",", "").replace("+", "").replace("−", "-").replace("－", "-").strip()
+        if s in ("", "-", "--", "—", "N/A"):
+            return 0.0
+        try:
+            return float(s) / scale_div
+        except Exception:
+            return 0.0
+
+    records = []
+    missing_dates = []
+
+    for dt in sample_dates:
+        if dt.weekday() >= 5:
+            continue
+        date_str = dt.strftime("%Y-%m-%d")
+        found = False
+
+        if code == "^TWII":
+            d_compact = dt.strftime("%Y%m%d")
+            url_twse = f"https://www.twse.com.tw/rwd/zh/fund/BFI82U?response=json&dayDate={d_compact}"
+            try:
+                res = requests.get(url_twse, headers=headers, timeout=2.5)
+                if res.status_code == 200:
+                    js = res.json()
+                    if js.get("stat") == "OK" and js.get("data"):
+                        f_yi, t_yi, d_yi = 0.0, 0.0, 0.0
+                        has_f, has_t, has_d = False, False, False
+                        for row in js["data"]:
+                            if len(row) < 4:
+                                continue
+                            item_name = str(row[0]).strip()
+                            diff_yi = _to_yi(row[3], 1e8)
+                            if "外資及陸資" in item_name:
+                                if "不含" in item_name or "自營商" in item_name:
+                                    f_yi += diff_yi
+                                    has_f = True
+                                elif not has_f:
+                                    f_yi = diff_yi
+                                    has_f = True
+                            elif "投信" in item_name:
+                                t_yi = diff_yi
+                                has_t = True
+                            elif "自營商" in item_name and "外資" not in item_name:
+                                if "自行" in item_name or "避險" in item_name:
+                                    d_yi += diff_yi
+                                    has_d = True
+                                elif not has_d:
+                                    d_yi = diff_yi
+                                    has_d = True
+                        if has_f or has_t or has_d:
+                            records.append((date_str, round(f_yi, 4), round(t_yi, 4), round(d_yi, 4)))
+                            found = True
+            except Exception:
+                pass
+        else:
+            roc_d = f"{dt.year - 1911}/{dt.strftime('%m/%d')}"
+            url_tpex = f"https://www.tpex.org.tw/web/stock/3insti/3insti_summary/3itrdsum_result.php?l=zh-tw&t=D&d={roc_d}"
+            try:
+                res_t = requests.get(url_tpex, headers=headers, timeout=2.5)
+                if res_t.status_code == 200:
+                    js_t = res_t.json()
+                    rows = js_t.get("aaData") or js_t.get("tables", [{}])[0].get("data", [])
+                    if rows:
+                        f_yi, t_yi, d_yi = 0.0, 0.0, 0.0
+                        has_f, has_t, has_d = False, False, False
+                        for row in rows:
+                            if len(row) < 4:
+                                continue
+                            item_name = re.sub(r"<[^>]+>", "", str(row[0])).strip()
+                            diff_yi = _to_yi(row[3], 1e8)
+                            if "外資及陸資" in item_name and "合計" in item_name:
+                                f_yi = diff_yi
+                                has_f = True
+                            elif "外資及陸資" in item_name and not has_f:
+                                f_yi += diff_yi
+                                has_f = True
+                            elif "投信" in item_name:
+                                t_yi = diff_yi
+                                has_t = True
+                            elif "自營商" in item_name and "外資" not in item_name and "合計" in item_name:
+                                d_yi = diff_yi
+                                has_d = True
+                            elif "自營商" in item_name and "外資" not in item_name and not has_d:
+                                d_yi += diff_yi
+                                has_d = True
+                        if has_f or has_t or has_d:
+                            records.append((date_str, round(f_yi, 4), round(t_yi, 4), round(d_yi, 4)))
+                            found = True
+            except Exception:
+                pass
+
+        if not found:
+            missing_dates.append(date_str)
+        time.sleep(0.02)
+
+    # 備援：僅針對上市加權指數（^TWII）尚缺日期查詢 FinMind TaiwanStockTotalInstitutionalInvestors
+    if missing_dates and code == "^TWII":
+        try:
+            query_start = min(missing_dates)
+            url_fm = "https://api.finmindtrade.com/api/v4/data"
+            p_fm = {
+                "dataset": "TaiwanStockTotalInstitutionalInvestors",
+                "start_date": query_start,
+                "token": FINMIND_TOKEN
+            }
+            res_fm = requests.get(url_fm, params=p_fm, headers=headers, timeout=4)
+            if res_fm.status_code == 200:
+                fm_data = res_fm.json().get("data", [])
+                if fm_data:
+                    df_fm = pd.DataFrame(fm_data)
+                    for d_str, g in df_fm.groupby("date"):
+                        if d_str in missing_dates and not any(r[0] == d_str for r in records):
+                            f_yi, t_yi, d_yi = 0.0, 0.0, 0.0
+                            for _, r in g.iterrows():
+                                name = str(r.get("name", ""))
+                                diff_yi = (float(r.get("buy", 0) or 0) - float(r.get("sell", 0) or 0)) / 1e8
+                                if "Foreign" in name or "外資" in name:
+                                    f_yi += diff_yi
+                                elif "Investment_Trust" in name or "投信" in name:
+                                    t_yi += diff_yi
+                                elif "Dealer" in name or "自營" in name:
+                                    d_yi += diff_yi
+                            records.append((d_str, round(f_yi, 4), round(t_yi, 4), round(d_yi, 4)))
+        except Exception:
+            pass
+
+    records.sort(key=lambda x: x[0])
+    return records
 
 
 def fetch_institutional_investors(
