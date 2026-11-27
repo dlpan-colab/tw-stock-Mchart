@@ -1,14 +1,16 @@
 """
 indicators.py - 技術指標與籌碼計算模組
-(新增 20/120/240/1200 日乖離率、大盤加權^TWII與櫃買^TWOII融資金額(億)與融資/融券維持率、個股全期間與近60日滾動視窗預估融資維持率計算及以集保最新週真實總股數扣除近15週1000張以上大於0最小持股比例之實際流通張數週轉率與1%約當張數輸出版)
-版本: 202611252252
+(新增 20/120/240/1200 日乖離率、大盤加權^TWII與櫃買^TWOII融資金額(億)與融資/融券維持率、八大官股每日買賣超(億)、個股全期間與近60日滾動視窗預估融資維持率計算及以集保最新週真實總股數扣除近15週1000張以上大於0最小持股比例之實際流通張數週轉率與1%約當張數輸出版)
+版本: 202611270925
 """
 
+import os
+import sqlite3
 import numpy as np
 import pandas as pd
 
 MODULE_NAME = "indicators"
-MODULE_VERSION = "202611252252"
+MODULE_VERSION = "202611270925"
 
 HOLDING_LEVEL_MAP = {
     100: [8, 9, 10, 11, 12, 13, 14, 15],
@@ -161,7 +163,7 @@ def calculate_all_indicators(
 
     trade_date_strs = [pd.to_datetime(d).strftime('%Y-%m-%d') for d in df.index]
 
-    # 法人買賣超對齊 (YYYY-MM-DD 比對)
+    # 法人買賣超對齊 (YYYY-MM-DD 比對；個股為張，^TWII/^TWOII 為億元)
     df['Foreign_Net'] = 0.0
     df['Trust_Net'] = 0.0
     df['Dealer_Net'] = 0.0
@@ -171,6 +173,29 @@ def calculate_all_indicators(
         df['Foreign_Net'] = [float(inst_map.loc[d, 'foreign_net']) if d in inst_map.index else 0.0 for d in trade_date_strs]
         df['Trust_Net'] = [float(inst_map.loc[d, 'trust_net']) if d in inst_map.index else 0.0 for d in trade_date_strs]
         df['Dealer_Net'] = [float(inst_map.loc[d, 'dealer_net']) if d in inst_map.index else 0.0 for d in trade_date_strs]
+
+    # 【修訂說明 2026-11-27】【修改目的與防呆防錯原因】：
+    # 1. 修改目的：為加權指數（^TWII）與櫃買指數（^TWOII）計算每日八大官股買賣超金額（`Gov8_Net`，單位：億元），
+    #    自本地 SQLite `gov_index_stock_daily` 依 `trade_date` 加總 `total_wan`（萬元）並除以 `10000.0` 換算為億元。
+    # 2. 防呆防錯原因：若資料庫尚無當日八大官股紀錄則平滑回傳 `0.0`，不觸發網路連線以免拖慢主計算流程。
+    code_upper = str(pure_code or "").strip().upper()
+    df['Gov8_Net'] = 0.0
+    if code_upper in ("^TWII", "^TWOII"):
+        try:
+            from storage import StockChipStorage
+            gov_storage = StockChipStorage(code_upper)
+            if os.path.exists(gov_storage.db_path):
+                with sqlite3.connect(gov_storage.db_path) as conn:
+                    rows_g = conn.execute(
+                        "SELECT trade_date, SUM(total_wan) FROM gov_index_stock_daily GROUP BY trade_date"
+                    ).fetchall()
+                gov_day_yi_map = {
+                    str(r[0])[:10]: round(float(r[1] or 0.0) / 10000.0, 4)
+                    for r in rows_g if r and r[0]
+                }
+                df['Gov8_Net'] = [gov_day_yi_map.get(d, 0.0) for d in trade_date_strs]
+        except Exception:
+            pass
 
     # 資券對齊 (YYYY-MM-DD 比對)
     df['Margin_Diff'] = 0.0
@@ -207,7 +232,6 @@ def calculate_all_indicators(
     # 【修訂說明 2026-11-20】【修改目的與防呆防錯原因】：
     # 修改目的：大盤加權指數（^TWII）與櫃買指數（^TWOII）同步計算「融資維持率（Margin_Maint_Pct）」與「融券維持率（Short_Maint_Pct）」，
     # 以 20 日滾動成本基準（166.67% / 190.0%）推算整戶維持率折線，供籌碼頁籤資券副圖雙折線繪製。
-    code_upper = str(pure_code or "").strip().upper()
     if code_upper in ("^TWII", "^TWOII"):
         rolling_cost = df['Close'].rolling(20, min_periods=1).mean().replace(0, np.nan)
         close_safe = df['Close'].replace(0, np.nan)
