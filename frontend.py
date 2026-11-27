@@ -1,14 +1,14 @@
 """
 frontend.py - 前端 HTML/CSS 渲染模組（主圖、指標、籌碼與分點總入口）
 (依邏輯職責拆分為 frnt_broker.py 與本主圖/指標/籌碼渲染總入口，維持 100% 向後相容匯出)
-版本: 202611270930
+版本: 202611271357
 """
 
 import json
 import pandas as pd
 
 MODULE_NAME = "frontend"
-MODULE_VERSION = "202611270930"
+MODULE_VERSION = "202611271357"
 
 from frnt_broker import (
     COMMON_CSS,
@@ -21,7 +21,7 @@ from frnt_broker import (
 )
 
 
-def get_legend_html(version_tag: str = "202611270930") -> str:
+def get_legend_html(version_tag: str = "202611271357") -> str:
     return """
     <div style="font-size:12px; color:#334155; background:#f1f5f9; padding:5px 8px; border-radius:5px; margin-bottom:4px; line-height:1.5;">
         <b>📌 圖例與互動操作說明：</b>
@@ -44,7 +44,13 @@ def _series_to_json_nullable(df: pd.DataFrame, col: str, n_pts: int) -> str:
     return json.dumps([None if pd.isna(v) else float(v) for v in df[col].tolist()])
 
 
+# 【修訂說明 2026-11-27】【修改目的與防呆防錯原因】：
+# 1. 修改目的：新增共用 `PLOTLY_LOCKED_CFG`（`editable:false` 與全套 `edits:{...:false}`）及 `bindNoLongPress(el)` 攔截長按 `contextmenu`，
+#    徹底關閉手機長按主圖/指標/籌碼 SVG 元素時觸發震動選取與進入可編輯文字框（如出現灰底數字與可鍵入 123456）之行為。
+# 2. 防呆防錯原因：維持 `responsive:true`、`displayModeBar:false` 與 `scrollZoom:false`，不影響左右拖曳平移 K 線與觸控滑動準線。
 SHARED_JS_HELPERS = """
+var PLOTLY_LOCKED_CFG={responsive:true,displayModeBar:false,scrollZoom:false,editable:false,edits:{annotationPosition:false,annotationTail:false,annotationText:false,axisTitleText:false,colorbarPosition:false,colorbarTitleText:false,legendPosition:false,legendText:false,shapePosition:false,titleText:false}};
+function bindNoLongPress(el){if(!el)return;el.addEventListener('contextmenu',function(e){e.preventDefault();return false;});}
 function broadcastToSiblings(p){try{if(window.parent&&window.parent.frames){for(var i=0;i<window.parent.frames.length;i++){if(window.parent.frames[i]!==window)window.parent.frames[i].postMessage(p,'*');}}}catch(e){}}
 function fmtNum(v,d){if(v===null||v===undefined||isNaN(v))return'-';return Number(v).toFixed(d!==undefined?d:2);}
 function fmtBias(v){if(v===null||v===undefined||isNaN(v))return'-';var n=Number(v),s=(n>0?'+':'')+n.toFixed(2)+'%';return n>0?'<span class="val-up">'+s+'</span>':(n<0?'<span class="val-dn">'+s+'</span>':s);}
@@ -76,6 +82,7 @@ var totalPoints=dates.length,initEnd=__INIT_END__,targetDays=Number(__DISP_DAYS_
 var currentR0=Math.max(0,initEnd-targetDays+1)-0.5,currentR1=initEnd+0.5,isUpdating=false;
 var rootEl=document.getElementById('__CID___root'),elTop=document.getElementById('__CID___top'),info1=document.getElementById('__CID___info1');
 var lineX=document.getElementById('__CID___line_x'),lineY=document.getElementById('__CID___line_y');
+bindNoLongPress(elTop);
 
 function pushTopH(){
     if(!rootEl)return;
@@ -109,7 +116,7 @@ var b0=calcBounds(currentR0,currentR1);
 pTop.layout.height=Number(__TOP_H__)||296;
 pTop.layout.xaxis.range=[currentR0,currentR1];if(pTop.layout.xaxis2)pTop.layout.xaxis2.range=[currentR0,currentR1];
 pTop.layout.yaxis.range=b0.p;if(pTop.layout.yaxis2){pTop.layout.yaxis2.range=b0.v;pTop.layout.yaxis2.tick0=0;}
-Plotly.newPlot(elTop,pTop.data,pTop.layout,{responsive:true,displayModeBar:false,scrollZoom:false}).then(function(){renderInfo(initEnd);pushTopH();
+Plotly.newPlot(elTop,pTop.data,pTop.layout,PLOTLY_LOCKED_CFG).then(function(){renderInfo(initEnd);pushTopH();
     if(typeof ResizeObserver!=='undefined'&&rootEl){
         var rzTimer=null;
         new ResizeObserver(function(){
@@ -185,6 +192,7 @@ var bias20s=__BIAS20__,bias120s=__BIAS120__,bias240s=__BIAS240__,bias1200s=__BIA
 var totalPoints=dates.length,initEnd=__INIT_END__,targetDays=Number(__DISP_DAYS__)||20;
 var currentR0=Math.max(0,initEnd-targetDays+1)-0.5,currentR1=initEnd+0.5,isUpdating=false;
 var elTech=document.getElementById('__CID___tech'),infoTech=document.getElementById('__CID___info_tech'),infoTechBtm=document.getElementById('__CID___info_tech_btm'),lineTech=document.getElementById('__CID___line_tech');
+bindNoLongPress(elTech);
 
 function renderInfo(idx){if(idx<0||idx>=totalPoints)return;
     var d=dates[idx],oscClass=oscs[idx]>0?'val-up':(oscs[idx]<0?'val-dn':'');
@@ -194,7 +202,7 @@ function renderInfo(idx){if(idx<0||idx>=totalPoints)return;
 }
 
 for(var r=1;r<=4;r++){var kt=r===1?'xaxis':'xaxis'+r;if(pTech.layout&&pTech.layout[kt])pTech.layout[kt].range=[currentR0,currentR1];}
-Plotly.newPlot(elTech,pTech.data,pTech.layout,{responsive:true,displayModeBar:false,scrollZoom:false}).then(function(){renderInfo(initEnd);
+Plotly.newPlot(elTech,pTech.data,pTech.layout,PLOTLY_LOCKED_CFG).then(function(){renderInfo(initEnd);
     elTech.on('plotly_relayout',function(ed){if(isUpdating)return;var r0=null,r1=null;
         for(var k=1;k<=4;k++){var p=k===1?'xaxis':'xaxis'+k;if(ed[p+'.range[0]']!==undefined)r0=ed[p+'.range[0]'];if(ed[p+'.range[1]']!==undefined)r1=ed[p+'.range[1]'];}
         if(r0===null||r1===null||(Math.abs(r0-currentR0)<0.001&&Math.abs(r1-currentR1)<0.001))return;
@@ -281,6 +289,7 @@ var totalPoints=dates.length,initEnd=__INIT_END__,targetDays=Number(__DISP_DAYS_
 var currentR0=Math.max(0,initEnd-targetDays+1)-0.5,currentR1=initEnd+0.5,isUpdating=false;
 var elChip=document.getElementById('__CID___chip'),infoMs=document.getElementById('__CID___info_ms'),infoChip=document.getElementById('__CID___info_chip');
 var infoMsBtm=document.getElementById('__CID___info_ms_btm'),infoChipBtm=document.getElementById('__CID___info_chip_btm'),lineChip=document.getElementById('__CID___line_chip');
+bindNoLongPress(elChip);
 
 function renderInfo(idx){if(idx<0||idx>=totalPoints)return;
     var d=dates[idx],mT=mDiffs[idx]!=null?Number(mDiffs[idx])/1000.0:null,sT=sDiffs[idx]!=null?Number(sDiffs[idx])/1000.0:null;
@@ -320,7 +329,7 @@ function buildRangeUpdate(r0,r1){
 
 var initKeys=getAllXAxisKeys();
 for(var c=0;c<initKeys.length;c++){if(pChip.layout&&pChip.layout[initKeys[c]])pChip.layout[initKeys[c]].range=[currentR0,currentR1];}
-Plotly.newPlot(elChip,pChip.data,pChip.layout,{responsive:true,displayModeBar:false,scrollZoom:false}).then(function(){renderInfo(initEnd);
+Plotly.newPlot(elChip,pChip.data,pChip.layout,PLOTLY_LOCKED_CFG).then(function(){renderInfo(initEnd);
     elChip.on('plotly_relayout',function(ed){if(isUpdating)return;var r0=null,r1=null,keys=getAllXAxisKeys();
         for(var k=0;k<keys.length;k++){var p=keys[k];
             if(ed[p+'.range[0]']!==undefined)r0=ed[p+'.range[0]'];
