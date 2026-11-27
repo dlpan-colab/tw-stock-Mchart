@@ -1,7 +1,7 @@
 """
 strg_cloud_names.py - 雲端雙向同步、代號格式辨識與中文股名快取模組
 (自 storage.py 依邏輯職責拆分，維持既有雲端同步與四層中文股名備援查詢機制)
-版本: 202611242144
+版本: 202611270810
 """
 
 import os
@@ -13,11 +13,22 @@ import requests
 from bs4 import BeautifulSoup
 
 MODULE_NAME = "strg_cloud_names"
-MODULE_VERSION = "202611242144"
+MODULE_VERSION = "202611270810"
 
 STORAGE_DIR = "."
 HISTORY_FILE = os.path.join(STORAGE_DIR, "stock_history.json")
 NAMES_CACHE_FILE = os.path.join(STORAGE_DIR, "tw_stock_names.json")
+
+# 【修訂說明 2026-11-27】【修改目的與防呆防錯原因】：
+# 記錄「雲端確認已有檔案（或查詢逾時無法確認不存在），但 3 次退避重試皆下載失敗」之股票代號集合。
+# 凡在 _CLOUD_PULL_FAILED_CODES 內之標的，嚴禁執行 sync_db_push 反向覆蓋雲端既有完整資料庫。
+_CLOUD_PULL_FAILED_CODES = set()
+
+
+def is_cloud_db_pull_failed(pure_code: str) -> bool:
+    """查詢指定股票代號是否處於雲端下載失敗防覆蓋保護狀態"""
+    c = str(pure_code or "").strip().upper()
+    return c in _CLOUD_PULL_FAILED_CODES
 
 
 def is_tw_stock_or_etf(code: str) -> bool:
@@ -108,37 +119,70 @@ def _sync_cloud_push(allow_empty_history: bool = False):
     _async_run(_do_sync_cloud_push, allow_empty_history=allow_empty_history)
 
 
-def _do_sync_db_pull(pure_code: str):
+def _do_sync_db_pull(pure_code: str, status_callback=None) -> bool:
+    """
+    【修訂說明 2026-11-27】【修改目的與防呆防錯原因】：
+    1. 修改目的：呼叫 `cloud_sync.pull_file_detailed` 執行 3 次退避重試並回傳重試進度提示；
+       若雲端確認已有該檔（或無法確認不存在）卻 3 次重試皆失敗，立即將 `pure_code` 加入 `_CLOUD_PULL_FAILED_CODES`。
+    2. 防呆防錯原因：一旦下載成功（或確認雲端確實尚無該檔），才允許解除該檔之防覆蓋保護旗標。
+    """
+    code_u = str(pure_code or "").strip().upper()
     try:
-        from cloud_sync import pull_file
-        db_name = f"data_{pure_code}.db"
+        from cloud_sync import pull_file_detailed
+        db_name = f"data_{code_u}.db"
         local_path = os.path.join(STORAGE_DIR, db_name)
-        pull_file(db_name, local_path)
+        ok, remote_exists_or_unknown = pull_file_detailed(
+            db_name,
+            local_path,
+            max_retries=3,
+            status_callback=status_callback
+        )
+        if ok:
+            _CLOUD_PULL_FAILED_CODES.discard(code_u)
+            return True
+        if remote_exists_or_unknown:
+            _CLOUD_PULL_FAILED_CODES.add(code_u)
+            print(f"[CloudSync] DB pull failed after retries for {code_u}; anti-overwrite protection enabled.")
+            return False
+        # 雲端確實尚無此資料庫（首次建立新個股）
+        _CLOUD_PULL_FAILED_CODES.discard(code_u)
+        return True
     except Exception as e:
-        print(f"[CloudSync] DB pull warning for {pure_code}: {e}")
+        _CLOUD_PULL_FAILED_CODES.add(code_u)
+        print(f"[CloudSync] DB pull warning for {code_u}: {e}")
+        return False
 
 
-def sync_db_pull(pure_code: str):
-    db_name = f"data_{pure_code}.db"
+def sync_db_pull(pure_code: str, status_callback=None) -> bool:
+    code_u = str(pure_code or "").strip().upper()
+    db_name = f"data_{code_u}.db"
     local_path = os.path.join(STORAGE_DIR, db_name)
     if os.path.exists(local_path) and os.path.getsize(local_path) > 0:
-        return
-    _do_sync_db_pull(pure_code)
+        _CLOUD_PULL_FAILED_CODES.discard(code_u)
+        return True
+    return _do_sync_db_pull(code_u, status_callback=status_callback)
 
 
 def _do_sync_db_push(pure_code: str):
+    code_u = str(pure_code or "").strip().upper()
+    if code_u in _CLOUD_PULL_FAILED_CODES:
+        print(f"[CloudSync] Blocked push for {code_u} to protect existing cloud DB from partial/empty overwrite.")
+        return
     try:
         from cloud_sync import push_file
-        db_name = f"data_{pure_code}.db"
+        db_name = f"data_{code_u}.db"
         local_path = os.path.join(STORAGE_DIR, db_name)
         if os.path.exists(local_path):
             push_file(local_path, db_name)
     except Exception as e:
-        print(f"[CloudSync] DB push warning for {pure_code}: {e}")
+        print(f"[CloudSync] DB push warning for {code_u}: {e}")
 
 
 def sync_db_push(pure_code: str):
-    _async_run(_do_sync_db_push, pure_code)
+    code_u = str(pure_code or "").strip().upper()
+    if code_u in _CLOUD_PULL_FAILED_CODES:
+        return
+    _async_run(_do_sync_db_push, code_u)
 
 
 def _load_name_cache() -> dict:
