@@ -1,7 +1,7 @@
 """
 chrt_chip.py - Plotly 籌碼頁籤副圖建置模組
-(自 chart_builder.py 依邏輯職責拆分，維持既有大盤/櫃買6列三大法人及八大官股/資券/融資金額副圖與個股6列法人資券大戶副圖機制，並使副圖標題文字顏色與折線圖顏色一致)
-版本: 202611272120
+(自 chart_builder.py 依邏輯職責拆分，維持既有大盤/櫃買6列三大法人及八大官股/資券/融資金額副圖與個股6列法人資券大戶副圖機制，副圖標題字體與資訊條同為12px且文字顏色與折線圖顏色一致)
+版本: 202611272140
 """
 
 from typing import Optional, List
@@ -10,7 +10,7 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
 MODULE_NAME = "chrt_chip"
-MODULE_VERSION = "202611272120"
+MODULE_VERSION = "202611272140"
 
 
 def build_chip_figure(
@@ -30,12 +30,9 @@ def build_chip_figure(
     """
     【修訂說明 2026-11-27】【修改目的與防呆防錯原因】：
     1. 修改目的：
-       - 指數（^TWII / ^TWOII）：
-         * 第 5 列標題改為 `{上市/上櫃}資券(千張)/長期估算融資維持率/融券維持率`，其中「長期估算融資維持率」文字同折線橘黃色（`#e67e22`）、「融券維持率」文字同折線紫色（`#8e44ad`）；
-         * 第 6 列標題改為 `{上市/上櫃}融資金額(億)/長期估算融資維持率/季融資維持率`，疊加橘黃色「長期估算融資維持率（`#e67e22`）」與綠色「季融資維持率（`#16a085`）」雙折線，且標題文字顏色與折線顏色完全一致。
-       - 個股／ETF：
-         * 第 4 列標題改為 `資券(千張)/長期估算融資維持率/季融資維持率/融券維持率/券資比`，新增紫色「融券維持率（`Short_Maint_Pct`，`#8e44ad`）」折線，且標題各指標字體顏色與折線顏色（藍 `#2980b9`、綠 `#16a085`、紫 `#8e44ad`、橘黃 `#e67e22`）100% 一致。
-    2. 防呆防錯原因：維持原有雙次軸範圍自適應與 `y`～`y9` 軸結構，空序列自動回退安全預設上下界避免縮放異常。
+       - 將所有籌碼副圖左上角標題字體統一調大為 `size=12`（與上下資訊條 `pane-info-bar` 字體大小完全一致）。
+       - 融券維持率比照融資維持率區分為「長期估算融券維持率（紫色 `#8e44ad`）」與「季融券維持率（洋紅色 `#c0392b`）」，大盤指數（`^TWII` / `^TWOII`）與個股／ETF 同步繪製雙折線並於標題以同色文字標示。
+    2. 防呆防錯原因：維持既有雙次軸結構（`y`～`y9`）與上下界自適應範圍計算，空序列自動回退安全預設值避免縮放異常。
     """
     m_colors = ['#eb4d4b' if val >= 0 else '#2ecc71' for val in df['Margin_Diff'].fillna(0)]
     s_colors = ['#f1c40f' if val >= 0 else '#3498db' for val in df['Short_Diff'].fillna(0)]
@@ -79,10 +76,12 @@ def build_chip_figure(
     m2_range = calc_holding_range(sub_df['Major2_Pct'])
 
     if is_tw_index:
-        maint_vals = pd.concat([
+        maint_parts_r5 = [
             sub_df['Margin_Maint_Pct'].dropna() if 'Margin_Maint_Pct' in sub_df.columns else pd.Series(dtype=float),
-            sub_df['Short_Maint_Pct'].dropna() if 'Short_Maint_Pct' in sub_df.columns else pd.Series(dtype=float)
-        ])
+            sub_df['Short_Maint_Pct'].dropna() if 'Short_Maint_Pct' in sub_df.columns else pd.Series(dtype=float),
+            sub_df['Short_Maint_60D_Pct'].dropna() if 'Short_Maint_60D_Pct' in sub_df.columns else pd.Series(dtype=float),
+        ]
+        maint_vals = pd.concat(maint_parts_r5)
         r_min = float(maint_vals.min()) if not maint_vals.empty else 120.0
         r_max = float(maint_vals.max()) if not maint_vals.empty else 230.0
         r_pad = max(2.0, (r_max - r_min) * 0.15) if r_max > r_min else 5.0
@@ -112,6 +111,8 @@ def build_chip_figure(
             mmaint_parts.append(sub_df['Margin_Maint_60D_Pct'].dropna())
         if 'Short_Maint_Pct' in sub_df.columns and not sub_df['Short_Maint_Pct'].dropna().empty:
             mmaint_parts.append(sub_df['Short_Maint_Pct'].dropna())
+        if 'Short_Maint_60D_Pct' in sub_df.columns and not sub_df['Short_Maint_60D_Pct'].dropna().empty:
+            mmaint_parts.append(sub_df['Short_Maint_60D_Pct'].dropna())
         mmaint_clean = pd.concat(mmaint_parts) if mmaint_parts else pd.Series(dtype=float)
         mm_r_min = float(mmaint_clean.min()) if not mmaint_clean.empty else 120.0
         mm_r_max = float(mmaint_clean.max()) if not mmaint_clean.empty else 180.0
@@ -149,7 +150,7 @@ def build_chip_figure(
         fig_chip.add_trace(go.Bar(x=date_str_list, y=gov8_vals, marker_color=g8_colors, name='八大官股(億)', hoverinfo='none'), row=4, col=1)
         fig_chip.add_hline(y=0, line_color='rgba(150,150,150,0.7)', line_width=1, row=4, col=1)
 
-        # 第 5 列：上市/上櫃資券（千張）增減柱狀＋長期估算融資維持率(橘黃)/融券維持率(紫)雙折線
+        # 第 5 列：上市/上櫃資券（千張）增減柱狀＋長期估算融資維持率(橘黃)/長期估算融券維持率(紫)/季融券維持率(洋紅)折線
         fig_chip.add_trace(go.Bar(
             x=date_str_list, y=df['Margin_Diff'], marker_color=m_colors,
             name=f'{mkt_prefix}融資', width=0.4, offset=-0.4, hoverinfo='none'
@@ -166,8 +167,13 @@ def build_chip_figure(
         ), secondary_y=True, row=5, col=1)
         fig_chip.add_trace(go.Scatter(
             x=date_str_list, y=df['Short_Maint_Pct'], line=dict(color='#8e44ad', width=1.6),
-            connectgaps=True, hoverinfo='none', name='融券維持率%'
+            connectgaps=True, hoverinfo='none', name='長期估算融券維持率%'
         ), secondary_y=True, row=5, col=1)
+        if 'Short_Maint_60D_Pct' in df.columns:
+            fig_chip.add_trace(go.Scatter(
+                x=date_str_list, y=df['Short_Maint_60D_Pct'], line=dict(color='#c0392b', width=1.6),
+                connectgaps=True, hoverinfo='none', name='季融券維持率%'
+            ), secondary_y=True, row=5, col=1)
 
         # 第 6 列：上市/上櫃融資金額增減（億）單一柱狀圖＋長期估算融資維持率(橘黃)/季融資維持率(綠)雙折線
         fig_chip.add_trace(go.Bar(
@@ -213,7 +219,8 @@ def build_chip_figure(
         row5_colored_title = (
             f'{mkt_prefix}資券(千張)/'
             f'<span style="color:#e67e22;">長期估算融資維持率</span>/'
-            f'<span style="color:#8e44ad;">融券維持率</span>'
+            f'<span style="color:#8e44ad;">長期估算融券維持率</span>/'
+            f'<span style="color:#c0392b;">季融券維持率</span>'
         )
         row6_colored_title = (
             f'{mkt_prefix}融資金額(億)/'
@@ -278,7 +285,13 @@ def build_chip_figure(
             if 'Short_Maint_Pct' in df.columns:
                 fig_chip.add_trace(go.Scatter(
                     x=date_str_list, y=df['Short_Maint_Pct'], line=dict(color='#8e44ad', width=1.5),
-                    connectgaps=True, hoverinfo='none', name='融券維持率%',
+                    connectgaps=True, hoverinfo='none', name='長期估算融券維持率%',
+                    xaxis='x4', yaxis='y9'
+                ))
+            if 'Short_Maint_60D_Pct' in df.columns:
+                fig_chip.add_trace(go.Scatter(
+                    x=date_str_list, y=df['Short_Maint_60D_Pct'], line=dict(color='#c0392b', width=1.5),
+                    connectgaps=True, hoverinfo='none', name='季融券維持率%',
                     xaxis='x4', yaxis='y9'
                 ))
 
@@ -344,7 +357,8 @@ def build_chip_figure(
             '資券(千張)/'
             '<span style="color:#2980b9;">長期估算融資維持率</span>/'
             '<span style="color:#16a085;">季融資維持率</span>/'
-            '<span style="color:#8e44ad;">融券維持率</span>/'
+            '<span style="color:#8e44ad;">長期估算融券維持率</span>/'
+            '<span style="color:#c0392b;">季融券維持率</span>/'
             '<span style="color:#e67e22;">券資比</span>'
         )
         chip_pane_labels = [
@@ -361,7 +375,7 @@ def build_chip_figure(
             x=0.006, y=0.98, xref='paper', yref=y_ref_str,
             xanchor='left', yanchor='top',
             text=f'<b>{lbl_c}</b>',
-            font=dict(size=11, color='#1e293b'),
+            font=dict(size=12, color='#1e293b'),
             bgcolor='rgba(255,255,255,0.82)',
             borderpad=2,
             showarrow=False
