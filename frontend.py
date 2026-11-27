@@ -1,14 +1,14 @@
 """
 frontend.py - 前端 HTML/CSS 渲染模組（主圖、指標、籌碼與分點總入口）
 (依邏輯職責拆分為 frnt_broker.py 與本主圖/指標/籌碼渲染總入口，維持 100% 向後相容匯出)
-版本: 202611262040
+版本: 202611270930
 """
 
 import json
 import pandas as pd
 
 MODULE_NAME = "frontend"
-MODULE_VERSION = "202611262040"
+MODULE_VERSION = "202611270930"
 
 from frnt_broker import (
     COMMON_CSS,
@@ -21,7 +21,7 @@ from frnt_broker import (
 )
 
 
-def get_legend_html(version_tag: str = "202611262040") -> str:
+def get_legend_html(version_tag: str = "202611270930") -> str:
     return """
     <div style="font-size:12px; color:#334155; background:#f1f5f9; padding:5px 8px; border-radius:5px; margin-bottom:4px; line-height:1.5;">
         <b>📌 圖例與互動操作說明：</b>
@@ -242,11 +242,12 @@ Plotly.newPlot(elTech,pTech.data,pTech.layout,{responsive:true,displayModeBar:fa
 
 def get_chip_tab_html(fig_btm, df: pd.DataFrame, chart_id: str, chip_height: int = 780, initial_disp_days: int = 20, initial_end_idx: int = None, m1_thresh: int = 1000, m2_thresh: int = 400) -> str:
     """
-    【修訂說明 2026-11-26】【修改目的與防呆防錯原因】：
-    1. 修改目的：於籌碼圖表容器（`#__CID___chip`，即 `≥400` 大戶子圖最下方）緊接複製渲染一組底部雙列資訊條
-       （`#__CID___info_ms_btm` 資券與 `#__CID___info_chip_btm` 法人集保），解決手機直向畫面捲動至最底部檢視大戶圖表時
-       頂部資訊條捲出視窗外無法檢視之問題。
-    2. 防呆防錯原因：於 `renderInfo(idx)` 同時更新頂部與底部兩組 DOM 元素，支援個股、加權指數（`^TWII`）與櫃買指數（`^TWOII`）全模式。
+    【修訂說明 2026-11-27】【修改目的與防呆防錯原因】：
+    1. 修改目的：
+       - 針對大盤加權指數（`^TWII`）與櫃買指數（`^TWOII`），在籌碼頁籤頂部與底部資訊條同步渲染當日
+         **外資(億) / 投信(億) / 自營(億) / 八大官股(億)** 買賣超金額（保留2位小數），與新增的 4 列柱狀圖即時連動。
+       - 修正大盤判定條件（移除原先 `no_inst_flow` 限制），確保當 `^TWII` / `^TWOII` 載入三大法人數據後仍正確識別為大盤／櫃買指數模式。
+    2. 防呆防錯原因：個股與 ETF 資訊條格式與所有 JS 跨圖同步事件維持 100% 不變。
     """
     n_pts = len(df)
     end_idx = n_pts - 1 if initial_end_idx is None else initial_end_idx
@@ -258,15 +259,10 @@ def get_chip_tab_html(fig_btm, df: pd.DataFrame, chart_id: str, chip_height: int
 
     cid_upper = str(chart_id).upper()
     has_short_maint = ('Short_Maint_Pct' in df.columns and not df['Short_Maint_Pct'].dropna().empty)
-    no_inst_flow = (
-        ('Foreign_Net' not in df.columns or (df['Foreign_Net'].fillna(0) == 0).all())
-        and ('Trust_Net' not in df.columns or (df['Trust_Net'].fillna(0) == 0).all())
-        and ('Dealer_Net' not in df.columns or (df['Dealer_Net'].fillna(0) == 0).all())
-    )
     has_money_bal = ('Margin_Money_Bal' in df.columns and (df['Margin_Money_Bal'].fillna(0) != 0).any())
     zero_margin_bal = ('Margin_Bal' not in df.columns or (df['Margin_Bal'].fillna(0) == 0).all())
-    is_twoii = ("^TWOII" in cid_upper) or (has_short_maint and no_inst_flow and has_money_bal and zero_margin_bal)
-    is_tw_index = ("^TWII" in cid_upper) or is_twoii or (has_short_maint and no_inst_flow and zero_margin_bal)
+    is_twoii = ("^TWOII" in cid_upper) or (has_short_maint and has_money_bal and zero_margin_bal)
+    is_tw_index = ("^TWII" in cid_upper) or is_twoii or (has_short_maint and zero_margin_bal)
 
     tpl = COMMON_CSS + """
 <div class="frame-root" id="__CID___chip_root">
@@ -278,7 +274,7 @@ def get_chip_tab_html(fig_btm, df: pd.DataFrame, chart_id: str, chip_height: int
 </div>
 <script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>
 <script>(function(){__HELPERS__
-var pChip=__P_CHIP__,dates=__DATES__,foreigns=__FOREIGNS__,trusts=__TRUSTS__,dealers=__DEALERS__,mDiffs=__MDIFFS__,sDiffs=__SDIFFS__,rat=__RATIOS__;
+var pChip=__P_CHIP__,dates=__DATES__,foreigns=__FOREIGNS__,trusts=__TRUSTS__,dealers=__DEALERS__,gov8s=__GOV8S__,mDiffs=__MDIFFS__,sDiffs=__SDIFFS__,rat=__RATIOS__;
 var mMaints=__MMAINTS__,mMaints60d=__MMAINTS60D__,sMaints=__SMAINTS__,mMoneyDiffs=__MMONEY__,isTwIndex=__IS_TW_INDEX__,isTwoii=__IS_TWOII__;
 var m1_pcts=__M1PCTS__,m2_pcts=__M2PCTS__,m1_thresh=__M1TH__,m2_thresh=__M2TH__;
 var totalPoints=dates.length,initEnd=__INIT_END__,targetDays=Number(__DISP_DAYS__)||20;
@@ -291,10 +287,10 @@ function renderInfo(idx){if(idx<0||idx>=totalPoints)return;
     var msHtml='',chipHtml='';
     if(isTwoii){
         msHtml='<span class="tag-lbl"><b>上櫃資券('+d+')</b></span>融券:'+fmtDiff(sT,2)+'千張 ｜ <b>融資金額:</b>'+fmtDiff(mMoneyDiffs[idx],2)+'億 ｜ <span style="color:#e67e22;font-weight:bold;">融資維持率:'+fmtNum(mMaints[idx])+'%</span> <span style="color:#8e44ad;font-weight:bold;">融券維持率:'+fmtNum(sMaints[idx])+'%</span>';
-        chipHtml='<span class="tag-lbl"><b>櫃買指數('+d+')</b></span>櫃買指數顯示上櫃融券(千張)、上櫃融資金額(億)及融資/融券維持率（八大官股進出請切換至「分點統計／分點日況」頁籤）';
+        chipHtml='<span class="tag-lbl"><b>上櫃法人/官股[億]('+d+')</b></span>外資:'+fmtDiff(foreigns[idx],2)+' 投信:'+fmtDiff(trusts[idx],2)+' 自營:'+fmtDiff(dealers[idx],2)+' ｜ <b>八大官股:</b>'+fmtDiff(gov8s[idx],2);
     }else if(isTwIndex){
         msHtml='<span class="tag-lbl"><b>上市資券[千張]('+d+')</b></span>融資:'+fmtDiff(mT,2)+' 融券:'+fmtDiff(sT,2)+' ｜ <b>融資金額:</b>'+fmtDiff(mMoneyDiffs[idx],2)+'億 ｜ <span style="color:#e67e22;font-weight:bold;">融資維持率:'+fmtNum(mMaints[idx])+'%</span> <span style="color:#8e44ad;font-weight:bold;">融券維持率:'+fmtNum(sMaints[idx])+'%</span>';
-        chipHtml='<span class="tag-lbl"><b>大盤指數('+d+')</b></span>加權指數顯示上市資券(千張)、上市融資金額(億)及融資/融券維持率（八大官股進出請切換至「分點統計／分點日況」頁籤）';
+        chipHtml='<span class="tag-lbl"><b>上市法人/官股[億]('+d+')</b></span>外資:'+fmtDiff(foreigns[idx],2)+' 投信:'+fmtDiff(trusts[idx],2)+' 自營:'+fmtDiff(dealers[idx],2)+' ｜ <b>八大官股:</b>'+fmtDiff(gov8s[idx],2);
     }else{
         msHtml='<span class="tag-lbl"><b>資券[千張]('+d+')</b></span>融資:'+fmtDiff(mT,3)+' 融券:'+fmtDiff(sT,3)+' <span style="color:#e67e22;font-weight:bold;">券資比:'+fmtNum(rat[idx])+'%</span> <span style="color:#2980b9;font-weight:bold;">預估融資維持率:'+fmtNum(mMaints[idx])+'%</span> <span style="color:#16a085;font-weight:bold;">季融資維持率:'+fmtNum(mMaints60d[idx])+'%</span>';
         chipHtml='<span class="tag-lbl"><b>法人集保('+d+')</b></span>外資:'+fmtDiff(foreigns[idx],0)+' 投信:'+fmtDiff(trusts[idx],0)+' 自營:'+fmtDiff(dealers[idx],0)+' | ≥'+m1_thresh+'張: '+fmtNum(m1_pcts[idx])+'% ≥'+m2_thresh+'張: '+fmtNum(m2_pcts[idx])+'%';
@@ -362,6 +358,7 @@ Plotly.newPlot(elChip,pChip.data,pChip.layout,{responsive:true,displayModeBar:fa
             .replace("__FOREIGNS__", json.dumps(df['Foreign_Net'].fillna(0).tolist() if 'Foreign_Net' in df.columns else [0] * n_pts))
             .replace("__TRUSTS__", json.dumps(df['Trust_Net'].fillna(0).tolist() if 'Trust_Net' in df.columns else [0] * n_pts))
             .replace("__DEALERS__", json.dumps(df['Dealer_Net'].fillna(0).tolist() if 'Dealer_Net' in df.columns else [0] * n_pts))
+            .replace("__GOV8S__", json.dumps(df['Gov8_Net'].fillna(0).tolist() if 'Gov8_Net' in df.columns else [0] * n_pts))
             .replace("__MDIFFS__", json.dumps(df['Margin_Diff'].fillna(0).tolist() if 'Margin_Diff' in df.columns else [0] * n_pts))
             .replace("__SDIFFS__", json.dumps(df['Short_Diff'].fillna(0).tolist() if 'Short_Diff' in df.columns else [0] * n_pts))
             .replace("__RATIOS__", json.dumps(df['Short_Margin_Ratio'].fillna(0).tolist() if 'Short_Margin_Ratio' in df.columns else [0] * n_pts))
