@@ -1,7 +1,7 @@
 """
 ftch_kline_chip.py - 日K線擷取與全市場籌碼智慧增量同步總入口模組
 (依邏輯職責將三大法人與個股/大盤資券爬蟲拆出至 ftch_inst_margin.py，維持 100% 向後相容匯出)
-版本: 202611262025
+版本: 202611270925
 """
 
 import requests
@@ -17,6 +17,7 @@ from storage import (
 from ftch_tdcc_dash import fetch_tdcc_holding_data
 from ftch_inst_margin import (
     FINMIND_TOKEN,
+    fetch_market_index_institutional_data,
     fetch_institutional_investors,
     fetch_twse_total_margin_data,
     fetch_tpex_total_margin_data,
@@ -24,7 +25,7 @@ from ftch_inst_margin import (
 )
 
 MODULE_NAME = "ftch_kline_chip"
-MODULE_VERSION = "202611262025"
+MODULE_VERSION = "202611270925"
 
 
 def fetch_stock_name(pure_code: str) -> str:
@@ -297,10 +298,10 @@ def sync_chip_data(
 ):
     """
     智慧增量同步三大法人、資券與集保大戶。
-    【修訂說明 2026-11-26】【修改目的與防呆防錯原因】：
-    1. 修改目的：比照三大法人缺日檢查邏輯，針對近 `display_days` 個已收盤交易日比對 `margin_short` 既有日期序列（`missing_margin_dates`），
-       自動偵測並回補中間遺漏之資券交易日，不再受限於單一 `last_margin_date`。
-    2. 防呆防錯原因：台灣時間當日 21:00 前自動排除尚未公告之當日日期；同時限制單次自動補缺最多回溯至近 `display_days` 交易日，避免無效重複請求。
+    【修訂說明 2026-11-27】【修改目的與防呆防錯原因】：
+    1. 修改目的：為大盤加權指數（`^TWII`）與櫃買指數（`^TWOII`）補齊全市場三大法人每日買賣超金額（億元）增量同步，
+       呼叫 `fetch_market_index_institutional_data` 寫入 `institutional_investors` 並回傳 `storage.load_institutional_df()`。
+    2. 防呆防錯原因：台灣時間當日 16:00 前排除尚未公告之當日法人數據；支援 `force_refresh` 依勾選之法人項目與期程覆蓋更新。
     """
     pure_code = str(pure_code).strip().upper()
     storage = StockChipStorage(pure_code)
@@ -324,6 +325,73 @@ def sync_chip_data(
         latest_trade_date_str = df_dates[-1].strftime('%Y-%m-%d')
         now_tw = datetime.utcnow() + timedelta(hours=8)
         now_tw_date_str = now_tw.strftime('%Y-%m-%d')
+
+        # 1. 大盤/櫃買三大法人買賣超金額（億元）智慧增量同步
+        existing_inst_df = storage.load_institutional_df()
+        existing_inst_dates = set(existing_inst_df['date'].dt.strftime('%Y-%m-%d')) if not existing_inst_df.empty else set()
+        recent_k_dates = [d.strftime('%Y-%m-%d') for d in df_dates[-n_disp:]]
+        missing_inst_dates = [d for d in recent_k_dates if d not in existing_inst_dates]
+        if now_tw_date_str in missing_inst_dates and now_tw.hour < 16:
+            missing_inst_dates.remove(now_tw_date_str)
+
+        f_en = bool(cfg.get("foreign_enabled", True))
+        t_en = bool(cfg.get("trust_enabled", True))
+        d_en = bool(cfg.get("dealer_enabled", True))
+        f_days = max(1, int(cfg.get("foreign_days", 120) or 120))
+        t_days = max(1, int(cfg.get("trust_days", 120) or 120))
+        d_days = max(1, int(cfg.get("dealer_days", 120) or 120))
+
+        if force_refresh:
+            if f_en or t_en or d_en:
+                max_inst_days = max(
+                    f_days if f_en else 0,
+                    t_days if t_en else 0,
+                    d_days if d_en else 0,
+                )
+                inst_start_idx = max(0, anchor_idx - max_inst_days + 1)
+                target_dates = list(df_dates[inst_start_idx:anchor_idx + 1]) if max_inst_days > 0 else []
+                inst_records = fetch_market_index_institutional_data(
+                    pure_code=pure_code,
+                    df_dates=df_dates,
+                    explicit_missing_dates=target_dates,
+                )
+                if inst_records:
+                    f_cutoff = df_dates[max(0, anchor_idx - f_days + 1)].strftime('%Y-%m-%d') if f_en else "9999-12-31"
+                    t_cutoff = df_dates[max(0, anchor_idx - t_days + 1)].strftime('%Y-%m-%d') if t_en else "9999-12-31"
+                    d_cutoff = df_dates[max(0, anchor_idx - d_days + 1)].strftime('%Y-%m-%d') if d_en else "9999-12-31"
+
+                    old_map = {}
+                    if not existing_inst_df.empty:
+                        for _, r in existing_inst_df.iterrows():
+                            ds = pd.to_datetime(r['date']).strftime('%Y-%m-%d')
+                            old_map[ds] = (
+                                float(r.get('foreign_net', 0.0) or 0.0),
+                                float(r.get('trust_net', 0.0) or 0.0),
+                                float(r.get('dealer_net', 0.0) or 0.0),
+                            )
+
+                    merged_inst = []
+                    for ds, fn, tn, dn in inst_records:
+                        if anchor_date_str and ds > anchor_date_str:
+                            continue
+                        prev_f, prev_t, prev_d = old_map.get(ds, (0.0, 0.0, 0.0))
+                        new_f = fn if (f_en and ds >= f_cutoff) else prev_f
+                        new_t = tn if (t_en and ds >= t_cutoff) else prev_t
+                        new_d = dn if (d_en and ds >= d_cutoff) else prev_d
+                        merged_inst.append((ds, new_f, new_t, new_d))
+                    if merged_inst:
+                        storage.save_institutional_data(merged_inst)
+        elif missing_inst_dates:
+            target_dates = [d for d in df_dates if d.strftime('%Y-%m-%d') in missing_inst_dates]
+            inst_records = fetch_market_index_institutional_data(
+                pure_code=pure_code,
+                df_dates=df_dates,
+                explicit_missing_dates=target_dates,
+            )
+            if inst_records:
+                storage.save_institutional_data(inst_records)
+
+        # 2. 大盤/櫃買全市場資券增量同步
         existing_ms_df = storage.load_margin_df()
         missing_money_col = (
             existing_ms_df.empty
@@ -360,7 +428,7 @@ def sync_chip_data(
                     storage.save_margin_data(margin_records)
         if status_placeholder:
             status_placeholder.empty()
-        return (pd.DataFrame(), storage.load_margin_df(), pd.DataFrame())
+        return (storage.load_institutional_df(), storage.load_margin_df(), pd.DataFrame())
 
     if pure_code.startswith("^") or not is_tw_stock_or_etf(pure_code):
         return (pd.DataFrame(), pd.DataFrame(), pd.DataFrame())
