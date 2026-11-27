@@ -2,16 +2,17 @@
 台股技術與籌碼分析系統 - Google Drive 雲端雙向同步模組
 支援 Service Account (st.secrets) 與 Google Colab 雙環境。
 具備檔名相容比對機制 (相容 data_{code}.db 與 {code}.db)。 
-版本: 202611270810
+版本: 202611270840
 """
 
 MODULE_NAME = "cloud_sync"
-MODULE_VERSION = "202611270810"
+MODULE_VERSION = "202611270840"
 
 import io
 import os
 import json
 import time
+import sqlite3
 import logging
 from pathlib import Path
 from typing import Optional, List
@@ -57,6 +58,25 @@ def get_auth_status() -> int:
         return 2  
     else:
         return 1  
+
+def _is_valid_sqlite_file(file_path: Path) -> bool:
+    """
+    【修訂說明 2026-11-27】【修改目的與防呆防錯原因】：
+    1. 修改目的：驗證下載後之 `.db` 暫存檔是否具備合法 SQLite 16-byte 檔頭 (`SQLite format 3\\x00`) 且可通過 `PRAGMA quick_check`。
+    2. 防呆防錯原因：防止雲端毀損檔案（如 `data_^TWII.db`）或下載截斷之不完整檔案覆蓋本地並引發 `sqlite3.DatabaseError`。
+    """
+    try:
+        if not file_path.exists() or file_path.stat().st_size < 100:
+            return False
+        with open(file_path, "rb") as f:
+            header = f.read(16)
+        if header != b"SQLite format 3\x00":
+            return False
+        with sqlite3.connect(str(file_path)) as conn:
+            res = conn.execute("PRAGMA quick_check").fetchone()
+            return bool(res and str(res[0]).lower() == "ok")
+    except Exception:
+        return False
 
 class GoogleDriveSync:
     def __init__(self):
@@ -134,18 +154,18 @@ class GoogleDriveSync:
         1. 修改目的：
            - 針對雲端檔案查詢與 `MediaIoBaseDownload` 下載加入最多 `max_retries`（預設 3 次）指數退避重試（0.6s -> 1.2s -> 2.4s），
              並透過 `status_callback(attempt, max_retries, detail_msg)` 即時向前端進度列回報重試狀態。
-           - 回傳 `(ok: bool, remote_exists_or_unknown: bool)`：若確認雲端無此檔回傳 `(False, False)`；
-             若雲端已有此檔（或查詢本身逾時無法確認不存在）卻 3 次重試皆下載失敗，回傳 `(False, True)` 啟動防覆蓋保護。
-        2. 防呆防錯原因：先寫入 `.tmp` 暫存檔並確認大小 > 0 後再原子替換 `local_path`，避免半套損毀檔污染本地 SQLite。
+           - 若下載目標為 `.db` 檔案，額外執行 `_is_valid_sqlite_file(tmp_path)` 驗證 SQLite 檔頭與結構完整性；
+             若偵測到雲端檔案本身已毀損，直接刪除本地壞檔並回傳 `(False, False)`，允許 `StockChipStorage` 自動重建乾淨資料庫並覆寫修復雲端壞檔。
+        2. 防呆防錯原因：先寫入 `.tmp` 暫存檔並通過完整驗證後再原子替換 `local_path`，杜絕壞檔進入 SQLite 連線。
         """
         local_path = Path(local_path)
         filename = local_path.name
+        is_db_target = filename.lower().endswith(".db")
         if not self.service:
             return False, True
 
         retries = max(1, int(max_retries or 3))
         file_id = None
-        remote_exists_or_unknown = True
 
         for attempt in range(1, retries + 1):
             if attempt > 1:
@@ -156,7 +176,6 @@ class GoogleDriveSync:
             if query_ok:
                 if fid:
                     file_id = fid
-                    remote_exists_or_unknown = True
                 else:
                     # API 明確回應雲端無此檔案，無需無效重試
                     return False, False
@@ -168,6 +187,7 @@ class GoogleDriveSync:
         from googleapiclient.http import MediaIoBaseDownload
         local_path.parent.mkdir(parents=True, exist_ok=True)
         tmp_path = local_path.with_suffix(local_path.suffix + ".tmp")
+        corrupt_db_detected = False
 
         for attempt in range(1, retries + 1):
             if attempt > 1:
@@ -182,6 +202,10 @@ class GoogleDriveSync:
                     while not done:
                         _, done = downloader.next_chunk()
                 if tmp_path.exists() and tmp_path.stat().st_size > 0:
+                    if is_db_target and not _is_valid_sqlite_file(tmp_path):
+                        corrupt_db_detected = True
+                        logger.error(f"雲端資料庫 {filename} 檔案已毀損 (SQLite 完整性驗證失敗)")
+                        continue
                     os.replace(str(tmp_path), str(local_path))
                     logger.info(f"成功自雲端下載: {filename} (第 {attempt} 次)")
                     return True, True
@@ -193,6 +217,15 @@ class GoogleDriveSync:
                         tmp_path.unlink()
                 except Exception:
                     pass
+
+        if corrupt_db_detected:
+            try:
+                if local_path.exists():
+                    local_path.unlink()
+            except Exception:
+                pass
+            # 雲端檔案本身已毀損，回傳 (False, False) 允許系統重建乾淨 SQLite 資料庫並修復雲端
+            return False, False
 
         return False, True
 
