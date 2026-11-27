@@ -1,7 +1,7 @@
 """
-ftch_gov8.py - 大盤加權(^TWII)與櫃買(^TWOII)八大官股個股買賣超統計與8行庫日況模組
+ftch_gov8.py - 大盤加權(^TWII)與櫃買(^TWOII)三大法人日統計及八大官股個股買賣超統計與8行庫日況模組
 (自 data_fetcher.py 依邏輯職責拆分，維持既有 HiStock broker8 解析、前景雲端推送與原生字典彙總機制)
-版本: 202611242207
+版本: 202611270925
 """
 
 import os
@@ -9,6 +9,7 @@ import re
 import gc
 import time
 import requests
+import pandas as pd
 from bs4 import BeautifulSoup
 from datetime import datetime, timedelta
 
@@ -18,9 +19,10 @@ from storage import (
     _do_sync_db_push,
 )
 from ftch_kline_chip import fetch_stock_daily_k
+from ftch_inst_margin import fetch_market_index_institutional_data
 
 MODULE_NAME = "ftch_gov8"
-MODULE_VERSION = "202611242207"
+MODULE_VERSION = "202611270925"
 
 EIGHT_GOV_BROKERS = [
     ("合作金庫", ("合庫", "合作金庫"), "b_heku"),
@@ -201,14 +203,20 @@ def batch_sync_tw_index_gov_brokers(
     progress_callback=None
 ) -> str:
     """
-    【修訂說明 2026-11-24】批次增補加權指數（^TWII）與櫃買指數（^TWOII）八大官股前30買賣超個股資料完成後，
-    改以同步前景函式 `_do_sync_db_push(code)` 立即推送至 Google Drive 雲端資料庫。
+    【修訂說明 2026-11-27】【修改目的與防呆防錯原因】：
+    1. 修改目的：擴充為「加權指數／櫃買指數三大法人及八大官股日統計維護」批次增補入口，
+       針對 `^TWII` 與 `^TWOII` 在 `[start_pos, anchor_pos]` 區間內同步檢查並補齊：
+       (a) 三大法人每日買賣超金額（億元）寫入 `institutional_investors`；
+       (b) 八大官股買賣超前30個股明細寫入 `gov_index_stock_daily`；
+       完成後統一呼叫前景函式 `_do_sync_db_push(code)` 推送至雲端。
+    2. 防呆防錯原因：已完整存在於 `institutional_investors` 之交易日自動跳過不重抓，避免重複發送 HTTP 請求。
     """
     n_days = max(1, int(lookback_days or 1))
     b_norm = _normalize_date_str(base_date_str) or str(base_date_str).strip()[:10]
     targets = [("^TWII", "加權指數"), ("^TWOII", "櫃買指數")]
     tot_targets = len(targets)
 
+    total_inst_added = 0
     total_added_days = 0
     total_skipped_days = 0
     total_stock_rows = 0
@@ -237,7 +245,35 @@ def batch_sync_tw_index_gov_brokers(
         anchor_pos = valid_pos[-1]
         start_pos = max(0, anchor_pos - n_days + 1)
         target_dates = trade_dates[start_pos:anchor_pos + 1]
+        target_dt_objs = list(df_k.index[start_pos:anchor_pos + 1])
 
+        wrote_any = False
+
+        # 1. 檢查並補齊指定區間內缺漏之三大法人日統計（億元）
+        exist_inst_df = storage.load_institutional_df()
+        exist_inst_dates = (
+            set(exist_inst_df["date"].dt.strftime("%Y-%m-%d"))
+            if (exist_inst_df is not None and not exist_inst_df.empty)
+            else set()
+        )
+        missing_inst_dts = [dt for dt in target_dt_objs if dt.strftime("%Y-%m-%d") not in exist_inst_dates]
+        if missing_inst_dts:
+            if progress_callback:
+                progress_callback(
+                    idx_t, tot_targets, code, c_name,
+                    f"補抓三大法人日統計（缺 {len(missing_inst_dts)} 日）..."
+                )
+            inst_recs = fetch_market_index_institutional_data(
+                pure_code=code,
+                df_dates=df_k.index,
+                explicit_missing_dates=missing_inst_dts
+            )
+            if inst_recs:
+                storage.save_institutional_data(inst_recs)
+                total_inst_added += len(inst_recs)
+                wrote_any = True
+
+        # 2. 檢查並補齊指定區間內缺漏之八大官股前30買賣超個股日統計
         exist_df = storage.load_gov_index_stock_daily_range(target_dates[0], target_dates[-1])
         exist_counts = {}
         if exist_df is not None and not exist_df.empty:
@@ -245,7 +281,6 @@ def batch_sync_tw_index_gov_brokers(
                 dk = str(d_val)[:10]
                 exist_counts[dk] = exist_counts.get(dk, 0) + 1
 
-        wrote_any = False
         for d_idx, d_str in enumerate(reversed(target_dates), start=1):
             if exist_counts.get(d_str, 0) >= 50:
                 total_skipped_days += 1
@@ -266,15 +301,15 @@ def batch_sync_tw_index_gov_brokers(
 
         if wrote_any:
             if progress_callback:
-                progress_callback(idx_t, tot_targets, code, c_name, "正在同步推送八大官股資料庫至雲端...")
+                progress_callback(idx_t, tot_targets, code, c_name, "正在同步推送三大法人與八大官股資料庫至雲端...")
             _do_sync_db_push(code)
 
         del df_k, exist_df
         gc.collect()
 
     return (
-        f"八大官股交易前30個股增補完成（基準日 {b_norm} 往前 {n_days} 個交易日）："
-        f"新增 {total_added_days} 個交易日（共 {total_stock_rows} 筆個股八大官股明細），"
+        f"加權／櫃買三大法人及八大官股日統計增補完成（基準日 {b_norm} 往前 {n_days} 個交易日）："
+        f"新增三大法人日統計 {total_inst_added} 筆、八大官股 {total_added_days} 個交易日（共 {total_stock_rows} 筆個股明細），"
         f"略過已完整存在 {total_skipped_days} 個交易日（已同步至雲端）。"
     )
 
