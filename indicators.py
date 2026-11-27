@@ -1,7 +1,7 @@
 """
 indicators.py - 技術指標與籌碼計算模組
-(新增 20/120/240/1200 日乖離率、大盤加權^TWII與櫃買^TWOII融資金額(億)與融資/融券維持率、八大官股每日買賣超(億)、個股全期間與近60日滾動視窗預估融資維持率計算及以集保最新週真實總股數扣除近15週1000張以上大於0最小持股比例之實際流通張數週轉率與1%約當張數輸出版)
-版本: 202611270925
+(新增 20/120/240/1200 日乖離率、大盤加權^TWII與櫃買^TWOII融資金額(億)與融資/融券維持率、八大官股每日買賣超(億)、個股與指數一致化全期間及近60日滾動視窗預估融資/融券維持率計算及以集保最新週真實總股數扣除近15週1000張以上大於0最小持股比例之實際流通張數週轉率與1%約當張數輸出版)
+版本: 202611272110
 """
 
 import os
@@ -10,7 +10,7 @@ import numpy as np
 import pandas as pd
 
 MODULE_NAME = "indicators"
-MODULE_VERSION = "202611270925"
+MODULE_VERSION = "202611272110"
 
 HOLDING_LEVEL_MAP = {
     100: [8, 9, 10, 11, 12, 13, 14, 15],
@@ -20,6 +20,94 @@ HOLDING_LEVEL_MAP = {
     800: [13, 14, 15],
     1000: [15]
 }
+
+
+def _calc_rolling_long_maint(closes_arr, bals_arr, diffs_arr, maint_base: float = 166.67):
+    """
+    【修訂說明 2026-11-27】【修改目的與防呆防錯原因】：
+    1. 修改目的：統一大盤指數（^TWII / ^TWOII）與個股／ETF 之「長期估算融資維持率（全期間融資淨增減滾動成本法）」演算法，
+       每日依餘額與淨增減（買進增加時以當日收盤價／指數加權平均）滾動修正估算成本單價。
+    2. 防呆防錯原因：當日無餘額（bal_val <= 0）或收盤價無效時輸出 np.nan 並重置平均成本，避免除以零。
+    """
+    maint_vals = []
+    avg_cost = np.nan
+    prev_bal = 0.0
+    for c_val, bal_val, diff_val in zip(closes_arr, bals_arr, diffs_arr):
+        if bal_val <= 0 or c_val <= 0:
+            avg_cost = np.nan
+            prev_bal = 0.0
+            maint_vals.append(np.nan)
+            continue
+        if pd.isna(avg_cost) or prev_bal <= 0:
+            avg_cost = c_val
+        elif diff_val > 0:
+            base_bal = max(0.0, bal_val - diff_val)
+            avg_cost = ((base_bal * avg_cost) + (diff_val * c_val)) / bal_val
+        prev_bal = bal_val
+        maint_vals.append((c_val / avg_cost) * maint_base if avg_cost > 0 else np.nan)
+    return maint_vals
+
+
+def _calc_rolling_60d_maint(closes_arr, bals_arr, diffs_arr, maint_base: float = 166.67, window_days: int = 60):
+    """
+    【修訂說明 2026-11-27】【修改目的與防呆防錯原因】：
+    1. 修改目的：統一大盤指數（^TWII / ^TWOII）與個股／ETF 之「季融資維持率（近 60 個交易日滾動視窗加權成本法）」演算法，
+       每日往回取最多 60 個交易日區間，以視窗首日有餘額之收盤為起算成本，依視窗內每日淨增減加權滾動成本單價。
+    2. 防呆防錯原因：避免受遠期高點鎖死，且於餘額歸零時自動重置成本，防止除以零異常。
+    """
+    maint_60d_vals = []
+    n_bars = len(closes_arr)
+    for i in range(n_bars):
+        c_end = closes_arr[i]
+        bal_end = bals_arr[i]
+        if bal_end <= 0 or c_end <= 0:
+            maint_60d_vals.append(np.nan)
+            continue
+        win_start = max(0, i - window_days + 1)
+        win_cost = np.nan
+        win_prev_bal = 0.0
+        for j in range(win_start, i + 1):
+            cw = closes_arr[j]
+            bw = bals_arr[j]
+            dw = diffs_arr[j]
+            if bw <= 0 or cw <= 0:
+                win_cost = np.nan
+                win_prev_bal = 0.0
+                continue
+            if pd.isna(win_cost) or win_prev_bal <= 0:
+                win_cost = cw
+            elif dw > 0:
+                base_b = max(0.0, bw - dw)
+                win_cost = ((base_b * win_cost) + (dw * cw)) / bw
+            win_prev_bal = bw
+        maint_60d_vals.append((c_end / win_cost) * maint_base if (not pd.isna(win_cost) and win_cost > 0) else np.nan)
+    return maint_60d_vals
+
+
+def _calc_rolling_short_maint(closes_arr, short_bals_arr, short_diffs_arr, maint_base: float = 190.0):
+    """
+    【修訂說明 2026-11-27】【修改目的與防呆防錯原因】：
+    1. 修改目的：統一大盤指數（^TWII / ^TWOII）與個股／ETF 之「融券維持率（全期間融券淨增減滾動成本法，基準 190.0%）」演算法，
+       每日依融券餘額與淨增減（賣出增加時以當日收盤價／指數加權平均）滾動修正放空平均成本，公式：(放空平均成本 / 當日收盤) * 190.0。
+    2. 防呆防錯原因：當日無融券餘額（bal_val <= 0）或收盤價無效時輸出 np.nan 並重置放空成本，避免除以零。
+    """
+    short_maint_vals = []
+    avg_short_cost = np.nan
+    prev_s_bal = 0.0
+    for c_val, bal_val, diff_val in zip(closes_arr, short_bals_arr, short_diffs_arr):
+        if bal_val <= 0 or c_val <= 0:
+            avg_short_cost = np.nan
+            prev_s_bal = 0.0
+            short_maint_vals.append(np.nan)
+            continue
+        if pd.isna(avg_short_cost) or prev_s_bal <= 0:
+            avg_short_cost = c_val
+        elif diff_val > 0:
+            base_bal = max(0.0, bal_val - diff_val)
+            avg_short_cost = ((base_bal * avg_short_cost) + (diff_val * c_val)) / bal_val
+        prev_s_bal = bal_val
+        short_maint_vals.append((avg_short_cost / c_val) * maint_base if c_val > 0 else np.nan)
+    return short_maint_vals
 
 
 def calculate_all_indicators(
@@ -229,69 +317,34 @@ def calculate_all_indicators(
             ]
         df['Short_Margin_Ratio'] = (df['Short_Bal'] / df['Margin_Bal'].replace(0, np.nan)) * 100.0
 
-    # 【修訂說明 2026-11-20】【修改目的與防呆防錯原因】：
-    # 修改目的：大盤加權指數（^TWII）與櫃買指數（^TWOII）同步計算「融資維持率（Margin_Maint_Pct）」與「融券維持率（Short_Maint_Pct）」，
-    # 以 20 日滾動成本基準（166.67% / 190.0%）推算整戶維持率折線，供籌碼頁籤資券副圖雙折線繪製。
-    if code_upper in ("^TWII", "^TWOII"):
-        rolling_cost = df['Close'].rolling(20, min_periods=1).mean().replace(0, np.nan)
-        close_safe = df['Close'].replace(0, np.nan)
-        df['Margin_Maint_Pct'] = (close_safe / rolling_cost) * 166.67
-        df['Short_Maint_Pct'] = (rolling_cost / close_safe) * 190.0
-    elif not code_upper.startswith("^"):
-        # 【修訂說明 2026-11-23】【修改目的與防呆防錯原因】：
-        # 修改目的：
-        #   1. 保留全期間「融資淨增減滾動成本法（基準 166.67%）」計算每日預估融資維持率（Margin_Maint_Pct，藍色折線）；
-        #   2. 新增「近 60 日滾動視窗估算季融資維持率（Margin_Maint_60D_Pct，綠色折線）」，針對每日往回取最多 60 個交易日區間，
-        #      以視窗首日有融資餘額之收盤價為起算成本，依視窗內每日融資淨增減加權滾動成本單價，避免受遠期高點鎖死。
-        # 防呆防錯原因：當日無融資餘額（Margin_Bal <= 0）或收盤價無效時輸出 np.nan 並重置平均成本單價，避免除以零。
-        maint_vals = []
-        avg_cost = np.nan
-        prev_bal = 0.0
-        closes_arr = [float(x) if pd.notna(x) else 0.0 for x in df['Close']]
-        bals_arr = [float(x) if pd.notna(x) else 0.0 for x in df['Margin_Bal']]
-        diffs_arr = [float(x) if pd.notna(x) else 0.0 for x in df['Margin_Diff']]
-        for c_val, bal_val, diff_val in zip(closes_arr, bals_arr, diffs_arr):
-            if bal_val <= 0 or c_val <= 0:
-                avg_cost = np.nan
-                prev_bal = 0.0
-                maint_vals.append(np.nan)
-                continue
-            if pd.isna(avg_cost) or prev_bal <= 0:
-                avg_cost = c_val
-            elif diff_val > 0:
-                base_bal = max(0.0, bal_val - diff_val)
-                avg_cost = ((base_bal * avg_cost) + (diff_val * c_val)) / bal_val
-            prev_bal = bal_val
-            maint_vals.append((c_val / avg_cost) * 166.67 if avg_cost > 0 else np.nan)
-        df['Margin_Maint_Pct'] = maint_vals
+    # 【修訂說明 2026-11-27】【修改目的與防呆防錯原因】：
+    # 1. 修改目的：將大盤加權指數（^TWII）、櫃買指數（^TWOII）與個股／ETF 全面統一為相同的「資券淨增減加權滾動成本法」：
+    #    - 長期估算融資維持率（Margin_Maint_Pct）：全期間滾動成本推算（基準 166.67%）；
+    #    - 季融資維持率（Margin_Maint_60D_Pct）：近 60 個交易日滾動視窗推算（基準 166.67%）；
+    #    - 融券維持率（Short_Maint_Pct）：全期間融券淨增減滾動成本推算（基準 190.0%，個股與大盤皆計算）。
+    # 2. 防呆防錯原因：櫃買指數（^TWOII）依已驗證資料源規範無融資總張數（Margin_Bal 恆為 0），優先採用融資金額（Margin_Money_Bal / Margin_Money_Diff）進行滾動成本計算；
+    #    加權指數（^TWII）若融資金額欄位有值亦優先採用融資金額（更貼近整戶融資維持率定義），無金額時自動退回融資張數計算。
+    closes_arr = [float(x) if pd.notna(x) else 0.0 for x in df['Close']]
+    s_bals_arr = [float(x) if pd.notna(x) else 0.0 for x in df['Short_Bal']]
+    s_diffs_arr = [float(x) if pd.notna(x) else 0.0 for x in df['Short_Diff']]
 
-        maint_60d_vals = []
-        n_bars = len(closes_arr)
-        for i in range(n_bars):
-            c_end = closes_arr[i]
-            bal_end = bals_arr[i]
-            if bal_end <= 0 or c_end <= 0:
-                maint_60d_vals.append(np.nan)
-                continue
-            win_start = max(0, i - 60 + 1)
-            win_cost = np.nan
-            win_prev_bal = 0.0
-            for j in range(win_start, i + 1):
-                cw = closes_arr[j]
-                bw = bals_arr[j]
-                dw = diffs_arr[j]
-                if bw <= 0 or cw <= 0:
-                    win_cost = np.nan
-                    win_prev_bal = 0.0
-                    continue
-                if pd.isna(win_cost) or win_prev_bal <= 0:
-                    win_cost = cw
-                elif dw > 0:
-                    base_b = max(0.0, bw - dw)
-                    win_cost = ((base_b * win_cost) + (dw * cw)) / bw
-                win_prev_bal = bw
-            maint_60d_vals.append((c_end / win_cost) * 166.67 if (not pd.isna(win_cost) and win_cost > 0) else np.nan)
-        df['Margin_Maint_60D_Pct'] = maint_60d_vals
+    if code_upper in ("^TWII", "^TWOII"):
+        has_money = any(float(x) > 0 for x in df['Margin_Money_Bal'] if pd.notna(x))
+        if has_money:
+            m_bals_arr = [float(x) if pd.notna(x) else 0.0 for x in df['Margin_Money_Bal']]
+            m_diffs_arr = [float(x) if pd.notna(x) else 0.0 for x in df['Margin_Money_Diff']]
+        else:
+            m_bals_arr = [float(x) if pd.notna(x) else 0.0 for x in df['Margin_Bal']]
+            m_diffs_arr = [float(x) if pd.notna(x) else 0.0 for x in df['Margin_Diff']]
+        df['Margin_Maint_Pct'] = _calc_rolling_long_maint(closes_arr, m_bals_arr, m_diffs_arr, maint_base=166.67)
+        df['Margin_Maint_60D_Pct'] = _calc_rolling_60d_maint(closes_arr, m_bals_arr, m_diffs_arr, maint_base=166.67, window_days=60)
+        df['Short_Maint_Pct'] = _calc_rolling_short_maint(closes_arr, s_bals_arr, s_diffs_arr, maint_base=190.0)
+    elif not code_upper.startswith("^"):
+        m_bals_arr = [float(x) if pd.notna(x) else 0.0 for x in df['Margin_Bal']]
+        m_diffs_arr = [float(x) if pd.notna(x) else 0.0 for x in df['Margin_Diff']]
+        df['Margin_Maint_Pct'] = _calc_rolling_long_maint(closes_arr, m_bals_arr, m_diffs_arr, maint_base=166.67)
+        df['Margin_Maint_60D_Pct'] = _calc_rolling_60d_maint(closes_arr, m_bals_arr, m_diffs_arr, maint_base=166.67, window_days=60)
+        df['Short_Maint_Pct'] = _calc_rolling_short_maint(closes_arr, s_bals_arr, s_diffs_arr, maint_base=190.0)
 
     # 大戶持股門檻（嚴格同週對齊，當週全交易日共用該週最新公告值）
     if not holding_df.empty:
