@@ -1,14 +1,15 @@
+優化圖列說明並融資維持率一致性
 """
 frontend.py - 前端 HTML/CSS 渲染模組（主圖、指標、籌碼與分點總入口）
 (依邏輯職責拆分為 frnt_broker.py 與本主圖/指標/籌碼渲染總入口，維持 100% 向後相容匯出)
-版本: 202611271357
+版本: 202611272100
 """
 
 import json
 import pandas as pd
 
 MODULE_NAME = "frontend"
-MODULE_VERSION = "202611271357"
+MODULE_VERSION = "202611272100"
 
 from frnt_broker import (
     COMMON_CSS,
@@ -21,19 +22,18 @@ from frnt_broker import (
 )
 
 
-def get_legend_html(version_tag: str = "202611271357") -> str:
+def get_legend_html(version_tag: str = "202611272100") -> str:
+    """
+    【修訂說明 2026-11-27】【修改目的與防呆防錯原因】：
+    1. 修改目的：依需求縮減頂部圖例區塊，僅保留 `📌 圖例說明： ▲ 周轉≥10% ｜ ▼ 周轉≥20%` 單行顯示，
+       其餘折線與指標顏色改由各副圖標題同色文字直接標示。
+    2. 防呆防錯原因：維持原有外層樣式容器高度與字體規格，避免版面跳動。
+    """
     return """
     <div style="font-size:12px; color:#334155; background:#f1f5f9; padding:5px 8px; border-radius:5px; margin-bottom:4px; line-height:1.5;">
-        <b>📌 圖例與互動操作說明：</b>
-        <span style="color:#eb4d4b; font-weight:bold;">■ 紅K/買超/資增</span> ｜
-        <span style="color:#2ecc71; font-weight:bold;">■ 綠K/賣超/資減</span> ｜
-        <span style="color:#f1c40f; font-weight:bold;">— MA5</span> ｜
-        <span style="color:#e67e22; font-weight:bold;">— MA20/券資比</span> ｜
-        <span style="color:#9b59b6; font-weight:bold;">— MA60</span> ｜
-        <span style="color:#27ae60; font-weight:bold;">〔頭〕</span><span style="color:#e74c3c; font-weight:bold;">〔底〕</span> 5MA轉折 ｜
+        <b>📌 圖例說明：</b>
         <span style="color:#1e3799; font-weight:bold;">▲</span> 周轉≥10% ｜
-        <span style="color:#d4ac0d; font-weight:bold;">▼</span> 周轉≥20%<br/>
-        <span style="color:#475569;">💡 點擊或滑動任一圖表可同步更新數值與跨頁籤關注交易日；左右拖曳平移 K 線、滾輪或雙指縮放日數。</span>
+        <span style="color:#d4ac0d; font-weight:bold;">▼</span> 周轉≥20%
     </div>
     """
 
@@ -252,10 +252,9 @@ def get_chip_tab_html(fig_btm, df: pd.DataFrame, chart_id: str, chip_height: int
     """
     【修訂說明 2026-11-27】【修改目的與防呆防錯原因】：
     1. 修改目的：
-       - 針對大盤加權指數（`^TWII`）與櫃買指數（`^TWOII`），在籌碼頁籤頂部與底部資訊條同步渲染當日
-         **外資(億) / 投信(億) / 自營(億) / 八大官股(億)** 買賣超金額（保留2位小數），與新增的 4 列柱狀圖即時連動。
-       - 修正大盤判定條件（移除原先 `no_inst_flow` 限制），確保當 `^TWII` / `^TWOII` 載入三大法人數據後仍正確識別為大盤／櫃買指數模式。
-    2. 防呆防錯原因：個股與 ETF 資訊條格式與所有 JS 跨圖同步事件維持 100% 不變。
+       - 修正大盤加權指數（`^TWII`）與櫃買指數（`^TWOII`）判定條件：移除先前導致 `^TWII` 有 `Margin_Bal` 數據時誤判為個股之 `zero_margin_bal` 限制，改以 `chart_id` 或欄位結構精準識別，並同步顯示「長期估算融資維持率（黃）」＋「季融資維持率（綠）」＋「融券維持率（紫）」。
+       - 個股／ETF 資訊條同步新增顯示「融券維持率（紫 `#8e44ad`）」，與副圖折線顏色及標題文字顏色完全一致。
+    2. 防呆防錯原因：維持所有 JS 動態軸偵測與跨圖平移縮放同步機制不變。
     """
     n_pts = len(df)
     end_idx = n_pts - 1 if initial_end_idx is None else initial_end_idx
@@ -266,11 +265,10 @@ def get_chip_tab_html(fig_btm, df: pd.DataFrame, chart_id: str, chip_height: int
     resolved_chip_h = int(fig_h) if fig_h else int(chip_height)
 
     cid_upper = str(chart_id).upper()
-    has_short_maint = ('Short_Maint_Pct' in df.columns and not df['Short_Maint_Pct'].dropna().empty)
     has_money_bal = ('Margin_Money_Bal' in df.columns and (df['Margin_Money_Bal'].fillna(0) != 0).any())
     zero_margin_bal = ('Margin_Bal' not in df.columns or (df['Margin_Bal'].fillna(0) == 0).all())
-    is_twoii = ("^TWOII" in cid_upper) or (has_short_maint and has_money_bal and zero_margin_bal)
-    is_tw_index = ("^TWII" in cid_upper) or is_twoii or (has_short_maint and zero_margin_bal)
+    is_twoii = ("^TWOII" in cid_upper) or ("TWOII" in cid_upper) or (has_money_bal and zero_margin_bal)
+    is_tw_index = ("^TWII" in cid_upper) or ("TWII" in cid_upper) or is_twoii or has_money_bal
 
     tpl = COMMON_CSS + """
 <div class="frame-root" id="__CID___chip_root">
@@ -295,13 +293,13 @@ function renderInfo(idx){if(idx<0||idx>=totalPoints)return;
     var d=dates[idx],mT=mDiffs[idx]!=null?Number(mDiffs[idx])/1000.0:null,sT=sDiffs[idx]!=null?Number(sDiffs[idx])/1000.0:null;
     var msHtml='',chipHtml='';
     if(isTwoii){
-        msHtml='<span class="tag-lbl"><b>上櫃資券('+d+')</b></span>融券:'+fmtDiff(sT,2)+'千張 ｜ <b>融資金額:</b>'+fmtDiff(mMoneyDiffs[idx],2)+'億 ｜ <span style="color:#e67e22;font-weight:bold;">融資維持率:'+fmtNum(mMaints[idx])+'%</span> <span style="color:#8e44ad;font-weight:bold;">融券維持率:'+fmtNum(sMaints[idx])+'%</span>';
+        msHtml='<span class="tag-lbl"><b>上櫃資券('+d+')</b></span>融券:'+fmtDiff(sT,2)+'千張 ｜ <b>融資金額:</b>'+fmtDiff(mMoneyDiffs[idx],2)+'億 ｜ <span style="color:#e67e22;font-weight:bold;">長期融資維持率:'+fmtNum(mMaints[idx])+'%</span> <span style="color:#16a085;font-weight:bold;">季融資維持率:'+fmtNum(mMaints60d[idx])+'%</span> <span style="color:#8e44ad;font-weight:bold;">融券維持率:'+fmtNum(sMaints[idx])+'%</span>';
         chipHtml='<span class="tag-lbl"><b>上櫃法人/官股[億]('+d+')</b></span>外資:'+fmtDiff(foreigns[idx],2)+' 投信:'+fmtDiff(trusts[idx],2)+' 自營:'+fmtDiff(dealers[idx],2)+' ｜ <b>八大官股:</b>'+fmtDiff(gov8s[idx],2);
     }else if(isTwIndex){
-        msHtml='<span class="tag-lbl"><b>上市資券[千張]('+d+')</b></span>融資:'+fmtDiff(mT,2)+' 融券:'+fmtDiff(sT,2)+' ｜ <b>融資金額:</b>'+fmtDiff(mMoneyDiffs[idx],2)+'億 ｜ <span style="color:#e67e22;font-weight:bold;">融資維持率:'+fmtNum(mMaints[idx])+'%</span> <span style="color:#8e44ad;font-weight:bold;">融券維持率:'+fmtNum(sMaints[idx])+'%</span>';
+        msHtml='<span class="tag-lbl"><b>上市資券[千張]('+d+')</b></span>融資:'+fmtDiff(mT,2)+' 融券:'+fmtDiff(sT,2)+' ｜ <b>融資金額:</b>'+fmtDiff(mMoneyDiffs[idx],2)+'億 ｜ <span style="color:#e67e22;font-weight:bold;">長期融資維持率:'+fmtNum(mMaints[idx])+'%</span> <span style="color:#16a085;font-weight:bold;">季融資維持率:'+fmtNum(mMaints60d[idx])+'%</span> <span style="color:#8e44ad;font-weight:bold;">融券維持率:'+fmtNum(sMaints[idx])+'%</span>';
         chipHtml='<span class="tag-lbl"><b>上市法人/官股[億]('+d+')</b></span>外資:'+fmtDiff(foreigns[idx],2)+' 投信:'+fmtDiff(trusts[idx],2)+' 自營:'+fmtDiff(dealers[idx],2)+' ｜ <b>八大官股:</b>'+fmtDiff(gov8s[idx],2);
     }else{
-        msHtml='<span class="tag-lbl"><b>資券[千張]('+d+')</b></span>融資:'+fmtDiff(mT,3)+' 融券:'+fmtDiff(sT,3)+' <span style="color:#e67e22;font-weight:bold;">券資比:'+fmtNum(rat[idx])+'%</span> <span style="color:#2980b9;font-weight:bold;">預估融資維持率:'+fmtNum(mMaints[idx])+'%</span> <span style="color:#16a085;font-weight:bold;">季融資維持率:'+fmtNum(mMaints60d[idx])+'%</span>';
+        msHtml='<span class="tag-lbl"><b>資券[千張]('+d+')</b></span>融資:'+fmtDiff(mT,3)+' 融券:'+fmtDiff(sT,3)+' <span style="color:#e67e22;font-weight:bold;">券資比:'+fmtNum(rat[idx])+'%</span> <span style="color:#2980b9;font-weight:bold;">長期融資維持率:'+fmtNum(mMaints[idx])+'%</span> <span style="color:#16a085;font-weight:bold;">季融資維持率:'+fmtNum(mMaints60d[idx])+'%</span> <span style="color:#8e44ad;font-weight:bold;">融券維持率:'+fmtNum(sMaints[idx])+'%</span>';
         chipHtml='<span class="tag-lbl"><b>法人集保('+d+')</b></span>外資:'+fmtDiff(foreigns[idx],0)+' 投信:'+fmtDiff(trusts[idx],0)+' 自營:'+fmtDiff(dealers[idx],0)+' | ≥'+m1_thresh+'張: '+fmtNum(m1_pcts[idx])+'% ≥'+m2_thresh+'張: '+fmtNum(m2_pcts[idx])+'%';
     }
     if(infoMs)infoMs.innerHTML=msHtml;
