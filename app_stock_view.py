@@ -1,7 +1,7 @@
 """
 app_stock_view.py - 主頁籤 2「📈 個股」介面渲染模組
 (自 app.py 依邏輯職責拆分，維持上下雙複合選單、共用主圖與四大子頁籤互動機制，並整合四鍵同列與獨立代號輸入框)
-版本: 202611262055
+版本: 202611270810
 """
 
 import re
@@ -28,7 +28,7 @@ from frontend import (
 from app_broker_cache import get_cached_broker_payload
 
 MODULE_NAME = "app_stock_view"
-MODULE_VERSION = "202611262055"
+MODULE_VERSION = "202611270810"
 
 
 def _on_direct_code_input_change():
@@ -61,14 +61,10 @@ def render_stock_tab(
     get_figures_fn,
 ):
     """
-    【修訂說明 2026-11-26】【修改目的與防呆防錯原因】：
-    1. 修改目的：
-       - 於建立 `st.text_input(key="direct_stock_code_input")` 之前檢查 `clear_direct_code_input` 旗標並安全清空輸入框，
-         消除 `StreamlitWidgetAlreadyInstantiatedError` 並確保輸入代號按 Enter 即刻切換標的。
-       - 調高「📊 指標」（`tech_h + 128`）與「💰 籌碼」（`chip_h + 165`）之 `components.html` iframe 高度，
-         確保底部複製渲染之資訊條完整顯示不被裁切。
-    2. 防呆防錯原因：
-       - 維持四鍵同列與所有既有按鈕 `key`、快取參數與 `force_refresh_cfg` 轉傳邏輯 100% 不變。
+    【修訂說明 2026-11-27】【修改目的與防呆防錯原因】：
+    1. 修改目的：調高「📊 指標」（`tech_h + 175`）與「💰 籌碼」（`chip_h + 235`）之 `components.html` iframe 預留高度，
+       解決手機窄螢幕下第一列資訊條（如「資券[千張]...」）自動折成 3 行後將第二列資訊條（「法人持股...」）擠出下緣截斷的問題。
+    2. 防呆防錯原因：僅調整兩處 `components.html(..., height=...)` 預留數值，其餘互動邏輯、快取參數與版面結構 100% 維持不變。
     """
     auth_st = cloud_sync.get_auth_status()
     status_icon = "🟡" if auth_st == 2 else ("🔵" if auth_st == 1 else "⚪")
@@ -282,7 +278,8 @@ def render_stock_tab(
                 initial_disp_days=st.session_state.disp_days,
                 initial_end_idx=safe_end_idx
             )
-            components.html(tech_html, height=tech_h + 128, scrolling=False)
+            # 【修訂說明 2026-11-27】調高 iframe 預留高度至 tech_h + 175，避免手機折行裁切底部資訊條
+            components.html(tech_html, height=tech_h + 175, scrolling=False)
 
         with tab_chip:
             chip_h = 760 if st.session_state.is_mobile_mode else 800
@@ -296,7 +293,8 @@ def render_stock_tab(
                 m1_thresh=st.session_state.m1_thresh,
                 m2_thresh=st.session_state.m2_thresh
             )
-            components.html(chip_html, height=chip_h + 165, scrolling=False)
+            # 【修訂說明 2026-11-27】調高 iframe 預留高度至 chip_h + 235，確保手機折行後兩列資訊條完整呈現不被截斷
+            components.html(chip_html, height=chip_h + 235, scrolling=False)
 
         is_gov_idx = is_tw_index_with_gov_brokers(pure_ticker)
         has_broker_support = (is_tw_stock_or_etf(pure_ticker) and not pure_ticker.startswith("^")) or is_gov_idx
