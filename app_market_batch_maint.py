@@ -1,7 +1,7 @@
 """
 app_market_batch_maint.py - 主頁籤 3「⚙️ 參數設定 → 全市場批次維護」次頁籤渲染模組
-(自 app_settings.py 依邏輯職責拆分，維持既有全市籌碼維護、加權/櫃買八大官股維護與全市場分點三鍵並列維護及二次確認機制)
-版本: 202611262010
+(自 app_settings.py 依邏輯職責拆分，維持既有全市籌碼維護、加權/櫃買三大法人及八大官股日統計維護與全市場分點三鍵並列維護及二次確認機制)
+版本: 202611270925
 """
 
 from datetime import datetime
@@ -21,14 +21,15 @@ from data_fetcher import (
 from app_broker_cache import get_cached_broker_payload
 
 MODULE_NAME = "app_market_batch_maint"
-MODULE_VERSION = "202611262010"
+MODULE_VERSION = "202611270925"
 
 
 def render_market_batch_maint_tab(clear_figures_cache_fn):
     """
-    【修訂說明 2026-11-26】【修改目的與防呆防錯原因】：
-    1. 修改目的：自 `app_settings.py` 拆出次頁籤 3「全市場批次維護」獨立模組，降低單檔行數並維持職責單一。
-    2. 防呆防錯原因：完整保留所有按鈕 `key`、`session_state` 確認旗標名稱、三鍵並列錨點與清除／增補邏輯，確保功能與操作體驗 100% 一致。
+    【修訂說明 2026-11-27】【修改目的與防呆防錯原因】：
+    1. 修改目的：比照原「加權指數／櫃買指數八大官股維護」，將區塊標題、日期欄位說明、三鍵按鈕與二次確認提示同步升級為
+       「加權指數／櫃買指數三大法人及八大官股日統計維護」，一次批次增補或清除大盤（^TWII）與櫃買（^TWOII）之三大法人買賣超（億）與八大官股日統計。
+    2. 防呆防錯原因：完整保留既有按鈕 `key` 與 `session_state` 確認旗標，並於完成後同時清除圖表快取 `clear_figures_cache_fn()` 與分點快取 `get_cached_broker_payload.clear()`。
     """
     st.markdown("**全市(含上櫃)籌碼資料庫維護**")
     default_chip_date = get_default_chip_backfill_base_date()
@@ -236,7 +237,7 @@ def render_market_batch_maint_tab(clear_figures_cache_fn):
                     st.rerun()
 
     st.markdown("---")
-    st.markdown("**加權指數／櫃買指數八大官股維護**")
+    st.markdown("**加權指數／櫃買指數三大法人及八大官股日統計維護**")
     default_gov_date = get_default_broker_backfill_base_date()
     if isinstance(default_gov_date, str):
         parsed_gov_date = datetime.strptime(default_gov_date[:10], "%Y-%m-%d").date()
@@ -246,12 +247,12 @@ def render_market_batch_maint_tab(clear_figures_cache_fn):
         parsed_gov_date = default_gov_date
 
     gov_base_dt = st.date_input(
-        "八大官股增補基準日（預設16:00前為前一交易日）",
+        "三大法人及八大官股增補基準日（預設16:00前為前一交易日）",
         value=parsed_gov_date,
         key="gov_broker_backfill_base_date_input"
     )
     gov_days_opt = int(st.number_input(
-        "往前增補交易日數（八大官股）",
+        "往前增補交易日數（三大法人及八大官股）",
         min_value=1,
         max_value=365,
         value=1,
@@ -260,26 +261,26 @@ def render_market_batch_maint_tab(clear_figures_cache_fn):
     ))
     gov_d_str = gov_base_dt.strftime("%Y-%m-%d")
 
-    # 4. 加權指數／櫃買指數八大官股維護（三鍵並列）
+    # 4. 加權指數／櫃買指數三大法人及八大官股日統計維護（三鍵並列）
     with st.container():
         st.markdown("<div class='settings-btn-row-anchor'></div>", unsafe_allow_html=True)
         col_gov_add, col_gov_rng_clr, col_gov_all_clr = st.columns(3)
         with col_gov_add:
-            run_gov_sync = st.button("📥 批次增補八大官股交易前30個股", key="btn_batch_sync_gov_brokers", use_container_width=True)
+            run_gov_sync = st.button("📥 批次增補三大法人及八大官股日統計", key="btn_batch_sync_gov_brokers", use_container_width=True)
         with col_gov_rng_clr:
-            if st.button("🧹 清除指定期間八大官股", key="btn_batch_clear_gov_brokers_range", use_container_width=True):
+            if st.button("🧹 清除指定期間三大法人及八大官股", key="btn_batch_clear_gov_brokers_range", use_container_width=True):
                 st.session_state.confirm_clear_gov_brokers_range = True
                 st.session_state.confirm_clear_gov_brokers = False
                 st.rerun()
         with col_gov_all_clr:
-            if st.button("🗑️ 清除所有八大官股資料", key="btn_batch_clear_gov_brokers", use_container_width=True):
+            if st.button("🗑️ 清除所有三大法人及八大官股資料", key="btn_batch_clear_gov_brokers", use_container_width=True):
                 st.session_state.confirm_clear_gov_brokers = True
                 st.session_state.confirm_clear_gov_brokers_range = False
                 st.rerun()
 
     if run_gov_sync:
         from data_fetcher import batch_sync_tw_index_gov_brokers
-        prog_bar = st.progress(0, text="準備檢查並增補加權／櫃買八大官股交易前30個股...")
+        prog_bar = st.progress(0, text="準備檢查並增補加權／櫃買三大法人及八大官股日統計...")
         status_txt = st.empty()
 
         def _on_gov_progress(cur_i, tot_n, c_code, c_name, st_msg):
@@ -292,26 +293,28 @@ def render_market_batch_maint_tab(clear_figures_cache_fn):
             lookback_days=int(gov_days_opt),
             progress_callback=_on_gov_progress
         )
-        prog_bar.progress(100, text="八大官股交易前30個股增補完成！")
+        prog_bar.progress(100, text="三大法人及八大官股日統計增補完成！")
         status_txt.empty()
+        clear_figures_cache_fn()
         get_cached_broker_payload.clear()
         st.success(summary_gov)
 
     if st.session_state.get("confirm_clear_gov_brokers_range", False):
         st.warning(
-            f"⚠️ 確定要清除加權指數（^TWII）與櫃買指數（^TWOII）於八大官股增補基準日 **{gov_d_str}** 往前 **{gov_days_opt}** 個交易日區間內之「**八大官股交易資料**」嗎？（區間外歷史八大官股、指數日線與資券資料將完整保留）"
+            f"⚠️ 確定要清除加權指數（^TWII）與櫃買指數（^TWOII）於增補基準日 **{gov_d_str}** 往前 **{gov_days_opt}** 個交易日區間內之「**三大法人及八大官股日統計資料**」嗎？（區間外歷史資料、指數日線與資券資料將完整保留）"
         )
         with st.container():
             st.markdown("<div class='settings-btn-row-anchor'></div>", unsafe_allow_html=True)
             cgr_yes, cgr_no = st.columns(2)
             with cgr_yes:
-                if st.button("確定清除指定期間八大官股", key="btn_confirm_clear_gov_rng_yes", use_container_width=True):
-                    with st.spinner(f"正在清除基準日 {gov_d_str} 往前 {gov_days_opt} 日之八大官股資料..."):
+                if st.button("確定清除指定期間三大法人及八大官股", key="btn_confirm_clear_gov_rng_yes", use_container_width=True):
+                    with st.spinner(f"正在清除基準日 {gov_d_str} 往前 {gov_days_opt} 日之三大法人及八大官股日統計資料..."):
                         res_gov_rng_msg = clear_tw_index_gov_broker_range(
                             base_date_str=gov_d_str,
                             lookback_days=int(gov_days_opt)
                         )
                     st.session_state.confirm_clear_gov_brokers_range = False
+                    clear_figures_cache_fn()
                     get_cached_broker_payload.clear()
                     st.success(res_gov_rng_msg)
             with cgr_no:
@@ -320,15 +323,16 @@ def render_market_batch_maint_tab(clear_figures_cache_fn):
                     st.rerun()
 
     if st.session_state.get("confirm_clear_gov_brokers", False):
-        st.warning("⚠️ 確定要清除加權指數（^TWII）與櫃買指數（^TWOII）本地與雲端之「所有八大官股資料」嗎？（指數日線、資券及其他個股資料將完整保留）")
+        st.warning("⚠️ 確定要清除加權指數（^TWII）與櫃買指數（^TWOII）本地與雲端之「所有三大法人及八大官股日統計資料」嗎？（指數日線、資券及其他個股資料將完整保留）")
         with st.container():
             st.markdown("<div class='settings-btn-row-anchor'></div>", unsafe_allow_html=True)
             cg_yes, cg_no = st.columns(2)
             with cg_yes:
-                if st.button("確定清除所有八大官股", key="btn_confirm_clear_gov_yes", use_container_width=True):
-                    with st.spinner("正在清除加權與櫃買所有八大官股資料..."):
+                if st.button("確定清除所有三大法人及八大官股", key="btn_confirm_clear_gov_yes", use_container_width=True):
+                    with st.spinner("正在清除加權與櫃買所有三大法人及八大官股日統計資料..."):
                         res_gov_msg = clear_tw_index_gov_broker_data()
                     st.session_state.confirm_clear_gov_brokers = False
+                    clear_figures_cache_fn()
                     get_cached_broker_payload.clear()
                     st.success(res_gov_msg)
             with cg_no:
@@ -424,7 +428,7 @@ def render_market_batch_maint_tab(clear_figures_cache_fn):
                     st.rerun()
 
     if st.session_state.get("confirm_clear_brokers", False):
-        st.warning("⚠️ 確定要清除本地與雲端所有上市／上櫃個股之「所有分點資料（含統計排行、逐日明細與關注分點日況）」嗎？（日線、法人、資券與大戶資料將完整保留）")
+        st.warning("⚠️ 確定要清除本地與雲端所有上市／上櫃個股之「所有分點資料（含統計排行、逐日明細與關注分點日況）」嗎？（日線、法人、資券與集保大戶資料將完整保留）")
         with st.container():
             st.markdown("<div class='settings-btn-row-anchor'></div>", unsafe_allow_html=True)
             c_yes, c_no = st.columns(2)
