@@ -1,7 +1,7 @@
 """
 storage.py - 本地 SQLite 資料庫與股票歷史紀錄管理器（對外統一入口）
 (依邏輯職責拆分為 strg_cloud_names.py、strg_history_maint.py、strg_broker_mixin.py 與本核心檔案，維持 100% 向後相容匯出)
-版本: 202611252208
+版本: 202611270840
 """
 
 import os
@@ -9,7 +9,7 @@ import sqlite3
 import pandas as pd
 
 MODULE_NAME = "storage"
-MODULE_VERSION = "202611252208"
+MODULE_VERSION = "202611270840"
 
 from strg_cloud_names import (
     STORAGE_DIR,
@@ -64,9 +64,57 @@ class StockChipStorage(BrokerStorageMixin):
         self.db_name = f"data_{self.pure_code}.db"
         self.db_path = os.path.join(STORAGE_DIR, self.db_name)
         sync_db_pull(self.pure_code)
+        self._ensure_healthy_db()
         self._init_db()
 
+    def _ensure_healthy_db(self):
+        """
+        【修訂說明 2026-11-27】【修改目的與防呆防錯原因】：
+        1. 修改目的：若本地既有或剛下載之 `.db` 檔案（如 `data_^TWII.db`）發生 `sqlite3.DatabaseError`（database disk image is malformed），
+           自動移除本地毀損檔案，讓 `_init_db()` 建立全新乾淨 SQLite 資料庫並自動重抓資料覆寫修復雲端壞檔。
+        2. 防呆防錯原因：徹底根治開啟加權指數或任何損毀庫時直接拋出未捕捉 `sqlite3.DatabaseError` 導致整頁崩潰的問題。
+        """
+        if not os.path.exists(self.db_path):
+            return
+        is_corrupt = False
+        try:
+            if os.path.getsize(self.db_path) < 100:
+                is_corrupt = True
+            else:
+                with sqlite3.connect(self.db_path) as conn:
+                    res = conn.execute("PRAGMA quick_check").fetchone()
+                    if not res or str(res[0]).lower() != "ok":
+                        is_corrupt = True
+        except sqlite3.DatabaseError:
+            is_corrupt = True
+        except Exception:
+            is_corrupt = True
+
+        if is_corrupt:
+            print(f"[Storage] Detected corrupted SQLite DB {self.db_name}; removing and rebuilding clean DB.")
+            for suffix in ("", "-wal", "-shm", "-journal"):
+                target_p = self.db_path + suffix
+                try:
+                    if os.path.exists(target_p):
+                        os.remove(target_p)
+                except Exception:
+                    pass
+
     def _init_db(self):
+        try:
+            self._init_db_tables()
+        except sqlite3.DatabaseError:
+            # 防呆雙重保險：若建表過程中仍遇到損毀錯誤，立即清檔並重建一次
+            for suffix in ("", "-wal", "-shm", "-journal"):
+                target_p = self.db_path + suffix
+                try:
+                    if os.path.exists(target_p):
+                        os.remove(target_p)
+                except Exception:
+                    pass
+            self._init_db_tables()
+
+    def _init_db_tables(self):
         with sqlite3.connect(self.db_path) as conn:
             cursor = conn.cursor()
             cursor.execute('''
