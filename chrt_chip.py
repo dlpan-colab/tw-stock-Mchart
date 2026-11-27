@@ -1,7 +1,7 @@
 """
 chrt_chip.py - Plotly 籌碼頁籤副圖建置模組
-(自 chart_builder.py 依邏輯職責拆分，維持既有大盤/櫃買6列三大法人及八大官股/資券/融資金額副圖與個股6列法人資券大戶副圖機制)
-版本: 202611270925
+(自 chart_builder.py 依邏輯職責拆分，維持既有大盤/櫃買6列三大法人及八大官股/資券/融資金額副圖與個股6列法人資券大戶副圖機制，並使副圖標題文字顏色與折線圖顏色一致)
+版本: 202611272120
 """
 
 from typing import Optional, List
@@ -10,7 +10,7 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
 MODULE_NAME = "chrt_chip"
-MODULE_VERSION = "202611270925"
+MODULE_VERSION = "202611272120"
 
 
 def build_chip_figure(
@@ -29,15 +29,13 @@ def build_chip_figure(
 ) -> go.Figure:
     """
     【修訂說明 2026-11-27】【修改目的與防呆防錯原因】：
-    1. 修改目的：為大盤加權指數（^TWII）與櫃買指數（^TWOII）之籌碼頁籤副圖擴充為 6 列子圖：
-       - 第 1 列：外資(億) 每日買賣超柱狀圖
-       - 第 2 列：投信(億) 每日買賣超柱狀圖
-       - 第 3 列：自營(億) 每日買賣超柱狀圖
-       - 第 4 列：八大官股(億) 每日買賣超柱狀圖
-       - 第 5 列：上市/上櫃資券(千張)/維持率（雙柱狀＋雙折線）
-       - 第 6 列：上市/上櫃融資金額(億)/融資維持率（單柱狀＋折線）
-    2. 防呆防錯原因：個股與 ETF 籌碼頁籤副圖結構、軸編號（`y`～`y9`）及 `1%約=xxxx張` 標註 100% 維持原樣不變；
-       大盤無資料之法人/八大官股序列自動以 `[-10, 10]` 對稱Y軸防呆避免空白縮放異常。
+    1. 修改目的：
+       - 指數（^TWII / ^TWOII）：
+         * 第 5 列標題改為 `{上市/上櫃}資券(千張)/長期估算融資維持率/融券維持率`，其中「長期估算融資維持率」文字同折線橘黃色（`#e67e22`）、「融券維持率」文字同折線紫色（`#8e44ad`）；
+         * 第 6 列標題改為 `{上市/上櫃}融資金額(億)/長期估算融資維持率/季融資維持率`，疊加橘黃色「長期估算融資維持率（`#e67e22`）」與綠色「季融資維持率（`#16a085`）」雙折線，且標題文字顏色與折線顏色完全一致。
+       - 個股／ETF：
+         * 第 4 列標題改為 `資券(千張)/長期估算融資維持率/季融資維持率/融券維持率/券資比`，新增紫色「融券維持率（`Short_Maint_Pct`，`#8e44ad`）」折線，且標題各指標字體顏色與折線顏色（藍 `#2980b9`、綠 `#16a085`、紫 `#8e44ad`、橘黃 `#e67e22`）100% 一致。
+    2. 防呆防錯原因：維持原有雙次軸範圍自適應與 `y`～`y9` 軸結構，空序列自動回退安全預設上下界避免縮放異常。
     """
     m_colors = ['#eb4d4b' if val >= 0 else '#2ecc71' for val in df['Margin_Diff'].fillna(0)]
     s_colors = ['#f1c40f' if val >= 0 else '#3498db' for val in df['Short_Diff'].fillna(0)]
@@ -90,7 +88,12 @@ def build_chip_figure(
         r_pad = max(2.0, (r_max - r_min) * 0.15) if r_max > r_min else 5.0
         ratio_range = [max(0, r_min - r_pad), r_max + r_pad]
 
-        mmaint_clean = sub_df['Margin_Maint_Pct'].dropna() if 'Margin_Maint_Pct' in sub_df.columns else pd.Series(dtype=float)
+        mmaint_parts = []
+        if 'Margin_Maint_Pct' in sub_df.columns and not sub_df['Margin_Maint_Pct'].dropna().empty:
+            mmaint_parts.append(sub_df['Margin_Maint_Pct'].dropna())
+        if 'Margin_Maint_60D_Pct' in sub_df.columns and not sub_df['Margin_Maint_60D_Pct'].dropna().empty:
+            mmaint_parts.append(sub_df['Margin_Maint_60D_Pct'].dropna())
+        mmaint_clean = pd.concat(mmaint_parts) if mmaint_parts else pd.Series(dtype=float)
         mm_r_min = float(mmaint_clean.min()) if not mmaint_clean.empty else 130.0
         mm_r_max = float(mmaint_clean.max()) if not mmaint_clean.empty else 180.0
         mm_r_pad = max(1.5, (mm_r_max - mm_r_min) * 0.15) if mm_r_max > mm_r_min else 3.0
@@ -107,6 +110,8 @@ def build_chip_figure(
             mmaint_parts.append(sub_df['Margin_Maint_Pct'].dropna())
         if 'Margin_Maint_60D_Pct' in sub_df.columns and not sub_df['Margin_Maint_60D_Pct'].dropna().empty:
             mmaint_parts.append(sub_df['Margin_Maint_60D_Pct'].dropna())
+        if 'Short_Maint_Pct' in sub_df.columns and not sub_df['Short_Maint_Pct'].dropna().empty:
+            mmaint_parts.append(sub_df['Short_Maint_Pct'].dropna())
         mmaint_clean = pd.concat(mmaint_parts) if mmaint_parts else pd.Series(dtype=float)
         mm_r_min = float(mmaint_clean.min()) if not mmaint_clean.empty else 120.0
         mm_r_max = float(mmaint_clean.max()) if not mmaint_clean.empty else 180.0
@@ -144,7 +149,7 @@ def build_chip_figure(
         fig_chip.add_trace(go.Bar(x=date_str_list, y=gov8_vals, marker_color=g8_colors, name='八大官股(億)', hoverinfo='none'), row=4, col=1)
         fig_chip.add_hline(y=0, line_color='rgba(150,150,150,0.7)', line_width=1, row=4, col=1)
 
-        # 第 5 列：上市/上櫃資券（千張）增減柱狀＋融資/融券維持率雙折線
+        # 第 5 列：上市/上櫃資券（千張）增減柱狀＋長期估算融資維持率(橘黃)/融券維持率(紫)雙折線
         fig_chip.add_trace(go.Bar(
             x=date_str_list, y=df['Margin_Diff'], marker_color=m_colors,
             name=f'{mkt_prefix}融資', width=0.4, offset=-0.4, hoverinfo='none'
@@ -157,14 +162,14 @@ def build_chip_figure(
 
         fig_chip.add_trace(go.Scatter(
             x=date_str_list, y=df['Margin_Maint_Pct'], line=dict(color='#e67e22', width=1.6),
-            connectgaps=True, hoverinfo='none', name='融資維持率%'
+            connectgaps=True, hoverinfo='none', name='長期估算融資維持率%'
         ), secondary_y=True, row=5, col=1)
         fig_chip.add_trace(go.Scatter(
             x=date_str_list, y=df['Short_Maint_Pct'], line=dict(color='#8e44ad', width=1.6),
             connectgaps=True, hoverinfo='none', name='融券維持率%'
         ), secondary_y=True, row=5, col=1)
 
-        # 第 6 列：上市/上櫃融資金額增減（億）單一柱狀圖＋融資維持率折線
+        # 第 6 列：上市/上櫃融資金額增減（億）單一柱狀圖＋長期估算融資維持率(橘黃)/季融資維持率(綠)雙折線
         fig_chip.add_trace(go.Bar(
             x=date_str_list, y=df['Margin_Money_Diff'], marker_color=mm_colors,
             name=f'{mkt_prefix}融資金額增減(億)', hoverinfo='none'
@@ -172,8 +177,13 @@ def build_chip_figure(
         fig_chip.add_hline(y=0, line_color='rgba(150,150,150,0.7)', line_width=1, secondary_y=False, row=6, col=1)
         fig_chip.add_trace(go.Scatter(
             x=date_str_list, y=df['Margin_Maint_Pct'], line=dict(color='#e67e22', width=1.6),
-            connectgaps=True, hoverinfo='none', name='融資維持率%'
+            connectgaps=True, hoverinfo='none', name='長期估算融資維持率%'
         ), secondary_y=True, row=6, col=1)
+        if 'Margin_Maint_60D_Pct' in df.columns:
+            fig_chip.add_trace(go.Scatter(
+                x=date_str_list, y=df['Margin_Maint_60D_Pct'], line=dict(color='#16a085', width=1.6),
+                connectgaps=True, hoverinfo='none', name='季融資維持率%'
+            ), secondary_y=True, row=6, col=1)
 
         fig_chip.update_layout(
             font=dict(size=12), template='plotly_white', hovermode=False, dragmode='pan',
@@ -200,13 +210,23 @@ def build_chip_figure(
         fig_chip.update_yaxes(title_text='', range=mm_range, fixedrange=True, showspikes=False, tickfont=dict(size=11), secondary_y=False, row=6, col=1)
         fig_chip.update_yaxes(title_text='', range=mmaint_range, showgrid=False, showticklabels=False, fixedrange=True, showspikes=False, tickfont=dict(size=11), secondary_y=True, row=6, col=1)
 
+        row5_colored_title = (
+            f'{mkt_prefix}資券(千張)/'
+            f'<span style="color:#e67e22;">長期估算融資維持率</span>/'
+            f'<span style="color:#8e44ad;">融券維持率</span>'
+        )
+        row6_colored_title = (
+            f'{mkt_prefix}融資金額(億)/'
+            f'<span style="color:#e67e22;">長期估算融資維持率</span>/'
+            f'<span style="color:#16a085;">季融資維持率</span>'
+        )
         chip_pane_labels = [
             ('y domain', '外資(億)'),
             ('y2 domain', '投信(億)'),
             ('y3 domain', '自營(億)'),
             ('y4 domain', '八大官股(億)'),
-            ('y5 domain', f'{mkt_prefix}資券(千張)/維持率'),
-            ('y7 domain', f'{mkt_prefix}融資金額(億)/融資維持率'),
+            ('y5 domain', row5_colored_title),
+            ('y7 domain', row6_colored_title),
         ]
     else:
         fig_chip = make_subplots(
@@ -246,13 +266,19 @@ def build_chip_figure(
             if 'Margin_Maint_Pct' in df.columns:
                 fig_chip.add_trace(go.Scatter(
                     x=date_str_list, y=df['Margin_Maint_Pct'], line=dict(color='#2980b9', width=1.5),
-                    connectgaps=True, hoverinfo='none', name='預估融資維持率%',
+                    connectgaps=True, hoverinfo='none', name='長期估算融資維持率%',
                     xaxis='x4', yaxis='y9'
                 ))
             if 'Margin_Maint_60D_Pct' in df.columns:
                 fig_chip.add_trace(go.Scatter(
                     x=date_str_list, y=df['Margin_Maint_60D_Pct'], line=dict(color='#16a085', width=1.5),
-                    connectgaps=True, hoverinfo='none', name='近60日季融資維持率%',
+                    connectgaps=True, hoverinfo='none', name='季融資維持率%',
+                    xaxis='x4', yaxis='y9'
+                ))
+            if 'Short_Maint_Pct' in df.columns:
+                fig_chip.add_trace(go.Scatter(
+                    x=date_str_list, y=df['Short_Maint_Pct'], line=dict(color='#8e44ad', width=1.5),
+                    connectgaps=True, hoverinfo='none', name='融券維持率%',
                     xaxis='x4', yaxis='y9'
                 ))
 
@@ -314,11 +340,18 @@ def build_chip_figure(
             if one_pct_sheets >= 1:
                 m1_pane_label = f'≥{major1_thresh}(1%約={one_pct_sheets:,}張)'
 
+        stock_row4_colored_title = (
+            '資券(千張)/'
+            '<span style="color:#2980b9;">長期估算融資維持率</span>/'
+            '<span style="color:#16a085;">季融資維持率</span>/'
+            '<span style="color:#8e44ad;">融券維持率</span>/'
+            '<span style="color:#e67e22;">券資比</span>'
+        )
         chip_pane_labels = [
             ('y domain', '外資'),
             ('y2 domain', '投信'),
             ('y3 domain', '自營'),
-            ('y4 domain', '資券'),
+            ('y4 domain', stock_row4_colored_title),
             ('y6 domain', m1_pane_label),
             ('y8 domain', f'≥{major2_thresh}'),
         ]
