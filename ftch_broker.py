@@ -1,7 +1,7 @@
 """
 ftch_broker.py - 富邦券商分點進出排行、逐日明細與全市場分點批次增補模組
 (自 data_fetcher.py 依邏輯職責拆分，維持既有 16:00 更新時機點對齊、最後更新日規則校準與批次增補機制)
-版本: 202611262050
+版本: 202611270810
 """
 
 import re
@@ -18,12 +18,14 @@ from storage import (
     load_stock_history,
     get_stock_chinese_name,
     is_tw_stock_or_etf,
+    sync_db_pull,
     sync_db_push,
 )
+from strg_cloud_names import is_cloud_db_pull_failed
 from ftch_kline_chip import fetch_stock_daily_k
 
 MODULE_NAME = "ftch_broker"
-MODULE_VERSION = "202611262050"
+MODULE_VERSION = "202611270810"
 
 MDJ_BASE_DOMAIN = "https://fubon-ebrokerdj.fbs.com.tw"
 MDJ_HEADERS = {
@@ -368,15 +370,16 @@ def batch_sync_all_stocks_brokers(
     progress_callback=None
 ) -> str:
     """
-    【修訂說明 2026-11-26】【修改目的與防呆防錯原因】：
+    【修訂說明 2026-11-27】【修改目的與防呆防錯原因】：
     1. 修改目的：
-       - 對齊富邦網站限制（分點買賣超交易日況僅限最近交易日之近 20 日），限定僅對 `latest_trade_idx - t_idx < 20` 之近 20 日
-         檢查並補抓分點日況；第 21 日（含）以前之歷史交易日僅維護 1/10/20 日分點統計快照。
-       - 只要第 21 日以前之歷史交易日已具備完整 `has_rank_snapshot`，重跑時直接跳過（`skipped_days_total += 1`），
-         不再無效重複抓取排行、明細或重複上傳 `.db`，大幅縮短長天期（如 60 日）執行時間並避免連線逾時。
+       - 於建立 `StockChipStorage(code)` 前先呼叫 `sync_db_pull(code, status_callback=...)`，將雲端 `.db` 3 次退避重試狀態
+         即時附加顯示於增補進度列（如「雲端庫下載重試 (2/3)...」）。
+       - 若該檔觸發 `is_cloud_db_pull_failed(code)`（雲端有檔但 3 次重試皆下載失敗），立即在進度列提示防覆蓋保護並安全略過該檔，
+         杜絕空白／半套本地庫覆蓋雲端既有完整歷史資料庫。
+       - 加入 `consecutive_empty_days >= 5` 連續無資料自動停止回溯保護（配合富邦網站約 120～130 交易日保存上限），
+         觸及歷史起點即自動跳出該檔更早日期，避免長天期（如 141 日）無效重複空抓。
     2. 防呆防錯原因：
-       - 每檔個股僅在 `pending_bundles` 或 `wrote_focus_series` 實際有新增資料時才呼叫 `sync_db_push(code)` 上傳雲端，
-         確保中斷重跑可從斷點無縫接續。
+       - 維持近 20 日分點日況維護、第 21 日（含）以前僅維護 1/10/20 日統計快照、以及僅在有新增資料時才上傳雲端之既有邏輯。
     """
     hist_list = load_stock_history()
     stock_items = []
@@ -416,10 +419,23 @@ def batch_sync_all_stocks_brokers(
     updated_stocks = 0
     updated_days_total = 0
     skipped_days_total = 0
+    pull_failed_stocks = []
 
     for idx_s, (code, c_name) in enumerate(stock_items, start=1):
         if progress_callback:
-            progress_callback(idx_s, tot_n, code, c_name, "檢查交易日序列與既有分點資料...")
+            progress_callback(idx_s, tot_n, code, c_name, "檢查雲端庫與交易日序列...")
+
+        def _on_pull_retry(attempt_no, max_tries, retry_msg, _i=idx_s, _c=code, _n=c_name):
+            if progress_callback:
+                progress_callback(_i, tot_n, _c, _n, f"檢查交易日序列（{retry_msg}）")
+
+        sync_db_pull(code, status_callback=_on_pull_retry)
+        if is_cloud_db_pull_failed(code):
+            pull_failed_stocks.append(f"{code} {c_name}".strip())
+            if progress_callback:
+                progress_callback(idx_s, tot_n, code, c_name, "⚠️ 雲端庫下載重試3次仍失敗，已啟動防覆蓋保護並略過此檔")
+            time.sleep(0.25)
+            continue
 
         storage = StockChipStorage(code)
         df_k = storage.load_daily_k_df()
@@ -445,6 +461,7 @@ def batch_sync_all_stocks_brokers(
 
         pending_bundles = []
         wrote_focus_series = False
+        consecutive_empty_days = 0
 
         for t_idx in target_indices:
             end_d_str = trade_dates[t_idx]
@@ -476,6 +493,7 @@ def batch_sync_all_stocks_brokers(
 
             if has_rank_snapshot and not need_w10 and not need_w20:
                 skipped_days_total += 1
+                consecutive_empty_days = 0
                 continue
 
             if progress_callback:
@@ -511,6 +529,14 @@ def batch_sync_all_stocks_brokers(
                     }
             if has_any:
                 pending_bundles.append((end_d_str, day_bundle))
+                consecutive_empty_days = 0
+            else:
+                consecutive_empty_days += 1
+                # 富邦歷史分點保存上限約半年（120～130交易日），連續 5 日無資料即判定已達歷史起點並停止回溯
+                if consecutive_empty_days >= 5:
+                    if progress_callback:
+                        progress_callback(idx_s, tot_n, code, c_name, f"已達富邦歷史保存起點（{end_d_str} 連續5日無資料），停止回溯")
+                    break
 
             win_pairs = []
             if need_w10:
@@ -559,7 +585,7 @@ def batch_sync_all_stocks_brokers(
                                     wrote_focus_series = True
                 broker_df_cache.clear()
 
-        if pending_bundles or wrote_focus_series:
+        if (pending_bundles or wrote_focus_series) and not is_cloud_db_pull_failed(code):
             for end_d_str, day_bundle in pending_bundles:
                 storage.save_broker_range_rank(end_d_str, day_bundle, sync_cloud=False)
                 updated_days_total += 1
@@ -575,5 +601,7 @@ def batch_sync_all_stocks_brokers(
         f"共檢查 {tot_n} 檔個股，實際補齊 {updated_stocks} 檔（新增 {updated_days_total} 筆交易日統計快照），"
         f"略過已存在完整快照 {skipped_days_total} 筆。"
     )
+    if pull_failed_stocks:
+        summary += f" ⚠️ 以下 {len(pull_failed_stocks)} 檔雲端庫下載失敗已啟動防覆蓋保護略過：{', '.join(pull_failed_stocks)}。"
     return summary
 ## EOF ftch_broker.py
