@@ -1,7 +1,7 @@
 """
 app_dashboard.py - 主頁籤 1「📊 操作儀錶板」介面渲染模組
 (自 app.py 依邏輯職責拆分，維持既有自選清單同步、盤中均線多空燈號與點擊股名跳轉機制)
-版本: 202611242246
+版本: 202611272230
 """
 
 import os
@@ -16,7 +16,26 @@ from storage import (
 from data_fetcher import fetch_dashboard_watchlist_rows
 
 MODULE_NAME = "app_dashboard"
-MODULE_VERSION = "202611242246"
+MODULE_VERSION = "202611272230"
+
+_DASH_INDEX_MAP = {
+    "TWII": "^TWII", "加權": "^TWII", "大盤": "^TWII", "^TWII": "^TWII",
+    "TWOII": "^TWOII", "OTC": "^TWOII", "櫃買": "^TWOII", "^TWOII": "^TWOII",
+    "DJI": "^DJI", "道瓊": "^DJI", "^DJI": "^DJI",
+    "IXIC": "^IXIC", "COMP": "^IXIC", "那指": "^IXIC", "那斯達克": "^IXIC", "^IXIC": "^IXIC",
+    "SOX": "^SOX", "費半": "^SOX", "半導體": "^SOX", "^SOX": "^SOX",
+    "GSPC": "^GSPC", "SP500": "^GSPC", "標普500": "^GSPC", "^GSPC": "^GSPC",
+    "N225": "^N225", "NIKKEI": "^N225", "日經225": "^N225", "^N225": "^N225",
+    "KS11": "^KS11", "KOSPI": "^KS11", "韓綜": "^KS11", "^KS11": "^KS11",
+    "FTSE": "^FTSE", "富時": "^FTSE", "英國富時100": "^FTSE", "^FTSE": "^FTSE",
+    "GDAXI": "^GDAXI", "DAX": "^GDAXI", "德國DAX": "^GDAXI", "^GDAXI": "^GDAXI",
+    "FCHI": "^FCHI", "CAC40": "^FCHI", "法國CAC40": "^FCHI", "^FCHI": "^FCHI",
+}
+
+
+def _default_resolve_ticker(raw_input: str) -> str:
+    upper = str(raw_input or "").strip().upper()
+    return _DASH_INDEX_MAP.get(upper, upper)
 
 
 @st.cache_data(ttl=60, show_spinner=False)
@@ -28,7 +47,22 @@ def get_cached_dashboard_rows(codes_tuple: tuple) -> list:
     return fetch_dashboard_watchlist_rows(hist_list)
 
 
-def render_dashboard_tab(system_version: str, resolve_ticker_fn):
+def render_dashboard_tab(
+    system_version: str,
+    main_tabs=None,
+    clear_figures_cache_fn=None,
+    resolve_ticker_fn=None,
+):
+    """
+    【修訂說明 2026-11-27】【修改目的與防呆防錯原因】：
+    1. 修改目的：
+       - 對齊 `app.py` 呼叫參數簽章（新增 `main_tabs` 與 `clear_figures_cache_fn`），消除切換至「📊 操作儀錶板」或點擊「下一檔」時的 `TypeError`。
+       - 新增／刪除自選股時同步呼叫 `clear_figures_cache_fn()` 清除圖表快取，並將點擊股名跳轉鍵名同步更新為 `st.session_state.active_main_tab`。
+    2. 防呆防錯原因：若呼叫端未傳入 `resolve_ticker_fn`，自動回退使用 `_default_resolve_ticker`，維持完全向後相容。
+    """
+    resolver = resolve_ticker_fn if callable(resolve_ticker_fn) else _default_resolve_ticker
+    target_stock_tab = main_tabs[1] if (main_tabs and len(main_tabs) > 1) else "📈 個股"
+
     st.markdown(
         f"<div style='font-size:16px; font-weight:800; color:#0f172a; margin-bottom:6px;'>"
         f"📊 操作儀錶板 <span style='font-size:12px; color:#64748b; font-weight:600;'>v{system_version}（與查詢歷史清單同步）</span></div>",
@@ -47,10 +81,12 @@ def render_dashboard_tab(system_version: str, resolve_ticker_fn):
         if st.button("新增", key="btn_dash_add", use_container_width=True):
             raw_c = str(dash_code_input or "").strip().upper()
             if raw_c:
-                resolved_c = resolve_ticker_fn(raw_c)
+                resolved_c = resolver(raw_c)
                 c_name = get_stock_chinese_name(resolved_c)
                 save_stock_history(resolved_c, c_name)
                 get_cached_dashboard_rows.clear()
+                if callable(clear_figures_cache_fn):
+                    clear_figures_cache_fn()
                 st.rerun()
             else:
                 st.warning("請先輸入股票代號。")
@@ -58,7 +94,7 @@ def render_dashboard_tab(system_version: str, resolve_ticker_fn):
         if st.button("刪除", key="btn_dash_del", use_container_width=True):
             raw_c = str(dash_code_input or "").strip().upper()
             if raw_c:
-                resolved_c = resolve_ticker_fn(raw_c)
+                resolved_c = resolver(raw_c)
                 remained = remove_stocks_from_history([resolved_c])
                 local_db = f"data_{resolved_c}.db"
                 if os.path.exists(local_db):
@@ -71,6 +107,8 @@ def render_dashboard_tab(system_version: str, resolve_ticker_fn):
                     st.session_state.stock_id = next_c
                     st.session_state.promote_to_top = False
                 get_cached_dashboard_rows.clear()
+                if callable(clear_figures_cache_fn):
+                    clear_figures_cache_fn()
                 st.rerun()
             else:
                 st.warning("請輸入要刪除的股票代號。")
@@ -172,7 +210,7 @@ def render_dashboard_tab(system_version: str, resolve_ticker_fn):
             if st.button(r["name"], key=f"dash_name_jump_{r['code']}", use_container_width=True):
                 st.session_state.stock_id = r["code"]
                 st.session_state.promote_to_top = False
-                st.session_state.pending_main_tab = "📈 個股"
+                st.session_state.active_main_tab = target_stock_tab
                 st.rerun()
         row_cols[1].markdown(f"<div class='dash-cell'>{r['code']}</div>", unsafe_allow_html=True)
         row_cols[2].markdown(f"<div class='dash-cell'>{r['market']}</div>", unsafe_allow_html=True)
