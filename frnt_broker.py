@@ -1,19 +1,24 @@
 """
 frnt_broker.py - 分點統計排行榜與分點日況（含八大官股8行庫）前端 HTML/JS 渲染模組
 (自 frontend.py 依邏輯職責拆分，並將八大官股分點日況8子圖標題改為藍色字體、字體大小同統計區間天數)
-版本: 202611242236
+版本: 202611271327
 """
 
 import json
 import pandas as pd
 
 MODULE_NAME = "frnt_broker"
-MODULE_VERSION = "202611242236"
+MODULE_VERSION = "202611271327"
 
+# 【修訂說明 2026-11-27】【修改目的與防呆防錯原因】：
+# 1. 修改目的：於 `.touch-plot-box` 與圖表內層 SVG 文字（`svg,svg text`）加入 `-webkit-touch-callout:none!important` 與 `user-select:none!important`，
+#    防止手機瀏覽器長按圖表時觸發震動選取選單與進入 Plotly 內建 SVG 文字編輯輸入框。
+# 2. 防呆防錯原因：維持 `.pane-info-bar` 資訊條可正常顯示與自動折行，不影響既有觸控滑動與拖曳平移操作。
 COMMON_CSS = """<style>
 html,body{margin:0;padding:0;background:transparent;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif}
 .frame-root{position:relative;width:100%;box-sizing:border-box;padding-bottom:4px}
-.touch-plot-box{position:relative;touch-action:pan-y!important;user-select:none!important;-webkit-user-select:none!important;width:100%!important;overflow:hidden}
+.touch-plot-box{position:relative;touch-action:pan-y!important;user-select:none!important;-webkit-user-select:none!important;-webkit-touch-callout:none!important;width:100%!important;overflow:hidden}
+.touch-plot-box svg,.touch-plot-box svg text{user-select:none!important;-webkit-user-select:none!important;-webkit-touch-callout:none!important}
 .pane-info-bar{font-size:13px;color:#2c3e50;background:#f8fafc;padding:4px 6px;border-radius:4px;border:1px solid #e2e8f0;white-space:normal;line-height:1.38;overflow-x:auto}
 @media(max-width:720px){.pane-info-bar{font-size:11.5px;line-height:1.32;padding:3px 5px}}
 .val-up{color:#eb4d4b!important;font-weight:bold}.val-dn{color:#16a085!important;font-weight:bold}.tag-lbl{margin-right:4px}
