@@ -1,7 +1,7 @@
 """
 strg_history_maint.py - 查詢歷史紀錄管理與全市籌碼/分點維護清除模組
 (自 storage.py 依邏輯職責拆分，維持既有歷史清單 CRUD、雲端還原與指定基準日區間／全表精準清除防呆機制)
-版本: 202611261135
+版本: 202611270925
 """
 
 import os
@@ -25,7 +25,7 @@ from strg_cloud_names import (
 )
 
 MODULE_NAME = "strg_history_maint"
-MODULE_VERSION = "202611261135"
+MODULE_VERSION = "202611270925"
 
 
 def _recover_history_from_databases() -> list:
@@ -492,11 +492,11 @@ def clear_all_broker_data() -> str:
 
 def clear_tw_index_gov_broker_range(base_date_str: str, lookback_days: int = 1) -> str:
     """
-    【修訂說明 2026-11-25】【修改目的與防呆防錯原因】：
-    1. 修改目的：供「⚙️ 參數設定 → 全市場批次維護 → 加權指數／櫃買指數八大官股維護」之
-       「🧹 清除指定期間八大官股」按鈕呼叫，依指定「八大官股增補基準日」往前「增補交易日數」，
-       精準清除加權指數（^TWII）與櫃買指數（^TWOII）在該交易日區間內之八大官股交易資料並回寫雲端。
-    2. 防呆防錯原因：優先依各指數本地 daily_k 實際交易日序列推算精確起始日，完整保留區間外歷史八大官股資料、日線與資券資料。
+    【修訂說明 2026-11-27】【修改目的與防呆防錯原因】：
+    1. 修改目的：供「⚙️ 參數設定 → 全市場批次維護 → 加權指數／櫃買指數三大法人及八大官股日統計維護」之
+       「🧹 清除指定期間三大法人及八大官股」按鈕呼叫，精準清除 `^TWII` 與 `^TWOII` 在 `[start_date_str, b_norm]`
+       區間內之三大法人日統計（`institutional_investors`）及八大官股交易資料並回寫雲端。
+    2. 防呆防錯原因：完整保留區間外歷史資料、指數日線與資券資料。
     """
     b_norm = str(base_date_str or "").strip()[:10]
     n_days = max(1, int(lookback_days or 1))
@@ -531,6 +531,7 @@ def clear_tw_index_gov_broker_range(base_date_str: str, lookback_days: int = 1) 
 
                 affected_idx = 0
                 for sql_del in (
+                    "DELETE FROM institutional_investors WHERE date >= ? AND date <= ?",
                     "DELETE FROM gov_index_stock_daily WHERE trade_date >= ? AND trade_date <= ?",
                     "DELETE FROM broker_range_rank WHERE range_date >= ? AND range_date <= ?",
                     "DELETE FROM broker_daily_trades WHERE trade_date >= ? AND trade_date <= ?",
@@ -549,16 +550,16 @@ def clear_tw_index_gov_broker_range(base_date_str: str, lookback_days: int = 1) 
                 cleared_count += 1
                 deleted_rows_total += affected_idx
         except Exception as e:
-            print(f"[Storage] 清除 {idx_code} 指定期間八大官股資料失敗: {e}")
+            print(f"[Storage] 清除 {idx_code} 指定期間三大法人及八大官股資料失敗: {e}")
 
     return (
-        f"已完成清除基準日 {b_norm} 往前 {n_days} 個交易日區間之八大官股交易資料："
+        f"已完成清除基準日 {b_norm} 往前 {n_days} 個交易日區間之三大法人及八大官股日統計資料："
         f"共更新 {cleared_count} 檔指數資料庫（刪除 {deleted_rows_total} 筆紀錄，區間外歷史資料、日線與資券資料完整保留）。"
     )
 
 
 def clear_tw_index_gov_broker_data() -> str:
-    """僅清除加權指數（^TWII）與櫃買指數（^TWOII）本地與雲端資料庫中的八大官股交易資料並回寫雲端。"""
+    """清除加權指數（^TWII）與櫃買指數（^TWOII）本地與雲端資料庫中的三大法人日統計及八大官股交易資料並回寫雲端。"""
     cleared_count = 0
     for idx_code in ("^TWII", "^TWOII"):
         db_path = os.path.join(STORAGE_DIR, f"data_{idx_code}.db")
@@ -570,7 +571,13 @@ def clear_tw_index_gov_broker_data() -> str:
         try:
             with sqlite3.connect(db_path) as conn:
                 cur = conn.cursor()
-                for tbl in ("gov_index_stock_daily", "broker_range_rank", "broker_daily_trades", "broker_focus_daily_series"):
+                for tbl in (
+                    "institutional_investors",
+                    "gov_index_stock_daily",
+                    "broker_range_rank",
+                    "broker_daily_trades",
+                    "broker_focus_daily_series",
+                ):
                     try:
                         cur.execute(f"DELETE FROM {tbl}")
                     except Exception:
@@ -579,7 +586,7 @@ def clear_tw_index_gov_broker_data() -> str:
             _do_sync_db_push(idx_code)
             cleared_count += 1
         except Exception as e:
-            print(f"[Storage] 清除 {idx_code} 八大官股資料失敗: {e}")
+            print(f"[Storage] 清除 {idx_code} 三大法人及八大官股資料失敗: {e}")
 
-    return f"已成功清除加權指數與櫃買指數八大官股交易資料（共更新 {cleared_count} 檔指數資料庫，日線與資券資料完整保留）。"
+    return f"已成功清除加權指數與櫃買指數三大法人及八大官股日統計資料（共更新 {cleared_count} 檔指數資料庫，日線與資券資料完整保留）。"
 ## EOF strg_history_maint.py
