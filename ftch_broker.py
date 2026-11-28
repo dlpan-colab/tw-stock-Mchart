@@ -1,9 +1,8 @@
 """
 ftch_broker.py - 富邦券商分點進出排行、逐日明細與全市場分點批次增補模組
 (自 data_fetcher.py 依邏輯職責拆分，維持既有 16:00 更新時機點對齊、最後更新日規則校準與批次增補機制)
-版本: 202611281725
+版本: 202611281745
 """
-
 import re
 import gc
 import time
@@ -12,7 +11,6 @@ import pandas as pd
 from bs4 import BeautifulSoup
 from datetime import datetime, timedelta
 from urllib.parse import urljoin, urlparse, parse_qs, urlencode, urlunparse
-
 from storage import (
     StockChipStorage,
     load_stock_history,
@@ -25,7 +23,7 @@ from strg_cloud_names import is_cloud_db_pull_failed
 from ftch_kline_chip import fetch_stock_daily_k
 
 MODULE_NAME = "ftch_broker"
-MODULE_VERSION = "202611281725"
+MODULE_VERSION = "202611281745"
 
 MDJ_BASE_DOMAIN = "https://fubon-ebrokerdj.fbs.com.tw"
 MDJ_HEADERS = {
@@ -36,8 +34,9 @@ MDJ_HEADERS = {
 }
 
 GOV_BROKER_PREFIXES = (
-    "合庫", "合作金庫", "土銀", "土地銀行", "台銀", "臺銀", "台灣銀行", "臺灣銀行",
-    "台企", "臺企", "台灣企銀", "臺灣企銀", "彰銀", "彰化銀行", "第一金", "兆豐", "華南永昌"
+    "合庫", "合作金庫", "土銀", "土地銀行", "台銀", "臺銀",
+    "台灣銀行", "臺灣銀行", "台企", "臺企", "台灣企銀", "臺灣企銀",
+    "彰銀", "彰化銀行", "第一金", "兆豐", "華南永昌"
 )
 
 
@@ -142,17 +141,14 @@ def _parse_fubon_side_block(cells, a_tags, page_url: str, stock_code: str, start
         return None
     if re.fullmatch(r'[\d,.\-+%]+', b_name):
         return None
-
     buy_v = abs(_parse_int_sheets(cells[1]))
     sell_v = abs(_parse_int_sheets(cells[2]))
     raw_net = _parse_int_sheets(cells[3])
     abs_net = abs(raw_net) if raw_net != 0 else abs(buy_v - sell_v)
     if abs_net == 0 and buy_v == 0 and sell_v == 0:
         return None
-
     net_v = abs_net if is_buy_side else -abs_net
     ratio_v = cells[4].strip() if len(cells) >= 5 else "-"
-
     detail_url = ""
     for a in a_tags:
         if a.get_text(strip=True) == b_name or b_name in a.get_text(strip=True):
@@ -161,7 +157,6 @@ def _parse_fubon_side_block(cells, a_tags, page_url: str, stock_code: str, start
                 break
     if not detail_url and a_tags:
         detail_url = _resolve_mdj_broker_detail_url(a_tags[0].get("href", ""), page_url, stock_code, start_date, end_date)
-
     return {
         "分點名稱": b_name,
         "體系": _classify_broker_system(b_name),
@@ -179,14 +174,12 @@ def _extract_fubon_last_update_info(soup: BeautifulSoup, ref_end_date: str) -> t
         return "", False
     full_txt = re.sub(r'\s+', ' ', soup.get_text(" ", strip=True))
     has_no_data_msg = bool(re.search(r'查無.{0,24}券商分點.{0,8}進出明細', full_txt))
-
     ref_year = datetime.now().year
     ref_month = datetime.now().month
     if ref_end_date and len(ref_end_date) >= 7 and ref_end_date[:4].isdigit():
         ref_year = int(ref_end_date[:4])
         if ref_end_date[5:7].isdigit():
             ref_month = int(ref_end_date[5:7])
-
     last_update_iso = ""
     m_ymd = re.search(r'最後更新日[：:\s]*(\d{3,4})[/-](\d{1,2})[/-](\d{1,2})', full_txt)
     if m_ymd:
@@ -198,7 +191,6 @@ def _extract_fubon_last_update_info(soup: BeautifulSoup, ref_end_date: str) -> t
             da_n = int(m_md.group(2))
             yr_n = ref_year - 1 if (ref_month == 1 and mo_n == 12) else ref_year
             last_update_iso = f"{yr_n:04d}-{mo_n:02d}-{da_n:02d}"
-
     return last_update_iso, has_no_data_msg
 
 
@@ -207,14 +199,12 @@ def fetch_stock_broker_range_ranking(pure_code: str, start_date: str, end_date: 
     code = str(pure_code or "").strip().upper()
     if not code or code.startswith("^") or not is_tw_stock_or_etf(code):
         return pd.DataFrame(), pd.DataFrame()
-
     s_norm = _normalize_mdj_date(start_date) or str(start_date).strip()
     e_norm = _normalize_mdj_date(end_date) or str(end_date).strip()
     candidate_urls = [
         f"{MDJ_BASE_DOMAIN}/z/zc/zco/zco.djhtm?a={code}&e={s_norm}&f={e_norm}",
         f"{MDJ_BASE_DOMAIN}/z/zc/zco/zco.djhtm?a={code}&c={s_norm}&d={e_norm}",
     ]
-
     buy_rows, sell_rows = [], []
     for url in candidate_urls:
         html = _fetch_mdj_html(url, timeout=8)
@@ -241,7 +231,6 @@ def fetch_stock_broker_range_ranking(pure_code: str, start_date: str, end_date: 
                 tds = tr.find_all(["td", "th"])
                 cells = [re.sub(r'\s+', ' ', td.get_text(strip=True)) for td in tds]
                 row_str = "".join(cells)
-
                 if len(cells) >= 10:
                     left_tds = tds[:5]
                     right_tds = tds[5:10]
@@ -261,7 +250,6 @@ def fetch_stock_broker_range_ranking(pure_code: str, start_date: str, end_date: 
                 if "賣超券商" in row_str or ("賣超" in row_str and "買超" not in row_str and len(cells) <= 6):
                     table_mode = "SELL"
                     continue
-
                 if len(cells) >= 5 and table_mode in ("BUY", "SELL"):
                     row_links = tr.find_all("a", href=True)
                     rec = _parse_fubon_side_block(
@@ -272,7 +260,6 @@ def fetch_stock_broker_range_ranking(pure_code: str, start_date: str, end_date: 
                             parsed_buy.append(rec)
                         else:
                             parsed_sell.append(rec)
-
         if parsed_buy or parsed_sell:
             buy_rows = parsed_buy
             sell_rows = parsed_sell
@@ -298,7 +285,6 @@ def fetch_single_broker_daily_series(detail_url: str, start_date: str, end_date:
     empty_df = pd.DataFrame(columns=["日期", "買進(張)", "賣出(張)", "買賣超(張)"])
     if not detail_url:
         return empty_df
-
     s_norm = _normalize_mdj_date(start_date) or str(start_date).strip()
     e_norm = _normalize_mdj_date(end_date) or str(end_date).strip()
     parsed = urlparse(detail_url)
@@ -307,11 +293,9 @@ def fetch_single_broker_daily_series(detail_url: str, start_date: str, end_date:
     qs["d"] = [s_norm]
     qs["e"] = [e_norm]
     target_url = urlunparse((parsed.scheme, parsed.netloc, parsed.path, parsed.params, urlencode(qs, doseq=True), parsed.fragment))
-
     html = _fetch_mdj_html(target_url, timeout=8)
     if not html:
         return empty_df
-
     soup = BeautifulSoup(html, "html.parser")
     daily_records = []
     for tr in soup.find_all("tr"):
@@ -336,10 +320,8 @@ def fetch_single_broker_daily_series(detail_url: str, start_date: str, end_date:
             "賣出(張)": sell_v,
             "買賣超(張)": net_v
         })
-
     if not daily_records:
         return empty_df
-
     df_res = pd.DataFrame(daily_records).drop_duplicates(subset=["日期"]).sort_values("日期").reset_index(drop=True)
     return df_res
 
@@ -361,10 +343,10 @@ def _series_reaches_target_date(series_list: list, target_date_str: str) -> bool
 def _is_focus_series_complete(series_list: list, expected_start_str: str, target_date_str: str) -> bool:
     """
     【修訂說明 2026-11-28】【修改目的與防呆防錯原因】：
-    1. 修改目的：移除原先 `min(d_arr) < expected_start_str` 排除條件，避免先前已儲存的 11 月份完整日況序列
-       因起始日早於 10 日視窗起點（如 10/30 早於 11/11）而被誤判為不完整並重複抓取。
-    2. 防呆防錯原因：只要至少 1 筆有效分點序列具備非空 `dates` 與 `net_values`（長度一致且 `>= 1`），
-       即認定該視窗日況序列已存在，直接略過不盲目重抓。
+    1. 修改目的：修正 `strg_broker_mixin.py`（`load_all_broker_focus_daily_series`）回傳字典鍵名為 `"nets"`，
+       而原先此函式誤讀 `"net_values"` 導致永遠為空陣列、永遠回傳 `False` 並重複重抓所有已存月份的重大缺陷。
+    2. 防呆防錯原因：同時相容讀取 `"nets"` 與 `"net_values"`，只要至少 1 筆有效分點序列具備非空 `dates` 與買賣超序列（長度一致且 `>= 1`），
+       即確認該視窗分點日況序列已存在於資料庫，直接略過不重抓。
     """
     if not isinstance(series_list, list) or not series_list:
         return False
@@ -373,7 +355,7 @@ def _is_focus_series_complete(series_list: list, expected_start_str: str, target
         if not isinstance(item, dict):
             continue
         d_arr = [str(x)[:10] for x in (item.get("dates") or []) if x]
-        v_arr = item.get("net_values") or []
+        v_arr = item.get("nets") if item.get("nets") is not None else (item.get("net_values") or [])
         if len(d_arr) >= 1 and len(d_arr) == len(v_arr):
             valid_cnt += 1
     return valid_cnt >= 1
@@ -425,6 +407,7 @@ def ensure_focus_date_broker_daily_series(
         for w in missing_windows
     }
     earliest_w_start = min(win_starts.values())
+
     rank_dfs = {}
     for w in missing_windows:
         df_b, df_s = fetch_stock_broker_range_ranking(code, win_starts[w], f_date)
@@ -485,10 +468,9 @@ def batch_sync_all_stocks_brokers(
 ) -> str:
     """
     【修訂說明 2026-11-28】【修改目的與防呆防錯原因】：
-    1. 修改目的：
-       - 僅在增補基準日當天（`t_idx == anchor_pos`）且已過 16:00（`day_ready`）時檢查資料是否已到達基準日當天；
-       - 過去所有歷史交易日（`t_idx < anchor_pos`）只要資料庫已存有有效近 10／20 日分點日況序列（`w10_ok`、`w20_ok`），
-         一律視為已完成並直接略過，絕不再因前 5 名分點當日無進出（買賣超為 0）而重複重抓。
+    1. 修改目的：搭配修正後之 `_is_focus_series_complete`（正確讀取 `strg_broker_mixin` 回傳之 `"nets"` 鍵），
+       對資料庫中已存有有效近 10／20 日分點日況序列之交易日（`w10_ok` 且 `w20_ok`）直接略過（耗時 < 1ms 零網路請求），
+       不再重複抓已存在的月份（如 9～11 月），並精準接續補齊尚未建立之歷史月份（如 8 月及更早日期）。
     2. 防呆防錯原因：已同時具備完整統計快照與日況序列之交易日自動略過不重抓；維持雲端庫下載失敗防覆蓋保護。
     """
     hist_list = load_stock_history()
@@ -567,6 +549,7 @@ def batch_sync_all_stocks_brokers(
         anchor_pos = valid_pos[-1]
         start_pos = max(0, anchor_pos - n_days + 1)
         target_indices = list(range(anchor_pos, start_pos - 1, -1))
+
         all_focus_map = storage.load_all_broker_focus_daily_series()
 
         pending_bundles = []
@@ -577,7 +560,8 @@ def batch_sync_all_stocks_brokers(
             end_d_str = trade_dates[t_idx]
             existing_bundle = storage.load_broker_range_rank(end_d_str)
             has_rank_snapshot = isinstance(existing_bundle, dict) and all(
-                isinstance(existing_bundle.get(f"w{w}"), dict) and (existing_bundle[f"w{w}"].get("buy") or existing_bundle[f"w{w}"].get("sell"))
+                isinstance(existing_bundle.get(f"w{w}"), dict)
+                and (existing_bundle[f"w{w}"].get("buy") or existing_bundle[f"w{w}"].get("sell"))
                 for w in (1, 10, 20)
             )
 
@@ -586,22 +570,18 @@ def batch_sync_all_stocks_brokers(
                 10: trade_dates[max(0, t_idx - 10 + 1)],
                 20: trade_dates[max(0, t_idx - 20 + 1)],
             }
+
             day_focus_map = all_focus_map.get(end_d_str, {})
             w10_b = day_focus_map.get("w10", {}).get("top5_buy_series") or []
             w10_s = day_focus_map.get("w10", {}).get("top5_sell_series") or []
             w20_b = day_focus_map.get("w20", {}).get("top5_buy_series") or []
             w20_s = day_focus_map.get("w20", {}).get("top5_sell_series") or []
-            is_anchor_day = (t_idx == anchor_pos)
-            day_ready = is_broker_daily_data_ready_for_date(end_d_str)
 
-            w10_ok = _is_focus_series_complete(w10_b, win_starts[10], end_d_str) or _is_focus_series_complete(w10_s, win_starts[10], end_d_str)
-            w20_ok = _is_focus_series_complete(w20_b, win_starts[20], end_d_str) or _is_focus_series_complete(w20_s, win_starts[20], end_d_str)
-            need_w10 = (not w10_ok) or (
-                is_anchor_day and day_ready and not _series_reaches_target_date(w10_b, end_d_str) and not _series_reaches_target_date(w10_s, end_d_str)
-            )
-            need_w20 = (not w20_ok) or (
-                is_anchor_day and day_ready and not _series_reaches_target_date(w20_b, end_d_str) and not _series_reaches_target_date(w20_s, end_d_str)
-            )
+            w10_ok = _is_focus_series_complete(w10_b, win_starts[10], end_d_str) and _is_focus_series_complete(w10_s, win_starts[10], end_d_str)
+            w20_ok = _is_focus_series_complete(w20_b, win_starts[20], end_d_str) and _is_focus_series_complete(w20_s, win_starts[20], end_d_str)
+
+            need_w10 = not w10_ok
+            need_w20 = not w20_ok
 
             if has_rank_snapshot and not need_w10 and not need_w20:
                 skipped_days_total += 1
@@ -612,7 +592,9 @@ def batch_sync_all_stocks_brokers(
                 mode_lbl = "補齊分點日況" if has_rank_snapshot else "1/10/20日分點統計與日況"
                 progress_callback(idx_s, tot_n, code, c_name, f"擷取 {end_d_str}（{mode_lbl}）...")
 
-            windows_to_fetch = (1, 10, 20) if not has_rank_snapshot else tuple(w for w, flag in ((10, need_w10), (20, need_w20)) if flag)
+            windows_to_fetch = (1, 10, 20) if not has_rank_snapshot else tuple(
+                w for w, flag in ((10, need_w10), (20, need_w20)) if flag
+            )
             rank_dfs = {}
             for w in windows_to_fetch:
                 df_b, df_s = fetch_stock_broker_range_ranking(code, win_starts[w], end_d_str)
@@ -637,7 +619,6 @@ def batch_sync_all_stocks_brokers(
                             "buy": b_recs,
                             "sell": s_recs,
                         }
-
                 if has_any:
                     pending_bundles.append((end_d_str, day_bundle))
                     consecutive_empty_days = 0
@@ -646,7 +627,10 @@ def batch_sync_all_stocks_brokers(
                     # 富邦歷史分點保存上限約半年（120～130交易日），連續 5 日無資料即判定已達歷史起點並停止回溯
                     if consecutive_empty_days >= 5:
                         if progress_callback:
-                            progress_callback(idx_s, tot_n, code, c_name, f"已達富邦歷史保存起點（{end_d_str} 連續5日無資料），停止回溯")
+                            progress_callback(
+                                idx_s, tot_n, code, c_name,
+                                f"已達富邦歷史保存起點（{end_d_str} 連續5日無資料），停止回溯"
+                            )
                         break
 
             win_pairs = []
@@ -672,7 +656,10 @@ def batch_sync_all_stocks_brokers(
                                 continue
                             if b_name not in broker_df_cache:
                                 if progress_callback:
-                                    progress_callback(idx_s, tot_n, code, c_name, f"補抓 {end_d_str} 分點日況：{b_name}...")
+                                    progress_callback(
+                                        idx_s, tot_n, code, c_name,
+                                        f"補抓 {end_d_str} 分點日況：{b_name}..."
+                                    )
                                 df_fresh = fetch_single_broker_daily_series(d_url, earliest_w_start, end_d_str)
                                 broker_df_cache[b_name] = df_fresh
                                 if df_fresh is not None and not df_fresh.empty:
@@ -719,4 +706,5 @@ def batch_sync_all_stocks_brokers(
     if pull_failed_stocks:
         summary += f" ⚠️ 以下 {len(pull_failed_stocks)} 檔雲端庫下載失敗已啟動防覆蓋保護略過：{', '.join(pull_failed_stocks)}。"
     return summary
+
 ## EOF ftch_broker.py
