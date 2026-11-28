@@ -1,12 +1,13 @@
 """
 app_stock_view.py - 主頁籤 2「📈 個股」介面渲染模組
 (自 app.py 依邏輯職責拆分，維持上下雙複合選單、共用主圖與四大子頁籤互動機制，並整合四鍵同列與獨立代號輸入框)
-版本: 202611270810
+版本: 202611281625
 """
 
 import re
 import streamlit as st
 import streamlit.components.v1 as components
+
 import cloud_sync
 from storage import (
     load_stock_history,
@@ -26,16 +27,16 @@ from frontend import (
     get_broker_daily_tab_html,
 )
 from app_broker_cache import get_cached_broker_payload
+from ftch_broker import ensure_focus_date_broker_daily_series
 
 MODULE_NAME = "app_stock_view"
-MODULE_VERSION = "202611270810"
+MODULE_VERSION = "202611281625"
 
 
 def _on_direct_code_input_change():
     """
     【修訂說明 2026-11-26】【修改目的與防呆防錯原因】：
-    1. 修改目的：獨立 `st.text_input` 輸入股票或指數代號按 Enter 送出時，自動轉大寫並透過 `app.resolve_ticker_code`
-       正規化後切換 `st.session_state.stock_id`，並設定 `clear_direct_code_input = True` 供下一輪渲染前安全清空輸入框。
+    1. 修改目的：獨立 `st.text_input` 輸入股票或指數代號按 Enter 送出時，自動轉大寫並透過 `app.resolve_ticker_code` 正規化後切換 `st.session_state.stock_id`，並設定 `clear_direct_code_input = True` 供下一輪渲染前安全清空輸入框。
     2. 防呆防錯原因：嚴禁於 `on_change` 回呼內直接改寫已綁定之 `st.session_state.direct_stock_code_input`，
        避免觸發 `StreamlitWidgetAlreadyInstantiatedError` 導致切換標的失敗。
     """
@@ -49,7 +50,7 @@ def _on_direct_code_input_change():
         st.session_state.stock_id = new_code
         st.session_state.promote_to_top = True
         st.session_state.confirm_clear_all = False
-    st.session_state.clear_direct_code_input = True
+        st.session_state.clear_direct_code_input = True
 
 
 def render_stock_tab(
@@ -61,10 +62,11 @@ def render_stock_tab(
     get_figures_fn,
 ):
     """
-    【修訂說明 2026-11-27】【修改目的與防呆防錯原因】：
-    1. 修改目的：調高「📊 指標」（`tech_h + 175`）與「💰 籌碼」（`chip_h + 235`）之 `components.html` iframe 預留高度，
-       解決手機窄螢幕下第一列資訊條（如「資券[千張]...」）自動折成 3 行後將第二列資訊條（「法人持股...」）擠出下緣截斷的問題。
-    2. 防呆防錯原因：僅調整兩處 `components.html(..., height=...)` 預留數值，其餘互動邏輯、快取參數與版面結構 100% 維持不變。
+    【修訂說明 2026-11-28】【修改目的與防呆防錯原因】：
+    1. 修改目的：在個股載入分點資料前，若目前關注交易日（如 2026-06-04）尚未具備近 10／20 日分點日況逐日明細，
+       自動呼叫 `ensure_focus_date_broker_daily_series` 按需補抓並清除 `get_cached_broker_payload` 快取，
+       確保點擊任一歷史交易日切換至「📈 分點日況」時皆能正常顯示柱狀圖（且寫入資料庫後第二次點選免重抓）。
+    2. 防呆防錯原因：僅針對個股且缺少該關注日日況明細時執行補抓，保留既有 iframe 高度設定、四鍵同列與雙複合選單邏輯。
     """
     auth_st = cloud_sync.get_auth_status()
     status_icon = "🟡" if auth_st == 2 else ("🔵" if auth_st == 1 else "⚪")
@@ -146,7 +148,6 @@ def render_stock_tab(
     # 第 2 列：左側「獨立代號輸入框（防 Android 鍵盤游標反轉）」＋ 右側「清除查詢個股紀錄」
     if st.session_state.pop("clear_direct_code_input", False):
         st.session_state.direct_stock_code_input = ""
-
     with st.container():
         st.markdown("<div class='settings-btn-row-anchor'></div>", unsafe_allow_html=True)
         col_code_box, col_clr_hist = st.columns([1, 1])
@@ -314,10 +315,20 @@ def render_stock_tab(
 
             spinner_txt = (
                 "正在載入加權/櫃買八大官股買賣超統計與日況..."
-                if is_gov_idx
-                else "正在載入雲端與最新券商分點統計與逐日進出序列..."
+                if is_gov_idx else
+                "正在載入雲端與最新券商分點統計與逐日進出序列..."
             )
             with st.spinner(spinner_txt):
+                if not is_gov_idx and end_date_label:
+                    did_backfill_daily = ensure_focus_date_broker_daily_series(
+                        pure_code=pure_ticker,
+                        focus_date_str=end_date_label,
+                        trade_dates_list=list(trade_dates_tuple),
+                        include_60d=include_60d,
+                    )
+                    if did_backfill_daily:
+                        get_cached_broker_payload.clear()
+
                 broker_payload = get_cached_broker_payload(
                     stock_id=pure_ticker,
                     trade_dates_tuple=trade_dates_tuple,
@@ -377,6 +388,7 @@ def render_stock_tab(
         except Exception:
             pass
         focus_name_display = btm_name_res if (btm_name_res and btm_name_res != pure_ticker) else pure_ticker
+
         st.markdown(
             f"<div style='font-size:13.5px; font-weight:700; color:#1e3a8a; margin-bottom:6px;'>"
             f"目前關注目標：{focus_name_display} {pure_ticker} ({focus_mkt})</div>",
