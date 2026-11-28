@@ -1,7 +1,7 @@
 """
 ftch_broker.py - 富邦券商分點進出排行、逐日明細與全市場分點批次增補模組
 (自 data_fetcher.py 依邏輯職責拆分，維持既有 16:00 更新時機點對齊、最後更新日規則校準與批次增補機制)
-版本: 202611281705
+版本: 202611281725
 """
 
 import re
@@ -25,7 +25,7 @@ from strg_cloud_names import is_cloud_db_pull_failed
 from ftch_kline_chip import fetch_stock_daily_k
 
 MODULE_NAME = "ftch_broker"
-MODULE_VERSION = "202611281705"
+MODULE_VERSION = "202611281725"
 
 MDJ_BASE_DOMAIN = "https://fubon-ebrokerdj.fbs.com.tw"
 MDJ_HEADERS = {
@@ -486,9 +486,9 @@ def batch_sync_all_stocks_brokers(
     """
     【修訂說明 2026-11-28】【修改目的與防呆防錯原因】：
     1. 修改目的：
-       - 使用 `_is_focus_series_complete` 檢核每個交易日之近 10／20 日分點日況序列是否已存在，
-         既可正確跳過 11 月份已存在的完整日況（不盲目重抓），也能自動補抓 10/29 以前尚未建立之歷史日況序列。
-       - 當某交易日統計快照（`has_rank_snapshot`）已存在、僅缺分點日況明細時，僅抓 w10／w20 排行連結與明細並更新統計進度計數。
+       - 僅在增補基準日當天（`t_idx == anchor_pos`）且已過 16:00（`day_ready`）時檢查資料是否已到達基準日當天；
+       - 過去所有歷史交易日（`t_idx < anchor_pos`）只要資料庫已存有有效近 10／20 日分點日況序列（`w10_ok`、`w20_ok`），
+         一律視為已完成並直接略過，絕不再因前 5 名分點當日無進出（買賣超為 0）而重複重抓。
     2. 防呆防錯原因：已同時具備完整統計快照與日況序列之交易日自動略過不重抓；維持雲端庫下載失敗防覆蓋保護。
     """
     hist_list = load_stock_history()
@@ -591,15 +591,16 @@ def batch_sync_all_stocks_brokers(
             w10_s = day_focus_map.get("w10", {}).get("top5_sell_series") or []
             w20_b = day_focus_map.get("w20", {}).get("top5_buy_series") or []
             w20_s = day_focus_map.get("w20", {}).get("top5_sell_series") or []
+            is_anchor_day = (t_idx == anchor_pos)
             day_ready = is_broker_daily_data_ready_for_date(end_d_str)
 
             w10_ok = _is_focus_series_complete(w10_b, win_starts[10], end_d_str) or _is_focus_series_complete(w10_s, win_starts[10], end_d_str)
             w20_ok = _is_focus_series_complete(w20_b, win_starts[20], end_d_str) or _is_focus_series_complete(w20_s, win_starts[20], end_d_str)
             need_w10 = (not w10_ok) or (
-                day_ready and not _series_reaches_target_date(w10_b, end_d_str) and not _series_reaches_target_date(w10_s, end_d_str)
+                is_anchor_day and day_ready and not _series_reaches_target_date(w10_b, end_d_str) and not _series_reaches_target_date(w10_s, end_d_str)
             )
             need_w20 = (not w20_ok) or (
-                day_ready and not _series_reaches_target_date(w20_b, end_d_str) and not _series_reaches_target_date(w20_s, end_d_str)
+                is_anchor_day and day_ready and not _series_reaches_target_date(w20_b, end_d_str) and not _series_reaches_target_date(w20_s, end_d_str)
             )
 
             if has_rank_snapshot and not need_w10 and not need_w20:
