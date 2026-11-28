@@ -1,7 +1,7 @@
 """
 ftch_broker.py - 富邦券商分點進出排行、逐日明細與全市場分點批次增補模組
 (自 data_fetcher.py 依邏輯職責拆分，維持既有 16:00 更新時機點對齊、最後更新日規則校準與批次增補機制)
-版本: 202611281645
+版本: 202611281705
 """
 
 import re
@@ -25,7 +25,7 @@ from strg_cloud_names import is_cloud_db_pull_failed
 from ftch_kline_chip import fetch_stock_daily_k
 
 MODULE_NAME = "ftch_broker"
-MODULE_VERSION = "202611281645"
+MODULE_VERSION = "202611281705"
 
 MDJ_BASE_DOMAIN = "https://fubon-ebrokerdj.fbs.com.tw"
 MDJ_HEADERS = {
@@ -361,9 +361,10 @@ def _series_reaches_target_date(series_list: list, target_date_str: str) -> bool
 def _is_focus_series_complete(series_list: list, expected_start_str: str, target_date_str: str) -> bool:
     """
     【修訂說明 2026-11-28】【修改目的與防呆防錯原因】：
-    1. 修改目的：嚴格檢核關注日之分點日況逐日序列（`top5_buy_series` / `top5_sell_series`）是否具備有效日期陣列，
-       防止先前僅寫入空陣列佔位或殘缺區間序列時被誤判為「已完整存在」而略過。
-    2. 防呆防錯原因：至少需有 1 筆有效分點序列且包含 `dates` 與 `net_values`（長度一致且 `>= 1`），且日期落在區間內。
+    1. 修改目的：移除原先 `min(d_arr) < expected_start_str` 排除條件，避免先前已儲存的 11 月份完整日況序列
+       因起始日早於 10 日視窗起點（如 10/30 早於 11/11）而被誤判為不完整並重複抓取。
+    2. 防呆防錯原因：只要至少 1 筆有效分點序列具備非空 `dates` 與 `net_values`（長度一致且 `>= 1`），
+       即認定該視窗日況序列已存在，直接略過不盲目重抓。
     """
     if not isinstance(series_list, list) or not series_list:
         return False
@@ -374,10 +375,6 @@ def _is_focus_series_complete(series_list: list, expected_start_str: str, target
         d_arr = [str(x)[:10] for x in (item.get("dates") or []) if x]
         v_arr = item.get("net_values") or []
         if len(d_arr) >= 1 and len(d_arr) == len(v_arr):
-            if expected_start_str and min(d_arr) < expected_start_str:
-                continue
-            if target_date_str and max(d_arr) > target_date_str:
-                continue
             valid_cnt += 1
     return valid_cnt >= 1
 
@@ -489,10 +486,10 @@ def batch_sync_all_stocks_brokers(
     """
     【修訂說明 2026-11-28】【修改目的與防呆防錯原因】：
     1. 修改目的：
-       - 使用 `_is_focus_series_complete` 嚴格檢核每個交易日之近 10／20 日分點日況序列是否完整，
-         修正先前因舊版空陣列佔位或殘缺資料導致批次增補誤判「已存在完整快照」而全部略過（補齊 0 檔）的問題。
+       - 使用 `_is_focus_series_complete` 檢核每個交易日之近 10／20 日分點日況序列是否已存在，
+         既可正確跳過 11 月份已存在的完整日況（不盲目重抓），也能自動補抓 10/29 以前尚未建立之歷史日況序列。
        - 當某交易日統計快照（`has_rank_snapshot`）已存在、僅缺分點日況明細時，僅抓 w10／w20 排行連結與明細並更新統計進度計數。
-    2. 防呆防錯原因：已同時具備完整統計快照與完整日況序列之交易日自動略過不重抓；維持雲端庫下載失敗防覆蓋保護。
+    2. 防呆防錯原因：已同時具備完整統計快照與日況序列之交易日自動略過不重抓；維持雲端庫下載失敗防覆蓋保護。
     """
     hist_list = load_stock_history()
     stock_items = []
