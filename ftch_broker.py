@@ -1,7 +1,7 @@
 """
 ftch_broker.py - 富邦券商分點進出排行、逐日明細與全市場分點批次增補模組
 (自 data_fetcher.py 依邏輯職責拆分，維持既有 16:00 更新時機點對齊、最後更新日規則校準與批次增補機制)
-版本: 202611281620
+版本: 202611281645
 """
 
 import re
@@ -25,7 +25,7 @@ from strg_cloud_names import is_cloud_db_pull_failed
 from ftch_kline_chip import fetch_stock_daily_k
 
 MODULE_NAME = "ftch_broker"
-MODULE_VERSION = "202611281620"
+MODULE_VERSION = "202611281645"
 
 MDJ_BASE_DOMAIN = "https://fubon-ebrokerdj.fbs.com.tw"
 MDJ_HEADERS = {
@@ -358,6 +358,30 @@ def _series_reaches_target_date(series_list: list, target_date_str: str) -> bool
     return False
 
 
+def _is_focus_series_complete(series_list: list, expected_start_str: str, target_date_str: str) -> bool:
+    """
+    【修訂說明 2026-11-28】【修改目的與防呆防錯原因】：
+    1. 修改目的：嚴格檢核關注日之分點日況逐日序列（`top5_buy_series` / `top5_sell_series`）是否具備有效日期陣列，
+       防止先前僅寫入空陣列佔位或殘缺區間序列時被誤判為「已完整存在」而略過。
+    2. 防呆防錯原因：至少需有 1 筆有效分點序列且包含 `dates` 與 `net_values`（長度一致且 `>= 1`），且日期落在區間內。
+    """
+    if not isinstance(series_list, list) or not series_list:
+        return False
+    valid_cnt = 0
+    for item in series_list:
+        if not isinstance(item, dict):
+            continue
+        d_arr = [str(x)[:10] for x in (item.get("dates") or []) if x]
+        v_arr = item.get("net_values") or []
+        if len(d_arr) >= 1 and len(d_arr) == len(v_arr):
+            if expected_start_str and min(d_arr) < expected_start_str:
+                continue
+            if target_date_str and max(d_arr) > target_date_str:
+                continue
+            valid_cnt += 1
+    return valid_cnt >= 1
+
+
 def ensure_focus_date_broker_daily_series(
     pure_code: str,
     focus_date_str: str,
@@ -369,9 +393,7 @@ def ensure_focus_date_broker_daily_series(
     1. 修改目的：解決歷史交易日（如 2026-06-04）已有「分點統計（10/20日排行）」卻尚未抓入「分點日況逐日明細」時，
        切換至「📈 分點日況」無資料的問題。當偵測到指定關注日缺少近 10／20 日（或 60 日）前 5 名買賣超分點逐日明細時，
        即時依對應區間（`[s_start, focus_date_str]`）向富邦 `zco0.djhtm` 補抓並存入本地 SQLite 與同步雲端。
-    2. 防呆防錯原因：
-       - 僅在本地尚無該關注日對應視窗之明細時觸發網路補抓；一旦寫入資料庫，後續重複點擊同一關注日皆直接讀取快取秒開。
-       - 單一分點網址查詢統一收斂為 `earliest_w_start ~ focus_date_str` 一次請求、依視窗切片寫入，減少 HTTP 請求次數。
+    2. 防呆防錯原因：使用 `_is_focus_series_complete` 檢核，避免空陣列佔位誤判；一旦寫入資料庫，後續重複點擊秒開。
     """
     code = str(pure_code or "").strip().upper()
     f_date = _normalize_mdj_date(focus_date_str) or str(focus_date_str or "").strip()[:10]
@@ -389,10 +411,13 @@ def ensure_focus_date_broker_daily_series(
     missing_windows = []
     for w in target_windows:
         w_key = f"w{w}"
+        w_start = trade_dates_list[max(0, t_idx - w + 1)]
         w_obj = day_focus.get(w_key, {}) if isinstance(day_focus, dict) else {}
         b_ser = w_obj.get("top5_buy_series") or []
         s_ser = w_obj.get("top5_sell_series") or []
-        if not b_ser and not s_ser:
+        has_b = _is_focus_series_complete(b_ser, w_start, f_date)
+        has_s = _is_focus_series_complete(s_ser, w_start, f_date)
+        if not has_b and not has_s:
             missing_windows.append(w)
 
     if not missing_windows:
@@ -464,11 +489,10 @@ def batch_sync_all_stocks_brokers(
     """
     【修訂說明 2026-11-28】【修改目的與防呆防錯原因】：
     1. 修改目的：
-       - 放寬批次增補分點日況明細（`broker_focus_daily`）之近 20 日人為限制，使回溯範圍內所有交易日（如 120～125 日）
-         皆可一併補齊近 10／20 日前 5 名買賣超分點之逐日買賣超明細，避免歷史交易日有分點統計卻無分點日況。
-       - 維持於建立 `StockChipStorage(code)` 前先呼叫 `sync_db_pull(code)`、觸發 `is_cloud_db_pull_failed(code)` 防覆蓋略過、
-         以及連續 5 日無資料自動停止回溯之既有保護機制。
-    2. 防呆防錯原因：已存在完整統計快照與日況序列之交易日自動略過不重複抓取；僅在有新增資料時才執行一次 `sync_db_push(code)`。
+       - 使用 `_is_focus_series_complete` 嚴格檢核每個交易日之近 10／20 日分點日況序列是否完整，
+         修正先前因舊版空陣列佔位或殘缺資料導致批次增補誤判「已存在完整快照」而全部略過（補齊 0 檔）的問題。
+       - 當某交易日統計快照（`has_rank_snapshot`）已存在、僅缺分點日況明細時，僅抓 w10／w20 排行連結與明細並更新統計進度計數。
+    2. 防呆防錯原因：已同時具備完整統計快照與完整日況序列之交易日自動略過不重抓；維持雲端庫下載失敗防覆蓋保護。
     """
     hist_list = load_stock_history()
     stock_items = []
@@ -507,6 +531,7 @@ def batch_sync_all_stocks_brokers(
 
     updated_stocks = 0
     updated_days_total = 0
+    updated_focus_days_total = 0
     skipped_days_total = 0
     pull_failed_stocks = []
 
@@ -559,16 +584,24 @@ def batch_sync_all_stocks_brokers(
                 for w in (1, 10, 20)
             )
 
+            win_starts = {
+                1: end_d_str,
+                10: trade_dates[max(0, t_idx - 10 + 1)],
+                20: trade_dates[max(0, t_idx - 20 + 1)],
+            }
             day_focus_map = all_focus_map.get(end_d_str, {})
             w10_b = day_focus_map.get("w10", {}).get("top5_buy_series") or []
             w10_s = day_focus_map.get("w10", {}).get("top5_sell_series") or []
             w20_b = day_focus_map.get("w20", {}).get("top5_buy_series") or []
             w20_s = day_focus_map.get("w20", {}).get("top5_sell_series") or []
             day_ready = is_broker_daily_data_ready_for_date(end_d_str)
-            need_w10 = (not w10_b and not w10_s) or (
+
+            w10_ok = _is_focus_series_complete(w10_b, win_starts[10], end_d_str) or _is_focus_series_complete(w10_s, win_starts[10], end_d_str)
+            w20_ok = _is_focus_series_complete(w20_b, win_starts[20], end_d_str) or _is_focus_series_complete(w20_s, win_starts[20], end_d_str)
+            need_w10 = (not w10_ok) or (
                 day_ready and not _series_reaches_target_date(w10_b, end_d_str) and not _series_reaches_target_date(w10_s, end_d_str)
             )
-            need_w20 = (not w20_b and not w20_s) or (
+            need_w20 = (not w20_ok) or (
                 day_ready and not _series_reaches_target_date(w20_b, end_d_str) and not _series_reaches_target_date(w20_s, end_d_str)
             )
 
@@ -578,47 +611,45 @@ def batch_sync_all_stocks_brokers(
                 continue
 
             if progress_callback:
-                progress_callback(idx_s, tot_n, code, c_name, f"擷取 {end_d_str}（1/10/20日分點統計與日況）...")
+                mode_lbl = "補齊分點日況" if has_rank_snapshot else "1/10/20日分點統計與日況"
+                progress_callback(idx_s, tot_n, code, c_name, f"擷取 {end_d_str}（{mode_lbl}）...")
 
-            win_starts = {
-                1: end_d_str,
-                10: trade_dates[max(0, t_idx - 10 + 1)],
-                20: trade_dates[max(0, t_idx - 20 + 1)],
-            }
+            windows_to_fetch = (1, 10, 20) if not has_rank_snapshot else tuple(w for w, flag in ((10, need_w10), (20, need_w20)) if flag)
             rank_dfs = {}
-            for w in (1, 10, 20):
+            for w in windows_to_fetch:
                 df_b, df_s = fetch_stock_broker_range_ranking(code, win_starts[w], end_d_str)
                 if (df_b is None or df_b.empty) and (df_s is None or df_s.empty):
                     time.sleep(0.12)
                     df_b, df_s = fetch_stock_broker_range_ranking(code, win_starts[w], end_d_str)
                 rank_dfs[w] = (df_b, df_s)
-                time.sleep(0.06)
+                time.sleep(0.05)
 
-            day_bundle = dict(existing_bundle) if isinstance(existing_bundle, dict) else {}
-            has_any = False
-            for w in (1, 10, 20):
-                df_b, df_s = rank_dfs.get(w, (None, None))
-                b_recs = _df_to_rank_recs(df_b)
-                s_recs = _df_to_rank_recs(df_s)
-                if b_recs or s_recs:
-                    has_any = True
-                    lbl = end_d_str if w == 1 else f"{win_starts[w]} ~ {end_d_str}"
-                    day_bundle[f"w{w}"] = {
-                        "range_label": lbl,
-                        "buy": b_recs,
-                        "sell": s_recs,
-                    }
+            if not has_rank_snapshot:
+                day_bundle = dict(existing_bundle) if isinstance(existing_bundle, dict) else {}
+                has_any = False
+                for w in (1, 10, 20):
+                    df_b, df_s = rank_dfs.get(w, (None, None))
+                    b_recs = _df_to_rank_recs(df_b)
+                    s_recs = _df_to_rank_recs(df_s)
+                    if b_recs or s_recs:
+                        has_any = True
+                        lbl = end_d_str if w == 1 else f"{win_starts[w]} ~ {end_d_str}"
+                        day_bundle[f"w{w}"] = {
+                            "range_label": lbl,
+                            "buy": b_recs,
+                            "sell": s_recs,
+                        }
 
-            if has_any:
-                pending_bundles.append((end_d_str, day_bundle))
-                consecutive_empty_days = 0
-            else:
-                consecutive_empty_days += 1
-                # 富邦歷史分點保存上限約半年（120～130交易日），連續 5 日無資料即判定已達歷史起點並停止回溯
-                if consecutive_empty_days >= 5:
-                    if progress_callback:
-                        progress_callback(idx_s, tot_n, code, c_name, f"已達富邦歷史保存起點（{end_d_str} 連續5日無資料），停止回溯")
-                    break
+                if has_any:
+                    pending_bundles.append((end_d_str, day_bundle))
+                    consecutive_empty_days = 0
+                else:
+                    consecutive_empty_days += 1
+                    # 富邦歷史分點保存上限約半年（120～130交易日），連續 5 日無資料即判定已達歷史起點並停止回溯
+                    if consecutive_empty_days >= 5:
+                        if progress_callback:
+                            progress_callback(idx_s, tot_n, code, c_name, f"已達富邦歷史保存起點（{end_d_str} 連續5日無資料），停止回溯")
+                        break
 
             win_pairs = []
             if need_w10:
@@ -629,6 +660,7 @@ def batch_sync_all_stocks_brokers(
             if win_pairs:
                 earliest_w_start = min(s_st for _, s_st in win_pairs)
                 broker_df_cache = {}
+                day_wrote_focus = False
                 for w_num, s_start in win_pairs:
                     df_b, df_s = rank_dfs.get(w_num, (None, None))
                     for side_key, df_side in (("buy", df_b), ("sell", df_s)):
@@ -647,7 +679,7 @@ def batch_sync_all_stocks_brokers(
                                 broker_df_cache[b_name] = df_fresh
                                 if df_fresh is not None and not df_fresh.empty:
                                     storage.save_broker_daily_trades(b_name, df_fresh, sync_cloud=False)
-                                time.sleep(0.05)
+                                time.sleep(0.04)
                             df_cached_b = broker_df_cache.get(b_name)
                             if df_cached_b is not None and not df_cached_b.empty:
                                 df_win = df_cached_b[
@@ -665,6 +697,9 @@ def batch_sync_all_stocks_brokers(
                                         sync_cloud=False
                                     )
                                     wrote_focus_series = True
+                                    day_wrote_focus = True
+                if day_wrote_focus:
+                    updated_focus_days_total += 1
                 broker_df_cache.clear()
 
         if (pending_bundles or wrote_focus_series) and not is_cloud_db_pull_failed(code):
@@ -674,14 +709,14 @@ def batch_sync_all_stocks_brokers(
             sync_db_push(code)
             updated_stocks += 1
 
-        time.sleep(0.20)
+        time.sleep(0.15)
         del df_k, pending_bundles
         gc.collect()
 
     summary = (
         f"批次分點增補完成（統計基準日 {b_norm} 往前 {n_days} 個交易日）："
-        f"共檢查 {tot_n} 檔個股，實際補齊 {updated_stocks} 檔（新增 {updated_days_total} 筆交易日統計快照），"
-        f"略過已存在完整快照 {skipped_days_total} 筆。"
+        f"共檢查 {tot_n} 檔個股，實際補齊 {updated_stocks} 檔（新增 {updated_days_total} 筆統計快照、補齊 {updated_focus_days_total} 筆分點日況序列），"
+        f"略過已完整存在 {skipped_days_total} 筆。"
     )
     if pull_failed_stocks:
         summary += f" ⚠️ 以下 {len(pull_failed_stocks)} 檔雲端庫下載失敗已啟動防覆蓋保護略過：{', '.join(pull_failed_stocks)}。"
